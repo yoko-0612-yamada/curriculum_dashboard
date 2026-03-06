@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import datetime as dt
 from datetime import date
+from datetime import datetime
 import os
 
 import pandas as pd
@@ -480,9 +481,25 @@ def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
 
 
 def session_mark(v: str) -> str:
-    if str(v).strip().lower() == "self":
-        return "(自)"
-    return ""
+    """Return a human-readable label for session_type.
+
+    Expected values (case-insensitive):
+      - 'lesson' (default) -> 授業
+      - 'self'             -> 自習
+      - 'exam'             -> 検定
+      - other             -> そのまま（短縮）
+    """
+    s = str(v).strip().lower()
+    if s in {"self", "study", "selfstudy", "self_study", "jishuu", "jisyu"}:
+        return "自習"
+    if s in {"exam", "kentei", "test"}:
+        return "検定"
+    if s in {"lesson", "class", "teaching", "teach", "jugyou"}:
+        return "授業"
+    # Unknown: show original (but keep it short)
+    if s == "" or s == "nan":
+        return "授業"
+    return str(v).strip()[:12]
 
 
 def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
@@ -681,11 +698,12 @@ if page == "閲覧":
     # =========================================================
     # Top metrics
     # =========================================================
+    #col1, col2, col3, col4 = st.columns(4)
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("生徒数", int(len(students)))
-    col2.metric("ログ総数", int(len(log_all)))
-    col3.metric("完了ログ（done）", int(len(log_done)))
-    col4.metric("表示中（done）", int(len(filtered_done)))
+    #col2.metric("ログ総数", int(len(log_all)))
+    #col3.metric("完了ログ（done）", int(len(log_done)))
+   # col4.metric("表示中（done）", int(len(filtered_done)))
     st.divider()
 
     # =========================================================
@@ -1022,10 +1040,12 @@ if page == "閲覧":
             else:
                 # --- B案：コマ（時間）ごとにまとめて、同じコマの生徒を縦に並べる ---
                 def fmt_line(r: pd.Series) -> str:
-                    # B案は「名前だけ」でスッキリ表示
+                    # B案：授業/自習が一目で分かるように表示
                     name = str(r.get("生徒","")).strip()
                     mark = str(r.get("種別","")).strip()
-                    return f"{name}{mark}".strip()
+                    if mark:
+                        return f"{name}（{mark}）".strip()
+                    return name
 
                 gcols = ["slot_num", "コマ", "start", "end"]
                 base = today_view.copy()
@@ -1140,244 +1160,251 @@ if page == "閲覧":
                                 save_attendance_log(att_df2)
                                 st.success("取り消しました。")
                                 st.rerun()
+                # =====================================================
+        # 今日の例外入力UI（schedule_overrides.csv） ※ここだけ
+        # - 「今日の予定の下」専用
+        # - 管理画面の例外入力は将来的に削除予定（重複事故防止）
         # =====================================================
-        # 例外入力UI（任意）
-        # =====================================================
-        # =========================
-        # 今日の例外入力ブロック（貼るだけ差し替え版）
-        # - CSVヘッダーは絶対に追加/変更しない
-        # - 既存列名を“ゆるく推定”して合う列にだけ値を入れる
-        # =========================
+        with st.expander("📝 今日の例外（追加 / キャンセル / 時間変更）", expanded=False):
+            st.caption("この画面だけで“今日のスケジュール例外”を登録します（schedule_overrides.csv）。")
+
+            # 例外DF（ヘッダーは既存前提：safe_read_csvで列は揃っている想定）
+            ov_df = schedule_overrides.copy()
+            if ov_df.empty:
+                ov_df = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
+
+            # -----------------------------
+            # 生徒候補（今日の予定の生徒を先頭に）
+            # -----------------------------
+            stu_for_pick = base_students[["student_id", "display_name"]].copy()
+            stu_for_pick["student_id"] = stu_for_pick["student_id"].astype(str).str.strip()
+            stu_for_pick["display_name"] = stu_for_pick["display_name"].astype(str).str.strip()
+
+            ids_in_today = []
+            if "student_id" in today_view.columns and not today_view.empty:
+                for _sid in today_view["student_id"].astype(str).tolist():
+                    _sid = str(_sid).strip()
+                    if _sid and _sid not in ids_in_today:
+                        ids_in_today.append(_sid)
+
+            # 今日の予定にいない生徒は後ろ（表示名で安定ソート）
+            rest_ids = [sid for sid in stu_for_pick["student_id"].tolist() if sid and sid not in ids_in_today]
+            rest_ids_sorted = sorted(rest_ids, key=lambda s: str(stu_for_pick.loc[stu_for_pick["student_id"] == s, "display_name"].iloc[0] if (stu_for_pick["student_id"] == s).any() else s))
+
+            ordered_ids = ids_in_today + rest_ids_sorted
+            stu_for_pick = stu_for_pick.set_index("student_id").loc[ordered_ids].reset_index()
+
+            name_map = dict(zip(stu_for_pick["student_id"], stu_for_pick["display_name"]))
+            labels = [f"{sid} | {name_map.get(sid,'')}".strip(" |") for sid in stu_for_pick["student_id"].tolist()]
+
+            if not labels:
+                st.info("生徒が見つからないため、例外入力はできません。")
+            else:
+                # --- 今日の予定から、選択した生徒の「デフォルト値」を引く ---
+                # ルール：
+                #   1) 今日の予定に入っている生徒なら、その生徒の最初のコマをデフォルト
+                #   2) start/end/session_type はその行の値を初期値に
+                #
+                # Streamlitの制約：widget生成後にsession_stateを書き換えられない
+                # → 生徒選択(selectbox)の後、他widget生成の前にdefaultsをsession_stateへ流し込む
 
 
-      #  import os
-      #  from datetime import datetime, date
-       # import pandas as pd
-       # import streamlit as st
+                # --- UI（フォームは使わない：生徒を選び直した時に即時で他項目が追従するように） ---
+                c1, c2, c3, c4 = st.columns([3, 2, 2, 3])
 
+                with c1:
+                    picked_label = st.selectbox("生徒", labels, index=0, key="ov_student_label")
+                    picked_sid = picked_label.split("|")[0].strip()
 
+                # 今日の予定（その生徒）を抽出
+                _stu_rows = pd.DataFrame()
+                if "student_id" in today_view.columns and not today_view.empty:
+                    _stu_rows = today_view[today_view["student_id"].astype(str).str.strip() == str(picked_sid).strip()].copy()
 
+                # 候補slot（今日の予定にあるコマを優先）
+                slot_candidates = []
+                if not _stu_rows.empty and "slot" in _stu_rows.columns:
+                    tmp_slots = pd.to_numeric(_stu_rows["slot"], errors="coerce").dropna().astype(int).tolist()
+                    slot_candidates = sorted(list(dict.fromkeys(tmp_slots)))
 
-        def _safe_read_csv(path: str) -> pd.DataFrame:
-            if os.path.exists(path) and os.path.getsize(path) > 0:
+                default_slot = slot_candidates[0] if slot_candidates else 1
+
+                # 生徒が変わったら slot を初期化（widget生成前に）
+                ensure_student_scoped_defaults(picked_sid, "ov_slot", default_slot)
+
+                with c2:
+                    if slot_candidates:
+                        picked_slot = st.selectbox("コマ番号", slot_candidates, index=0, key="ov_slot")
+                    else:
+                        picked_slot = st.number_input("コマ番号", min_value=1, value=int(st.session_state.get("ov_slot", 1)), step=1, key="ov_slot")
+
+                with c3:
+                    picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
+
+                # 選択中のslotに応じたデフォルト（start/end/session_type）
                 try:
-                    return pd.read_csv(path)
+                    cur_slot = int(st.session_state.get("ov_slot", default_slot))
                 except Exception:
-                    # 文字コード等で落ちる場合は最低限の回避（必要ならここを調整）
-                    return pd.read_csv(path, encoding="utf-8", errors="ignore")
-            return pd.DataFrame()
+                    cur_slot = default_slot
 
+                default_start = ""
+                default_end = ""
+                default_session_type = ""
+                if not _stu_rows.empty and "slot" in _stu_rows.columns:
+                    _rslot = _stu_rows[pd.to_numeric(_stu_rows["slot"], errors="coerce") == cur_slot]
+                    if not _rslot.empty:
+                        rr = _rslot.iloc[0].to_dict()
+                        default_start = str(rr.get("start", "") or "").strip()
+                        default_end = str(rr.get("end", "") or "").strip()
+                        default_session_type = str(rr.get("session_type", "") or "").strip()
 
+                # ★重要：start/end/type/note は「生徒+slot」スコープのkeyにする
+                scoped_prefix = f"{str(picked_sid).strip()}_{int(cur_slot)}"
+                k_type = f"ov_session_type__{scoped_prefix}"
+                k_start = f"ov_start__{scoped_prefix}"
+                k_end = f"ov_end__{scoped_prefix}"
+                k_note = f"ov_note__{scoped_prefix}"
 
+                # 初期値を流し込み（widget生成前）
+                if k_type not in st.session_state:
+                    st.session_state[k_type] = default_session_type
+                if k_start not in st.session_state:
+                    st.session_state[k_start] = default_start
+                if k_end not in st.session_state:
+                    st.session_state[k_end] = default_end
+                if k_note not in st.session_state:
+                    st.session_state[k_note] = ""
 
-        def _safe_write_csv(df: pd.DataFrame, path: str) -> None:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            df.to_csv(path, index=False)
+                # 重要：このコマが「授業」か「自習」かは準備に直結するので、明示的に選べるようにする
+                cur_type_disp = (default_session_type or st.session_state.get(k_type, "") or "").strip()
+                if cur_type_disp:
+                    st.markdown(f"**このコマの種別： `{cur_type_disp}`**")
+                else:
+                    st.markdown("**このコマの種別： `未設定`（必ず設定してください）**")
 
+                with c4:
+                    type_options = ["授業", "自習", "検定", "その他（自由入力）"]
+                    _default = (st.session_state.get(k_type, "") or default_session_type or "").strip()
 
+                    if _default in type_options:
+                        _idx = type_options.index(_default)
+                    elif _default:
+                        _idx = type_options.index("その他（自由入力）")
+                    else:
+                        # 安全側：未設定なら「授業」をデフォルト
+                        _idx = 0
 
+                    picked_type_choice = st.selectbox("種別（重要）", type_options, index=_idx, key=f"{k_type}__choice")
 
-        def _pick_col(cols, keywords):
-            """
-            cols: list[str]
-            keywords: list[str]
-            return: best matching column name or None
-            """
-            if not cols:
-                return None
-            lower_map = {c: str(c).lower() for c in cols}
+                    if picked_type_choice == "その他（自由入力）":
+                        picked_session_type = st.text_input(
+                            "種別（自由入力）",
+                            value=_default if _default and _default not in type_options else "",
+                            placeholder="例）振替授業 / 面談 / 体験 など",
+                            key=k_type,
+                        ).strip()
+                    else:
+                        picked_session_type = picked_type_choice
+                        # k_type の永続値としても保持（次回同slotを開いた時の初期値）
+                        st.session_state[k_type] = picked_session_type
 
+                if picked_session_type == "授業":
+                    st.warning("⚠️ このコマは **授業** です（準備が必要）")
+                elif picked_session_type == "自習":
+                    st.info("🟦 このコマは **自習** です")
 
-            for kw in keywords:
-                kw_l = kw.lower()
-                for c, cl in lower_map.items():
-                    if kw_l in cl:
-                        return c
-            return None
+                c5, c6, c7 = st.columns([2, 2, 6])
+                with c5:
+                    picked_start = st.text_input("開始（任意）", placeholder="例）17:00", key=k_start)
+                with c6:
+                    picked_end = st.text_input("終了（任意）", placeholder="例）18:00", key=k_end)
+                with c7:
+                    picked_note = st.text_input("メモ（任意）", placeholder="例）振替 / 体調不良 / 時間変更 など", key=k_note)
 
+                submitted = st.button("今日の例外として保存", key="ov_submit_btn")
+                if submitted:
+                    dstr = today.strftime("%Y-%m-%d")
 
+                    new_row = {
+                        "student_id": str(picked_sid).strip(),
+                        "date": dstr,
+                        "slot": str(int(picked_slot)),
+                        "action": str(picked_action).strip(),
+                        "start": str(picked_start).strip(),
+                        "end": str(picked_end).strip(),
+                        "session_type": str(picked_session_type).strip(),
+                        "note": str(picked_note).strip(),
+                    }
 
+                    # 同じ (student_id, date, slot) が既にある場合は「置き換え」
+                    ov2 = ov_df.copy()
+                    for c in ["student_id", "date", "slot"]:
+                        if c in ov2.columns:
+                            ov2[c] = ov2[c].fillna("").astype(str).str.strip()
+                    keymask = (
+                        (ov2["student_id"] == new_row["student_id"])
+                        & (ov2["date"] == new_row["date"])
+                        & (ov2["slot"] == new_row["slot"])
+                    )
+                    ov2 = ov2[~keymask].copy()
 
-        def _normalize_date_str(d: date) -> str:
-            # CSV側が日付文字列運用のケースが多いので、まずはISOで保存
-            return d.strftime("%Y-%m-%d")
+                    ov2 = pd.concat([ov2, pd.DataFrame([new_row])], ignore_index=True)
 
-
-
-
-        def render_today_exception_block(
-            *,
-            exceptions_csv_path: str,
-            students_df: pd.DataFrame,
-            student_id_col: str | None = None,
-            student_name_col: str | None = None,
-            title: str = "📝 今日の例外登録",
-            form_key: str = "today_exception_form_v2",
-        ):
-            """
-            exceptions_csv_path: 例外CSVのパス
-            students_df: 生徒一覧（フィルタ済みの表示対象でもOK）
-            student_id_col / student_name_col:
-                生徒DFの列名が分かっていれば渡す（未指定なら自動推定）
-            """
-
-
-            st.subheader(title)
-
-
-            # --- 生徒DFの列を推定（あなたのCSV列名に合わせて“それっぽい”ものを掴む）
-            if students_df is None or len(students_df) == 0:
-                st.info("生徒データがありません。左の検索/フィルタの結果が空かもしれません。")
-                return
-
-
-            s_cols = list(students_df.columns)
-
-
-            if student_id_col is None:
-                student_id_col = _pick_col(s_cols, ["id", "生徒id", "生徒_id", "会員id", "会員_id", "uid", "識別", "番号"])
-            if student_name_col is None:
-                student_name_col = _pick_col(s_cols, ["name", "氏名", "名前", "生徒名", "受講者", "生徒"])
-
-
-            # fallback（どちらも無い場合に備える）
-            if student_id_col is None:
-                student_id_col = s_cols[0]
-            if student_name_col is None:
-                student_name_col = s_cols[0]
-
-
-            # --- 例外CSVを読む（ヘッダーを変えない）
-            ex_df = _safe_read_csv(exceptions_csv_path)
-            ex_cols = list(ex_df.columns)
-
-
-            if ex_df.empty and len(ex_cols) == 0:
-                # ファイルがない/空で列不明の場合：ここだけは「既存ヘッダーがない」ので保存不能
-                # -> 事故防止のため、ユーザーに列が入ったCSVを先に用意してもらう前提にする
-                st.error(
-                    "例外CSVが空でヘッダーが読み取れません。\n"
-                    "（ヘッダー追加はしない方針のため）\n"
-                    "先に“ヘッダー行だけ入った例外CSV”を用意してから再実行してください。"
-                )
-                return
-
-
-            # --- 例外CSVの列を推定（既存列の中から近いものにだけ入れる）
-            # 日付
-            ex_date_col = _pick_col(ex_cols, ["date", "日付", "日", "対象日", "実施日", "today"])
-            # 生徒ID
-            ex_sid_col = _pick_col(ex_cols, ["student_id", "生徒id", "生徒_id", "会員id", "id", "uid"])
-            # 生徒名
-            ex_sname_col = _pick_col(ex_cols, ["student_name", "生徒名", "氏名", "名前", "name"])
-            # 理由/メモ
-            ex_memo_col = _pick_col(ex_cols, ["memo", "メモ", "理由", "備考", "note", "comment", "内容"])
-            # 登録日時
-            ex_created_col = _pick_col(ex_cols, ["created", "登録日時", "timestamp", "作成", "created_at"])
-
-
-            # --- UI
-            today = date.today()
-
-
-            # 生徒選択の表示文字列
-            # 例: "1234｜山田 太郎"
-            def _label(row):
-                sid = str(row.get(student_id_col, ""))
-                sname = str(row.get(student_name_col, ""))
-                if sid and sname and sid != sname:
-                    return f"{sid}｜{sname}"
-                return sid or sname or "(unknown)"
-
-
-            options = students_df.to_dict(orient="records")
-            labels = [_label(r) for r in options]
-
-
-            with st.form(key=form_key, clear_on_submit=True):
-                col1, col2 = st.columns([1, 2])
-
-
-                with col1:
-                    d = st.date_input("対象日", value=today)
-
-
-                with col2:
-                    idx = st.selectbox("対象の生徒", options=list(range(len(labels))), format_func=lambda i: labels[i])
-
-
-                memo = st.text_input("メモ（任意）", value="", placeholder="例）振替／体調不良／急用など")
-                submitted = st.form_submit_button("今日の例外として登録")
-
-
-            if submitted:
-                picked = options[idx]
-                sid_val = picked.get(student_id_col, "")
-                sname_val = picked.get(student_name_col, "")
-
-
-                new_row = {c: "" for c in ex_cols}  # 既存列だけ。追加しない。
-
-
-                if ex_date_col is not None:
-                    new_row[ex_date_col] = _normalize_date_str(d)
-                if ex_sid_col is not None:
-                    new_row[ex_sid_col] = sid_val
-                if ex_sname_col is not None:
-                    new_row[ex_sname_col] = sname_val
-                if ex_memo_col is not None:
-                    new_row[ex_memo_col] = memo
-                if ex_created_col is not None:
-                    new_row[ex_created_col] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-                ex_df2 = pd.concat([ex_df, pd.DataFrame([new_row])], ignore_index=True)
-                _safe_write_csv(ex_df2, exceptions_csv_path)
-
-
-                st.success("登録しました。")
-                st.rerun()
-
-
+                    # 保存（既存ヘッダー運用）
+                    write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                    st.success("保存しました。今日の予定に反映されます。")
+                    st.rerun()
             st.divider()
 
+            # 今日の例外一覧（削除ボタン付き）
+            dstr = today.strftime("%Y-%m-%d")
+            ov_show = ov_df.copy()
+            if not ov_show.empty:
+                for c in ["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]:
+                    if c in ov_show.columns:
+                        ov_show[c] = ov_show[c].fillna("").astype(str).str.strip()
+                ov_today_list = ov_show[ov_show["date"] == dstr].copy()
+            else:
+                ov_today_list = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
 
-            # --- 今日の例外一覧
-            if ex_df is None or ex_df.empty:
-                st.info("例外の登録はまだありません。")
-                return
-
-
-            if ex_date_col is None:
-                st.warning("例外CSVに日付っぽい列が見つからないため、『今日』で絞り込めません。")
-                st.dataframe(ex_df, use_container_width=True)
-                return
-
-
-            today_str = _normalize_date_str(today)
-
-
-            # 日付列が datetime 風/日本語風でも一応拾えるようにゆるく一致
-            ex_df_tmp = ex_df.copy()
-            ex_df_tmp["_date_str"] = ex_df_tmp[ex_date_col].astype(str).str.slice(0, 10)
-
-
-            today_df = ex_df_tmp[ex_df_tmp["_date_str"] == today_str].drop(columns=["_date_str"], errors="ignore")
-
-
-            if today_df.empty:
+            if ov_today_list.empty:
                 st.info("今日の例外はまだありません。")
-                return
+            else:
+                # 表示用に名前を付与
+                name_map = dict(zip(stu_for_pick["student_id"], stu_for_pick["display_name"]))
+                ov_today_list["name"] = ov_today_list["student_id"].map(name_map).fillna("")
+                ov_today_list["label"] = ov_today_list.apply(
+                    lambda r: f'{r.get("student_id","")} | {r.get("name","")}'.strip(" |"),
+                    axis=1,
+                )
 
+                show_cols = ["label", "slot", "action", "start", "end", "session_type", "note"]
+                show_cols = [c for c in show_cols if c in ov_today_list.columns]
+                st.dataframe(ov_today_list[show_cols], use_container_width=True, hide_index=True)
 
-            st.caption("今日の例外（対象日が今日のもの）")
-            st.dataframe(today_df, use_container_width=True)
-            render_today_exception_block(exceptions_csv_path=EXCEPTIONS_CSV, students_df=students_df)
-
-
-    st.divider()
-
-    # =========================================================
+                st.caption("削除したい場合：下のボタンで“その行”を削除します。")
+                for i, r in ov_today_list.reset_index(drop=True).iterrows():
+                    sid = str(r.get("student_id","")).strip()
+                    slot = str(r.get("slot","")).strip()
+                    action = str(r.get("action","")).strip()
+                    label = str(r.get("label","")).strip()
+                    btn = f"🗑 削除：{label} / slot {slot} / {action}"
+                    if st.button(btn, key=f"ov_del_{dstr}_{sid}_{slot}_{action}_{i}"):
+                        ov2 = ov_df.copy()
+                        for c in ["student_id", "date", "slot", "action"]:
+                            if c in ov2.columns:
+                                ov2[c] = ov2[c].fillna("").astype(str).str.strip()
+                        mask = (
+                            (ov2["student_id"] == sid)
+                            & (ov2["date"] == dstr)
+                            & (ov2["slot"] == slot)
+                            & (ov2["action"] == action)
+                        )
+                        ov2 = ov2[~mask].copy()
+                        write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                        st.success("削除しました。")
+                        st.rerun()
+# =========================================================
     # Scratch best grade per student (from logs)
     # =========================================================
     scratch_all = log_all.copy()
@@ -1545,40 +1572,20 @@ if page == "閲覧":
                     st.markdown('---')
                     st.caption("コース完了（done）は、課題が全て終わっていなくても付けられます")
 
-                    
                     col_done1, col_done2 = st.columns([1, 2])
-
-                    # 既に「done」記録がある場合は、チェックONで表示し、再保存を防止します
-                    done_key = f"mark_course_done_{student_id}_{selected_course_id}"
-                    is_already_done = False
-                    if not log.empty:
-                        _mask_done = (
-                            log["student_id"].astype(str).str.strip() == str(student_id).strip()
-                        ) & (
-                            log["curriculum"].astype(str).str.strip() == str(genre_id).strip()
-                        ) & (
-                            log["item"].astype(str).str.strip() == str(course_name).strip()
-                        ) & (
-                            log["status"].astype(str).str.strip().str.lower() == "done"
-                        )
-                        is_already_done = bool(_mask_done.any())
-
-                    # 初回だけ既存状態を反映（ユーザーが手動で外したいケースは、別途運用で）
-                    if done_key not in st.session_state:
-                        st.session_state[done_key] = is_already_done
-
                     with col_done1:
-                        mark_done = st.checkbox("このカリキュラムを完了にする", key=done_key)
-
+                        mark_done = st.checkbox(
+                            "このカリキュラムを完了にする",
+                            value=False,
+                            key=f"mark_course_done_{student_id}_{selected_course_id}",
+                        )
                     with col_done2:
-                        if is_already_done:
-                            st.info("このコースは既に「完了（done）」として記録されています。")
                         if st.button(
                             "完了を保存",
-                            disabled=(not mark_done) or is_already_done,
+                            disabled=not mark_done,
                             key=f"save_course_done_{student_id}_{selected_course_id}",
                         ):
-                            today_str = dt.datetime.now().strftime('%Y-%m-%d')
+                            today_str = datetime.now().strftime('%Y-%m-%d')
                             new_row = {
                                 'date': today_str,
                                 'student_id': str(student_id).strip(),
@@ -2137,8 +2144,8 @@ else:
     st.header("管理（入力）")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
 
-    sub_stu, sub_weekly, sub_kentei, sub_curr, sub_sys, sub_override, sub_info = st.tabs(
-        ["👥 生徒管理", "📅 固定スケジュール（週次）", "🎫 検定予定登録", "📘 カリキュラム管理", "🛠 システム設定", "🗓️ スケジュール例外", "ℹ️ 運用メモ"]
+    sub_stu, sub_kentei, sub_curr, sub_sys, sub_override, sub_info = st.tabs(
+        ["👥 生徒管理", "🎫 検定予定登録", "📘 カリキュラム管理", "🛠 システム設定", "🗓️ スケジュール例外", "ℹ️ 運用メモ"]
     )
 
     # ---------------------------
@@ -2288,9 +2295,6 @@ else:
                 st.session_state["stu_edit_weekday"] = str(cur.get("weekday", "") or "")
                 st.session_state["stu_edit_slot"] = str(cur.get("slot", "") or "")
 
-                # メモ
-                st.session_state["stu_edit_memo"] = str(cur.get("memo", "") or "")
-
                 # 変更を反映した状態で描画し直す
                 st.rerun()
 
@@ -2329,8 +2333,6 @@ else:
 
             e_weekday = st.text_input("曜日（任意）", value=str(cur.get("weekday", "")), key="stu_edit_weekday")
             e_slot = st.text_input("コマ（任意）", value=str(cur.get("slot", "")), key="stu_edit_slot")
-            e_memo = st.text_input("メモ（補足）", value=str(cur.get("memo", "")), key="stu_edit_memo")
-
 
             if st.button("保存（更新）", key="stu_edit_save"):
                 mask = students["student_id"].astype(str) == sel_id
@@ -2361,127 +2363,8 @@ else:
                 write_csv(students, STUDENTS_CSV)  # noqa: F821
                 st.success(f"更新しました: {sel_id}")
 
-
-
-
     # ---------------------------
-        with sub_weekly:
-        # 📅 固定スケジュール（週次）: student_schedule.csv
-            #  - 同じ student_id を複数行登録OK（例：週2回 → 水＋木）
-            #  - 重複防止キー: (student_id, weekday, slot)
-            # ---------------------------
-            st.divider()
-            st.subheader("📅 固定スケジュール（週次）")
-            st.caption("月8回（週2回）などは、同じ生徒IDで曜日を複数登録します。ここで追加・削除できます。")
-
-            # 生徒選択（編集/退会側の選択を流用）
-            try:
-                _sel_id = str(sel_id).strip()
-            except Exception:
-                _sel_id = ""
-
-            sched_base = safe_read_csv(
-                STUDENT_SCHEDULE_CSV,
-                ["student_id", "weekday", "slot", "session_type"],
-                stop_on_missing=False,
-            )
-            if sched_base.empty:
-                sched_base = pd.DataFrame(columns=["student_id", "weekday", "slot", "session_type"])
-
-            slots_base = safe_read_csv(TIMESLOTS_CSV, required_cols=["slot"], stop_on_missing=False)
-            # 既存の候補生成ロジックを再利用
-            weekday_options2 = build_weekday_options(students, sched_base)
-            slot_options2 = build_slot_options(slots_base, sched_base, students)
-
-            if not _sel_id:
-                st.info("上の「編集 / 退会」で生徒を選択すると、ここで固定スケジュールを編集できます。")
-            else:
-                st.markdown(f"**対象生徒:** `{_sel_id}`")
-
-                stu_sched = sched_base[sched_base["student_id"].astype(str) == _sel_id].copy()
-
-                # 既存一覧
-                if stu_sched.empty:
-                    st.info("固定スケジュールはまだありません。週2回の場合は2行（例：水＋木）を追加してください。")
-                else:
-                    show_cols = [c for c in ["weekday", "slot", "session_type"] if c in stu_sched.columns]
-                    st.dataframe(stu_sched[show_cols].reset_index(drop=True), use_container_width=True)
-
-                # 追加UI
-                st.write("### 追加")
-                c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-
-                with c1:
-                    w_sel = st.selectbox("曜日", options=weekday_options2, index=0, key=f"sched_add_weekday_{_sel_id}")
-                    w_free = ""
-                    if w_sel == "その他（自由入力）":
-                        w_free = st.text_input("曜日（自由入力）", value="", key=f"sched_add_weekday_free_{_sel_id}")
-                    w_val = w_free if w_sel == "その他（自由入力）" else w_sel
-
-                with c2:
-                    s_sel = st.selectbox("コマ", options=slot_options2, index=0, key=f"sched_add_slot_{_sel_id}")
-                    s_free = ""
-                    if s_sel == "その他（自由入力）":
-                        s_free = st.text_input("コマ（自由入力）", value="", key=f"sched_add_slot_free_{_sel_id}")
-                    s_val = s_free if s_sel == "その他（自由入力）" else s_sel
-
-                with c3:
-                    stype = st.selectbox("種別", options=["授業", "自習", "検定", "その他"], index=0, key=f"sched_add_type_{_sel_id}")
-
-                with c4:
-                    add_clicked = st.button("＋ 追加", key=f"sched_add_btn_{_sel_id}")
-
-                if add_clicked:
-                    wv = str(w_val).strip()
-                    sv = str(s_val).strip()
-                    if not wv:
-                        st.error("曜日が空です。")
-                    elif not sv:
-                        st.error("コマが空です。")
-                    else:
-                        # 重複チェック（student_id, weekday, slot）
-                        dup_mask = (
-                            (sched_base["student_id"].astype(str) == _sel_id)
-                            & (sched_base["weekday"].astype(str) == wv)
-                            & (sched_base["slot"].astype(str) == sv)
-                        )
-                        if dup_mask.any():
-                            st.warning("同じ曜日・コマが既に登録されています。")
-                        else:
-                            new_row = {"student_id": _sel_id, "weekday": wv, "slot": sv, "session_type": stype}
-                            sched_base = pd.concat([sched_base, pd.DataFrame([new_row])], ignore_index=True)
-                            write_csv(sched_base, STUDENT_SCHEDULE_CSV)
-                            st.success(f"追加しました: {_sel_id} / {wv} / {sv} / {stype}")
-                            st.rerun()
-
-                # 削除UI
-                if not stu_sched.empty:
-                    st.write("### 削除")
-                    # 元DataFrameのindexを保持して削除できるようにする
-                    stu_sched2 = stu_sched.copy()
-                    stu_sched2["_idx"] = stu_sched2.index
-
-                    def _row_label(i):
-                        r = stu_sched2.loc[stu_sched2["_idx"] == i].iloc[0]
-                        return f"{r.get('weekday','')} / {r.get('slot','')} / {r.get('session_type','')}"
-
-                    del_idx = st.selectbox(
-                        "削除する行",
-                        options=stu_sched2["_idx"].tolist(),
-                        format_func=_row_label,
-                        key=f"sched_del_sel_{_sel_id}",
-                    )
-                    if st.button("この行を削除", key=f"sched_del_btn_{_sel_id}"):
-                        sched_base = sched_base.drop(index=int(del_idx), errors="ignore").reset_index(drop=True)
-                        write_csv(sched_base, STUDENT_SCHEDULE_CSV)
-                        st.success("削除しました。")
-                        st.rerun()
-
-
-            # ---------------------------
-
-
-# 🎫 検定予定登録（kentei_schedule.csv）
+    # 🎫 検定予定登録（kentei_schedule.csv）
     # ---------------------------
     with sub_kentei:
         st.subheader("検定予定 登録")
@@ -2511,25 +2394,27 @@ else:
         #    write_csv(ks, KENTEI_EXAM_SCHEDULE_CSV)  # noqa: F821
         #    st.success("保存しました。")
 
+        if st.button("保存（kentei_exam_schedule.csv に追記）", key="kentei_save_btn"):
+            new_row = {
+                "student_id": k_student_id,
+                "exam_type": str(k_name).strip(),      # 例：プログラミング検定
+                "grade": str(k_grade).strip(),         # 例：2
+                "exam_date": str(k_date),              # 受験日（画面の日付）
+                "note": str(k_note).strip(),           # メモ
+                "date": str(date.today()),             # 登録日
+                "kentei": str(k_name).strip(),         # 互換用
+            }
 
-    if st.button("保存（kentei_exam_schedule.csv に追記）", key="kentei_save_btn"):
-        new_row = {
-            "student_id": k_student_id,
-            "exam_type": str(k_name).strip(),      # 例：プログラミング検定
-            "grade": str(k_grade).strip(),         # 例：2
-            "exam_date": str(k_date),              # 受験日（画面の日付）
-            "note": str(k_note).strip(),           # メモ
-            "date": str(date.today()),            # 登録日（空でもいいけど入れた方が整う）
-            "kentei": str(k_name).strip(),         # 互換用（空でもいいが、入れると後で楽）
-        }
 
-        ks = pd.concat([ks, pd.DataFrame([new_row])], ignore_index=True)
+            ks = pd.concat([ks, pd.DataFrame([new_row])], ignore_index=True)
 
-        # 列順を固定（崩れ防止）
-        cols = ["student_id","exam_type","grade","exam_date","note","date","kentei"]
-        ks = ks.reindex(columns=cols)
+            # 列順を固定（崩れ防止）
+            cols = ["student_id","exam_type","grade","exam_date","note","date","kentei"]
+            ks = ks.reindex(columns=cols)
 
-        write_csv(ks, KENTEI_EXAM_SCHEDULE_CSV)
+            write_csv(ks, KENTEI_EXAM_SCHEDULE_CSV)
+            st.success("保存しました。")
+            st.rerun()
         st.success("保存しました。")
 
 
@@ -3059,46 +2944,23 @@ else:
                             st.rerun()
 
     with sub_override:
-        st.subheader("スケジュール例外（追加/キャンセル/時間変更）")
-        students = safe_read_csv(STUDENTS_CSV, required_cols=["student_id", "display_name"], stop_on_missing=True)
-        students["label"] = students["student_id"].astype(str) + " | " + students["display_name"].astype(str)
+        st.subheader("スケジュール例外（閲覧専用）")
+        st.info("例外の登録は『閲覧』画面の「🗓 今日の予定」の下に移動しました（重複登録防止）。ここは一覧表示のみです。")
 
-        ov = safe_read_csv(SCHEDULE_OVERRIDES_CSV, required_cols=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"], stop_on_missing=False)
+        ov = safe_read_csv(
+            SCHEDULE_OVERRIDES_CSV,
+            required_cols=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"],
+            stop_on_missing=False,
+        )
         if ov.empty:
-            ov = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
-
-        o_student = st.selectbox("生徒", students["label"].tolist(), key="ov_student")
-        o_student_id = o_student.split("|")[0].strip()
-        o_date = st.date_input("日付", value=date.today(), key="ov_date")  # noqa: F821
-        o_slot = st.number_input("コマ番号", min_value=1, value=1, step=1, key="ov_slot")
-        o_action = st.selectbox("種別", ["add", "cancel", "move"], index=0, key="ov_action")
-        o_start = st.text_input("開始（任意: 13:40）", value="", key="ov_start")
-        o_end = st.text_input("終了（任意: 14:40）", value="", key="ov_end")
-        o_type = st.selectbox("session_type", ["lesson", "kentei"], index=0, key="ov_type")
-        o_note = st.text_input("メモ（任意）", value="", key="ov_note")
-
-        if st.button("保存（schedule_overrides.csv に追記）", key="ov_save"):
-            new_row = {
-                "student_id": o_student_id,
-                "date": str(o_date),
-                "slot": int(o_slot),
-                "action": str(o_action),
-                "start": str(o_start).strip(),
-                "end": str(o_end).strip(),
-                "session_type": str(o_type),
-                "note": str(o_note).strip(),
-            }
-            ov = pd.concat([ov, pd.DataFrame([new_row])], ignore_index=True)
-            write_csv(ov, SCHEDULE_OVERRIDES_CSV)  # noqa: F821
-            st.success("保存しました。")
-
-        st.divider()
-        st.caption("例外一覧（直近）")
-        if not ov.empty:
+            st.info("例外はまだありません。")
+        else:
             ov_view = ov.copy()
-            ov_view["date"] = pd.to_datetime(ov_view["date"], errors="coerce")
-            ov_view = ov_view.sort_values("date").tail(30)
-            st.dataframe(ov_view, use_container_width=True)
+            # 日付として解釈できるものは並び替えに使う（表示は文字列のままでもOK）
+            ov_view["_date_sort"] = pd.to_datetime(ov_view["date"], errors="coerce")
+            ov_view = ov_view.sort_values(["_date_sort", "student_id", "slot"], na_position="last").drop(columns=["_date_sort"])
+            st.dataframe(ov_view.tail(60), use_container_width=True, hide_index=True)
+
 
     # ---------------------------
     # ℹ️ 運用メモ
