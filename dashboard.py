@@ -10,6 +10,8 @@ import pandas as pd
 import re
 import streamlit as st
 
+from data_io import safe_read_csv
+
 # =========================================================
 # Page
 # =========================================================
@@ -405,51 +407,6 @@ def latest_course_for_student(student_id: str, progress_df: pd.DataFrame):
                 return str(df2.iloc[0]["course_id"])
     return str(df.iloc[-1]["course_id"])
 
-
-def safe_read_csv(
-    path,
-    required_cols=None,
-    *,
-    stop_on_missing: bool = False,
-    show_message: bool = True,
-    encoding: str = "utf-8",
-) -> pd.DataFrame:
-    """CSVを安全に読み込むヘルパー。
-
-    - ファイル無し -> 空DF（show_messageならwarning）
-    - required_cols不足 -> 空DF（warning） / stop_on_missing=Trueなら st.stop()
-    """
-    path = Path(path)
-
-    if not path.exists():
-        if show_message:
-            st.warning(f"CSVが見つかりません: {path}")
-        return pd.DataFrame()
-
-    try:
-        df = pd.read_csv(path, encoding=encoding)
-    except UnicodeDecodeError:
-        # WindowsのCSV(cp932)も吸収
-        df = pd.read_csv(path, encoding="cp932")
-    except Exception as e:
-        if show_message:
-            st.error(f"CSV読み込みエラー: {path}\n{e}")
-        return pd.DataFrame()
-
-    if required_cols:
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            msg = (
-                f"CSVに必要な列がありません: {path} 不足:{missing} "
-                f"(現在の列:{list(df.columns)})"
-            )
-            if show_message:
-                st.warning(msg)
-            if stop_on_missing:
-                st.stop()
-            return pd.DataFrame()
-
-    return df
 
 
 def norm_lower(s: pd.Series) -> pd.Series:
