@@ -1436,28 +1436,45 @@ if page == "閲覧":
                         st.rerun()
 
     # =========================================================
-    # Scratch best grade per student (from logs)
+    # Scratch最高級（唯一の正: kentei_results.csv）
     # =========================================================
-    scratch_all = log_all.copy()
-    scratch_all = scratch_all[
-        (norm_lower(scratch_all["curriculum"]) == "scratch")
-        & (norm_lower(scratch_all["status"]) == "done")
-        & (scratch_all["item"].fillna("").astype(str).str.contains("検定"))
-    ].copy()
+    kentei_results = load_kentei_results().copy()
+
 
     scratch_best = pd.DataFrame(columns=["student_id", "grade", "display_name", "item"])
-    if not scratch_all.empty:
-        tmp = scratch_all["item"].fillna("").astype(str)
-        tmp_num = tmp.str.replace("検定", "", regex=False).str.replace("級", "", regex=False)
-        scratch_all["kentei_num"] = pd.to_numeric(tmp_num, errors="coerce")
-        scratch_all = scratch_all.dropna(subset=["kentei_num"]).copy()
-        scratch_all["kentei_num"] = scratch_all["kentei_num"].astype(int)
 
+
+    if not kentei_results.empty:
+        kentei_results["student_id"] = kentei_results["student_id"].fillna("").astype(str).str.strip()
+        kentei_results["grade"] = kentei_results["grade"].fillna("").astype(str).str.strip()
+
+
+        # 数字が小さいほど上位級（3級 > 4級 ではなく、3級の方が上）
+        kentei_results["kentei_num"] = pd.to_numeric(kentei_results["grade"], errors="coerce")
+        kentei_results = kentei_results.dropna(subset=["kentei_num"]).copy()
+        kentei_results["kentei_num"] = kentei_results["kentei_num"].astype(int)
+
+
+        # 生徒ごとに最上位（最小の数字）を採用
         scratch_best = (
-            scratch_all.sort_values(by=["student_id", "kentei_num"])
+            kentei_results.sort_values(by=["student_id", "kentei_num"], ascending=[True, True])
             .groupby("student_id", as_index=False)
             .first()
         )
+
+
+        scratch_best = scratch_best.merge(
+            students[["student_id", "display_name", "grade"]],
+            on="student_id",
+            how="left",
+            suffixes=("", "_student")
+        )
+
+
+        # 表示用 item を作る
+        scratch_best["item"] = "検定" + scratch_best["grade"].astype(str).str.strip() + "級"
+
+
 
     # =========================================================
     # Latest per item
@@ -2073,29 +2090,58 @@ if page == "閲覧":
 
         # Scratch最高級
         st.subheader("Scratch検定：最高取得級（生徒ごと）")
+
+
         scratch_best_filtered = scratch_best.copy()
 
-        st.write("DUBUG selected_student = ", repr(selected_student))
 
-        view_cols = ["grade", "display_name", "item"]
-        view_df = scratch_best_filtered[view_cols].copy()
-
+        # フィルタ
         if selected_grade != "（全て）":
-            scratch_best_filtered = scratch_best_filtered[scratch_best_filtered["grade"] == selected_grade]
+            scratch_best_filtered = scratch_best_filtered[
+                scratch_best_filtered["grade"] == selected_grade
+            ]
+
 
         if selected_student != "（全員）":
-            scratch_best_filtered = scratch_best_filtered[scratch_best_filtered["display_name"] == selected_student]
+            scratch_best_filtered = scratch_best_filtered[
+                scratch_best_filtered["display_name"] == selected_student
+            ]
 
 
+        # 表示
         if scratch_best_filtered.empty:
-            st.info("Scratch検定ログ（curriculum=Scratch, itemに『検定◯級』, status=done）がまだ無いか、フィルタで絞り込みすぎています。")
+            st.info("Scratch検定ログがまだありません。")
         else:
-            if not scratch_best_filtered.empty:
-                styled = scratch_best_filtered[["grade", "display_name", "item"]].style.apply(color_by_grade, axis=1)
-                st.dataframe(styled, use_container_width=True,hide_index=True)
 
-            else:
-                st.info("データがありません")
+
+            # grade抽出（検定◯級 → ◯）
+            scratch_best_filtered["grade_num"] = (
+                scratch_best_filtered["item"]
+                .str.extract(r"検定(\d+)級")[0]
+                .astype(float)
+            )
+
+
+            # 生徒ごと最高級
+            best = (
+                scratch_best_filtered
+                .sort_values("grade_num", ascending=True)
+                .drop_duplicates("student_id", keep="first")
+            )
+
+
+            view = best[["grade", "display_name", "item"]].copy()
+
+
+            styled = view.style.apply(color_by_grade, axis=1)
+
+
+            st.dataframe(
+                styled,
+                use_container_width=True,
+                hide_index=True
+            )
+
 
 
 
