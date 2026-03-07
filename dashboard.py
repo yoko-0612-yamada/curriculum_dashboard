@@ -687,22 +687,6 @@ if page == "閲覧":
         return f"S{max_n+1:03d}"
 
 
-    def safe_read_csv(path: Path, required_cols=None,stop_on_missing=False) -> pd.DataFrame:
-        required_cols = required_cols or []
-        if not path.exists():
-            return pd.DataFrame(columns=required_cols)
-        try:
-            df = pd.read_csv(path, dtype=str).fillna("")
-        except Exception:
-            # fallback (encoding issues etc)
-            df = pd.read_csv(path, dtype=str, encoding="utf-8", errors="ignore").fillna("")
-        # ensure required columns
-        for c in required_cols:
-            if c not in df.columns:
-                df[c] = ""
-        return df
-
-
     def safe_write_csv(df: pd.DataFrame, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         write_csv_atomic(df, path)
