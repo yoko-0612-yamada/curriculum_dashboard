@@ -979,6 +979,104 @@ if page == "閲覧":
 
         today_view["コマ"] = today_view["slot"]
         today_view["生徒"] = today_view["display_name"].fillna("").astype(str)
+      # =====================================================
+        # 今日の予定に「今月の回数」を表示
+        # 例: 3/4 山田花子
+        # =====================================================
+        att_df_for_count = load_attendance_log().copy()
+
+
+        # 今月の「今日より前」の授業回数
+        month_done_map = {}
+        if not att_df_for_count.empty and {"student_id", "date", "kind"}.issubset(att_df_for_count.columns):
+            tmp_att = att_df_for_count.copy()
+            tmp_att["student_id"] = tmp_att["student_id"].fillna("").astype(str).str.strip()
+            tmp_att["date"] = tmp_att["date"].fillna("").astype(str).str.strip()
+            tmp_att["kind"] = tmp_att["kind"].fillna("").astype(str).str.strip()
+
+
+            ym = today.strftime("%Y-%m")
+            today_str = str(today)
+
+
+            tmp_att["__ym"] = tmp_att["date"].str.slice(0, 7)
+            tmp_att = tmp_att[
+                (tmp_att["__ym"] == ym)
+                & (tmp_att["date"] < today_str)
+                & (tmp_att["kind"].isin(["lesson", "授業"]))
+            ]
+
+
+            if not tmp_att.empty:
+                month_done_map = (
+                    tmp_att.groupby("student_id")
+                    .size()
+                    .astype(int)
+                    .to_dict()
+                )
+
+
+        # 月回数（students.number_of_times）
+        month_target_map = {}
+        if {"student_id", "number_of_times"}.issubset(students.columns):
+            tmp_stu = students[["student_id", "number_of_times"]].copy()
+            tmp_stu["student_id"] = tmp_stu["student_id"].fillna("").astype(str).str.strip()
+            tmp_stu["number_of_times_num"] = pd.to_numeric(tmp_stu["number_of_times"], errors="coerce")
+            tmp_stu = tmp_stu.dropna(subset=["number_of_times_num"]).copy()
+
+
+            if not tmp_stu.empty:
+                month_target_map = dict(
+                    zip(
+                        tmp_stu["student_id"],
+                        tmp_stu["number_of_times_num"].astype(int)
+                    )
+                )
+
+
+        # 今日の中で、その授業が何回目か（同日に2コマある子に対応）
+        today_view["_is_lesson"] = ~today_view["session_type"].fillna("").astype(str).str.strip().str.lower().isin(
+            ["self", "selfstudy", "自習"]
+        )
+        today_view["_today_lesson_seq"] = 0
+
+
+        lesson_mask = today_view["_is_lesson"] == True
+        if lesson_mask.any():
+            seq_df = today_view.loc[lesson_mask].sort_values(["student_id", "slot_num"]).copy()
+            seq_df["_today_lesson_seq"] = seq_df.groupby("student_id").cumcount() + 1
+            today_view.loc[seq_df.index, "_today_lesson_seq"] = seq_df["_today_lesson_seq"]
+
+
+        # 表示用の生徒名を作る
+        def add_month_count_prefix(r: pd.Series) -> str:
+            name = str(r.get("生徒", "")).strip()
+            sid = str(r.get("student_id", "")).strip()
+
+
+            if not name or not sid:
+                return name
+
+
+            # 自習は回数表示しない
+            if not bool(r.get("_is_lesson", False)):
+                return name
+
+
+            target = month_target_map.get(sid)
+            if target is None or target <= 0:
+                return name
+
+
+            done_before_today = int(month_done_map.get(sid, 0))
+            seq_today = int(r.get("_today_lesson_seq", 1) or 1)
+
+
+            current_num = done_before_today + seq_today
+            return f"{current_num}/{target} {name}"
+
+
+        today_view["生徒"] = today_view.apply(add_month_count_prefix, axis=1)
 
         # 今日が検定日の生徒には 🔴 印（文字色は変えない）
         if "student_id" in today_view.columns and isinstance(today_exam_ids, set) and len(today_exam_ids) > 0:
