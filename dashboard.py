@@ -137,7 +137,7 @@ def load_kentei_results() -> pd.DataFrame:
         try:
             df = pd.read_csv(KENTEI_RESULTS_CSV)
             # 空行・空文字行を除外（誤って1行だけ空データが入っても合格扱いにならないように）
-            for col in ["student_id", "grade", "pass_date", "memo"]:
+            for col in ["student_id", "grade", "score", "pass_date", "memo"]:
                 if col not in df.columns:
                     df[col] = ""
             df = df.fillna("")
@@ -146,10 +146,10 @@ def load_kentei_results() -> pd.DataFrame:
             df = df[(df["student_id"] != "") & (df["grade"] != "")]
             return df
         except Exception:
-            df = pd.DataFrame(columns=["student_id", "grade", "pass_date", "memo"])
+            df = pd.DataFrame(columns=["student_id", "grade", "score", "pass_date", "memo"])
             write_csv_atomic(df, KENTEI_RESULTS_CSV)
             return df
-    df = pd.DataFrame(columns=["student_id", "grade", "pass_date", "memo"])
+    df = pd.DataFrame(columns=["student_id", "grade", "score", "pass_date", "memo"])
     write_csv_atomic(df, KENTEI_RESULTS_CSV)
     return df
 
@@ -1781,6 +1781,7 @@ if page == "閲覧":
                             "note": ""
                         })
 
+
                     if st.button("💾 保存（カリキュラム課題）"):
                         new_df = pd.DataFrame(updated_rows)
 
@@ -1956,9 +1957,9 @@ if page == "閲覧":
 
                 st.markdown("### ✅ 新規登録")
                 grade_for_pass = st.text_input("合格した級", value="", key="pass_new_grade")
+                score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
                 pass_date = st.date_input("合格日", value=date.today(), key="pass_new_date")
                 pass_memo = st.text_area("メモ（任意）", value="", key="pass_new_memo")
-
                 colA, colB = st.columns([1, 2])
                 with colA:
                     if st.button("✅ 合格として登録", key="pass_add_btn"):
@@ -1968,6 +1969,7 @@ if page == "閲覧":
                             new_row = pd.DataFrame([{
                                 "student_id": str(student_for_pass).strip(),
                                 "grade": str(grade_for_pass).strip(),
+                                "score": str(score_for_pass).strip(),
                                 "pass_date": str(pass_date),
                                 "memo": str(pass_memo).strip()
                             }])
@@ -2031,8 +2033,10 @@ if page == "閲覧":
                         _d = _d.date() if pd.notna(_d) else date.today()
                     except Exception:
                         _d = date.today()
-                    edit_date = st.date_input("合格日（修正）", value=_d, key="pass_edit_date")
+                    edit_score = st.text_input("点数（修正）", value=str(row.get("score", "")), key="pass_edit_score")
+                    edit_date = st.date_input("合格日（修正）", value=pd.to_datetime(row.get("pass_date", date.today())).date(), key="pass_edit_date")
                     edit_memo = st.text_area("メモ（修正）", value=str(row.get("memo", "")), key="pass_edit_memo")
+
 
                     col1, col2, col3 = st.columns([1, 1, 2])
                     with col1:
