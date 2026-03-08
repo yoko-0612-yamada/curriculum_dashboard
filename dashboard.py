@@ -1899,7 +1899,7 @@ if page == "閲覧":
                                         )
                                         if "status" in prog.columns:
                                             prog.loc[mask, "status"] = "passed"
-                                            prog.to_csv(KENTEI_PROGRESS_CSV, index=False)
+                                            write_csv_atomic(prog, KENTEI_PROGRESS_CSV)
                             except Exception:
                                 st.warning("進捗一括更新でエラーが発生しましたが、合格登録自体は完了しています。")
 
@@ -2011,7 +2011,7 @@ if page == "閲覧":
                                                 prog["grade"].astype(str).str.strip() == old_g
                                             )
                                             prog.loc[pmask, "status"] = ""
-                                            prog.to_csv(KENTEI_PROGRESS_CSV, index=False)
+                                            write_csv_atomic(prog, KENTEI_PROGRESS_CSV)
                                 except Exception:
                                     st.warning("進捗の戻しでエラーが出ました（合格記録の削除は完了しています）。")
 
