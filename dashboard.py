@@ -2159,6 +2159,7 @@ if page == "閲覧":
                             else:
                                 i = idxs[0]
                                 results_df.loc[i, "grade"] = str(edit_grade).strip()
+                                results_df.loc[i, "score"] = str(edit_score).strip()
                                 results_df.loc[i, "pass_date"] = str(edit_date)
                                 results_df.loc[i, "memo"] = str(edit_memo).strip()
                                 save_kentei_results(results_df)
