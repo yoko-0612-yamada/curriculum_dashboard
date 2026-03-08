@@ -2053,6 +2053,14 @@ if page == "閲覧":
                     picked = st.selectbox("生徒を選択", labels, key="pass_pick_student")
                     student_for_pass = str(picked).split("｜")[0].strip()
 
+                # 同じ student_id + grade があれば削除（重複防止）
+                results_df = results_df[
+                    ~(
+                        (results_df["student_id"].astype(str).str.strip() == str(student_id))
+                        &
+                        (results_df["grade"].astype(str).str.strip() == str(selected_grade))
+                    )
+                ]
                 st.markdown("### ✅ 新規登録")
                 grade_for_pass = st.text_input("合格した級", value="", key="pass_new_grade")
                 score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
