@@ -1075,10 +1075,12 @@ if page == "閲覧":
 
         # =====================================================
         # ✅ 出席ログ（授業/自習）: 予定ではなく実績を記録
+        #    → 作業完了管理寄り（未確認を先に表示）
         # =====================================================
         with st.expander("✅ 出席記録（授業/自習）", expanded=False):
-            st.caption("来たタイミングで『記録』を押すだけ。後から授業⇄自習の変更や取り消しもできます。")
+            st.caption("来たタイミングで『記録』を押すだけ。確認済みは下に分かれます。")
             att_df = load_attendance_log()
+
 
             # 今日の予定に出ている生徒（重複除去・表示順維持）
             ids_in_today = []
@@ -1088,6 +1090,7 @@ if page == "閲覧":
                     if _sid and _sid not in ids_in_today:
                         ids_in_today.append(_sid)
 
+
             if not ids_in_today:
                 st.info("今日の予定の生徒が見つからないため、出席記録は表示できません。")
             else:
@@ -1095,80 +1098,164 @@ if page == "閲覧":
                 name_map = {}
                 if "student_id" in students.columns:
                     if "display_name" in students.columns:
-                        name_map = dict(zip(students["student_id"].astype(str).str.strip(), students["display_name"].astype(str).str.strip()))
+                        name_map = dict(
+                            zip(
+                                students["student_id"].astype(str).str.strip(),
+                                students["display_name"].astype(str).str.strip()
+                            )
+                        )
                     elif "name" in students.columns:
-                        name_map = dict(zip(students["student_id"].astype(str).str.strip(), students["name"].astype(str).str.strip()))
+                        name_map = dict(
+                            zip(
+                                students["student_id"].astype(str).str.strip(),
+                                students["name"].astype(str).str.strip()
+                            )
+                        )
+
+
+                # 今日の予定を「未確認」「確認済み」に分ける
+                pending_ids = []
+                done_ids = []
+                rec_map = {}
+
 
                 for sid in ids_in_today:
-                    nm = name_map.get(sid, "")
-                    label = f"{sid}｜{nm}" if nm else sid
-
                     rec = get_attendance_today(att_df, sid, today)
-                    rec_kind = (rec.get("kind","") if rec else "").strip()
-                    rec_memo = (rec.get("memo","") if rec else "").strip()
-
-                    # kind: internal
-                    kind_options = [("lesson", "授業"), ("selfstudy", "自習")]
-                    default_kind = "lesson"
-                    if rec_kind in ["selfstudy", "自習"]:
-                        default_kind = "selfstudy"
-
-                    # 月の授業回数（lessonのみ）
-                    month_lesson_cnt = count_month_lessons(att_df, sid, today)
-
-                    # その日の記録が lesson なら month_lesson_cnt は既に含まれている（仕様）
-                    # まだ未記録で、これから授業として記録するなら +1 が今日の回数になる
-                    would_be = month_lesson_cnt
+                    rec_map[sid] = rec
                     if rec is None:
-                        would_be = month_lesson_cnt + 1  # 授業として記録する想定（表示の安心材料）
-                    badge = f"今月の授業回数：{month_lesson_cnt}回"
-                    if rec is None:
-                        badge += f"（今日が授業なら {would_be}回目）"
+                        pending_ids.append(sid)
                     else:
-                        badge += "（本日は記録済み）"
+                        done_ids.append(sid)
 
-                    with st.container():
-                        st.markdown('---')
-                        c1, c2, c3, c4 = st.columns([3, 2, 3, 2])
-                        with c1:
-                            st.markdown(f"**👤 {label}**")
-                            st.caption(badge)
-                        with c2:
-                            # selectbox
-                            opt_labels = [x[1] for x in kind_options]
-                            opt_vals = [x[0] for x in kind_options]
-                            if default_kind in opt_vals:
-                                idx = opt_vals.index(default_kind)
-                            else:
-                                idx = 0
-                            picked = st.selectbox("種別", opt_labels, index=idx, key=f"att_kind_{today}_{sid}")
-                            picked_kind = kind_options[opt_labels.index(picked)][0]
-                        with c3:
-                            # 回数（同日に2回分など）
-                            rec_count = 1
-                            if rec and isinstance(rec, dict):
-                                # 同日・同生徒の行数を数える（今までのログと互換）
-                                try:
-                                    sid2 = str(sid).strip()
-                                    ds2 = str(today)
-                                    rec_count = int(len(att_df[(att_df["student_id"].astype(str).str.strip() == sid2) & (att_df["date"].astype(str).str.strip() == ds2)]))
-                                    rec_count = max(1, rec_count)
-                                except Exception:
-                                    rec_count = 1
 
-                            count = st.selectbox("回数", [1,2,3,4,5], index=min(max(rec_count-1,0),4), key=f"att_count_{today}_{sid}")
-                            memo = st.text_input("メモ（任意）", value=rec_memo, key=f"att_memo_{today}_{sid}")
-                        with c4:
-                            if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
-                                att_df2 = upsert_attendance(att_df, sid, today, picked_kind, memo, count=count)
-                                save_attendance_log(att_df2)
-                                st.success("保存しました。")
-                                st.rerun()
-                            if st.button("↩ 取消", key=f"att_del_{today}_{sid}"):
-                                att_df2 = delete_attendance(att_df, sid, today)
-                                save_attendance_log(att_df2)
-                                st.success("取り消しました。")
-                                st.rerun()
+                show_done = st.checkbox("確認済みも表示", value=False, key=f"att_show_done_{today}")
+
+
+                st.markdown(f"**未確認：{len(pending_ids)}件**")
+                target_ids = pending_ids if not show_done else ids_in_today
+
+
+                if not target_ids:
+                    st.success("未確認の出席記録はありません。")
+                else:
+                    for sid in target_ids:
+                        nm = name_map.get(sid, "")
+                        label = f"{sid}｜{nm}" if nm else sid
+
+
+                        rec = rec_map.get(sid)
+                        rec_kind = (rec.get("kind", "") if rec else "").strip()
+                        rec_memo = (rec.get("memo", "") if rec else "").strip()
+
+
+                        kind_options = [("lesson", "授業"), ("selfstudy", "自習")]
+                        default_kind = "lesson"
+                        if rec_kind in ["selfstudy", "自習"]:
+                            default_kind = "selfstudy"
+
+
+                        month_lesson_cnt = count_month_lessons(att_df, sid, today)
+
+
+                        would_be = month_lesson_cnt
+                        if rec is None:
+                            would_be = month_lesson_cnt + 1
+
+
+                        badge = f"今月の授業回数：{month_lesson_cnt}回"
+                        if rec is None:
+                            badge += f"（今日が授業なら {would_be}回目）"
+                        else:
+                            badge += "（本日は記録済み）"
+
+
+                        with st.container():
+                            st.markdown("---")
+                            c1, c2, c3, c4 = st.columns([3, 2, 3, 2])
+
+
+                            with c1:
+                                prefix = "🟡 未確認" if rec is None else "✅ 確認済み"
+                                st.markdown(f"**{prefix}｜👤 {label}**")
+                                st.caption(badge)
+
+
+                            with c2:
+                                opt_labels = [x[1] for x in kind_options]
+                                opt_vals = [x[0] for x in kind_options]
+                                idx = opt_vals.index(default_kind) if default_kind in opt_vals else 0
+                                picked = st.selectbox(
+                                    "種別",
+                                    opt_labels,
+                                    index=idx,
+                                    key=f"att_kind_{today}_{sid}"
+                                )
+                                picked_kind = kind_options[opt_labels.index(picked)][0]
+
+
+                            with c3:
+                                rec_count = 1
+                                if rec and isinstance(rec, dict):
+                                    try:
+                                        sid2 = str(sid).strip()
+                                        ds2 = str(today)
+                                        rec_count = int(
+                                            len(
+                                                att_df[
+                                                    (att_df["student_id"].astype(str).str.strip() == sid2)
+                                                    & (att_df["date"].astype(str).str.strip() == ds2)
+                                                ]
+                                            )
+                                        )
+                                        rec_count = max(1, rec_count)
+                                    except Exception:
+                                        rec_count = 1
+
+
+                                count = st.selectbox(
+                                    "回数",
+                                    [1, 2, 3, 4, 5],
+                                    index=min(max(rec_count - 1, 0), 4),
+                                    key=f"att_count_{today}_{sid}"
+                                )
+                                memo = st.text_input(
+                                    "メモ（任意）",
+                                    value=rec_memo,
+                                    key=f"att_memo_{today}_{sid}"
+                                )
+
+
+                            with c4:
+                                if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
+                                    att_df2 = upsert_attendance(att_df, sid, today, picked_kind, memo, count=count)
+                                    save_attendance_log(att_df2)
+                                    st.success("保存しました。")
+                                    st.rerun()
+
+
+                                if st.button("↩ 取消", key=f"att_del_{today}_{sid}"):
+                                    att_df2 = delete_attendance(att_df, sid, today)
+                                    save_attendance_log(att_df2)
+                                    st.success("取り消しました。")
+                                    st.rerun()
+
+
+                # 確認済みを別枠で表示
+                if done_ids:
+                    with st.expander(f"✅ 確認済み（{len(done_ids)}件）", expanded=False):
+                        for sid in done_ids:
+                            nm = name_map.get(sid, "")
+                            label = f"{sid}｜{nm}" if nm else sid
+                            rec = rec_map.get(sid)
+                            rec_kind = (rec.get("kind", "") if rec else "").strip()
+                            rec_memo = (rec.get("memo", "") if rec else "").strip()
+
+
+                            kind_label = "自習" if rec_kind in ["selfstudy", "自習"] else "授業"
+
+
+                            st.markdown(f"- **{label}** ／ {kind_label}" + (f" ／ {rec_memo}" if rec_memo else ""))
+
         # =====================================================
         # 今日の例外入力UI（schedule_overrides.csv） ※ここだけ
         # - 「今日の予定の下」専用
