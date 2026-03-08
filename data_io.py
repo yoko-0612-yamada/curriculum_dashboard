@@ -1,6 +1,7 @@
 import pandas as pd
 import os
 
+import tempfile
 
 
 
@@ -50,3 +51,27 @@ def safe_read_csv(path,
 
 
     return df
+
+
+def write_csv_atomic(df, path):
+    """
+    CSVを安全に保存する（途中で壊れないようにする）
+    """
+    dir_name = os.path.dirname(path)
+
+
+    if dir_name == "":
+        dir_name = "."
+
+
+    fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+
+
+    try:
+        os.close(fd)
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
