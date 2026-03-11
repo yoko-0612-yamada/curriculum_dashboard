@@ -935,85 +935,198 @@ if page == "閲覧":
     today_wd = weekday_map[today.weekday()]
 
 
-    # =====================================================
-    # 🚨 未完了アラート（昨日以前）
-    # =====================================================
-
-
-    st.subheader("🚨 未完了タスク（確認）")
+    # =========================================================
+    # 🚨 未完了タスク（昨日以前）
+    # 予定があったのに attendance_log が無いものを出す
+    # 判定単位：date × student_id
+    # =========================================================
+    st.subheader("🚨 未完了タスク（昨日以前）")
 
 
     att_df_check = load_attendance_log().copy()
 
 
+    # 出席ログ正規化
+    if att_df_check.empty:
+        att_df_check = pd.DataFrame(columns=["date", "student_id", "kind", "memo"])
+    else:
+        for c in ["date", "student_id", "kind", "memo"]:
+            if c not in att_df_check.columns:
+                att_df_check[c] = ""
+            att_df_check[c] = att_df_check[c].fillna("").astype(str).str.strip()
+
+
+    # スケジュール正規化
+    sched_check = student_schedule.copy()
+    if not sched_check.empty:
+        for c in ["student_id", "weekday", "slot", "session_type"]:
+            if c not in sched_check.columns:
+                sched_check[c] = ""
+            sched_check[c] = sched_check[c].fillna("").astype(str).str.strip()
+        sched_check = sched_check.drop_duplicates(subset=["student_id", "weekday", "slot"], keep="first")
+
+
+    ov_check = schedule_overrides.copy()
+    if not ov_check.empty:
+        for c in ["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]:
+            if c not in ov_check.columns:
+                ov_check[c] = ""
+            ov_check[c] = ov_check[c].fillna("").astype(str).str.strip()
+
+
+    ts_check = timeslots.copy()
+    if not ts_check.empty:
+        for c in ["weekday", "slot", "start", "end"]:
+            if c not in ts_check.columns:
+                ts_check[c] = ""
+            ts_check[c] = ts_check[c].fillna("").astype(str).str.strip()
+        ts_check = ts_check.drop_duplicates(subset=["weekday", "slot"], keep="first")
+
+
+    students_check = students.copy()
+    if not include_inactive and "is_active" in students_check.columns:
+        students_check = students_check[students_check["is_active"] == "true"].copy()
+
+
+    # 生徒ID→名前
+    student_name_map = {}
+    if not students_check.empty and {"student_id", "display_name"}.issubset(students_check.columns):
+        student_name_map = dict(
+            zip(
+                students_check["student_id"].astype(str).str.strip(),
+                students_check["display_name"].fillna("").astype(str).str.strip()
+            )
+        )
+
+
+    active_ids = set(student_name_map.keys()) if student_name_map else set()
+
+
     overdue_rows = []
 
 
-    if not att_df_check.empty:
+    # 今月1日〜昨日までを対象
+    first_day = today.replace(day=1)
+    check_days = pd.date_range(first_day, today - dt.timedelta(days=1), freq="D")
 
 
-        att_df_check["date"] = att_df_check["date"].astype(str).str.strip()
+    for d in check_days:
+        d_date = d.date()
+        d_str = d_date.strftime("%Y-%m-%d")
+        d_wd = weekday_map[d_date.weekday()]
 
 
-        for _, r in student_schedule.iterrows():
+        # その日のベース予定
+        if sched_check.empty:
+            base_day = pd.DataFrame(columns=["student_id", "weekday", "slot", "session_type"])
+        else:
+            base_day = sched_check[sched_check["weekday"] == d_wd].copy()
 
 
-            sid = str(r.get("student_id","")).strip()
+        if active_ids:
+            base_day = base_day[base_day["student_id"].astype(str).str.strip().isin(active_ids)].copy()
 
 
+        # その日の overrides
+        if ov_check.empty:
+            ov_day = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
+        else:
+            ov_day = ov_check[ov_check["date"] == d_str].copy()
+
+
+        # cancel 適用
+        if not ov_day.empty:
+            cancel_day = ov_day[ov_day["action"].str.lower() == "cancel"].copy()
+            if not cancel_day.empty and not base_day.empty:
+                cancel_keys = set(zip(cancel_day["student_id"], cancel_day["slot"]))
+                base_day = base_day[
+                    ~base_day.apply(
+                        lambda r: (str(r.get("student_id", "")).strip(), str(r.get("slot", "")).strip()) in cancel_keys,
+                        axis=1
+                    )
+                ].copy()
+
+
+        # add 適用
+        add_rows = []
+        if not ov_day.empty:
+            add_day = ov_day[ov_day["action"].str.lower() == "add"].copy()
+            if not add_day.empty:
+                for _, r in add_day.iterrows():
+                    sid = str(r.get("student_id", "")).strip()
+                    if active_ids and sid not in active_ids:
+                        continue
+                    add_rows.append({
+                        "student_id": sid,
+                        "weekday": d_wd,
+                        "slot": str(r.get("slot", "")).strip(),
+                        "session_type": str(r.get("session_type", "")).strip() or "lesson",
+                    })
+
+
+        add_day_df = pd.DataFrame(add_rows)
+
+
+        # その日の予定を統合
+        plan_day = pd.concat([base_day, add_day_df], ignore_index=True) if not add_day_df.empty else base_day.copy()
+
+
+        if plan_day.empty:
+            continue
+
+
+        plan_day = plan_day.drop_duplicates(subset=["student_id", "slot"], keep="first").copy()
+
+
+        # timeslots を結合して start/end を補完
+        if not ts_check.empty:
+            plan_day = plan_day.merge(ts_check, on=["weekday", "slot"], how="left")
+
+
+        # 名前付与
+        plan_day["display_name"] = plan_day["student_id"].astype(str).map(student_name_map).fillna(plan_day["student_id"].astype(str))
+
+
+        # attendance の date × student_id があるか
+        done_keys = set(
+            zip(
+                att_df_check["date"].astype(str).str.strip(),
+                att_df_check["student_id"].astype(str).str.strip()
+            )
+        )
+
+
+        for _, r in plan_day.iterrows():
+            sid = str(r.get("student_id", "")).strip()
             if sid == "":
                 continue
 
 
-            sched_wd = str(r.get("weekday","")).strip()
-
-
-            if sched_wd == "":
+            if (d_str, sid) in done_keys:
                 continue
 
 
-            # 予定日を簡易チェック
-            if sched_wd == today_wd:
-                continue
+            session_type = str(r.get("session_type", "")).strip()
+            session_mark_text = "授業" if session_type in ["lesson", "授業", ""] else "自習"
 
 
-            hit = att_df_check[
-                (att_df_check["student_id"].astype(str).str.strip() == sid)
-            ]
-
-
-            if hit.empty:
-
-
-                name = students.loc[
-                    students["student_id"].astype(str).str.strip() == sid,
-                    "display_name"
-                ].astype(str).values
-
-
-                name = name[0] if len(name) > 0 else sid
-
-
-                overdue_rows.append({
-                    "生徒": name,
-                    "状態": "出欠未確認"
-                })
+            overdue_rows.append({
+                "日付": d_str,
+                "コマ": str(r.get("slot", "")).strip(),
+                "生徒": str(r.get("display_name", "")).strip(),
+                "種別": session_mark_text,
+                "状態": "出欠未登録",
+            })
 
 
     if len(overdue_rows) == 0:
-
-
-        st.caption("未完了はありません。")
-
-
+        st.caption("未完了タスクはありません。")
     else:
+        overdue_df = pd.DataFrame(overdue_rows).sort_values(by=["日付", "コマ", "生徒"], na_position="last")
+        st.dataframe(overdue_df, use_container_width=True, hide_index=True)
 
 
-        st.dataframe(
-            pd.DataFrame(overdue_rows),
-            use_container_width=True,
-            hide_index=True
-        )
+    st.divider()
 
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
