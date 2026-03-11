@@ -2038,29 +2038,14 @@ if page == "閲覧":
                 results_df = load_kentei_results().copy()
 
                 # 対象生徒：左フィルタで選ばれていれば固定、なければ選択
-                current_student = st.session_state.get("selected_student_id", None)
-                if current_student:
-                    student_for_pass = str(current_student).strip()
-                    st.info(f"対象生徒: {student_for_pass}")
-                else:
-                    # 表示は「ID｜名前」
-                    tmp = students.copy()
-                    if "display_name" in tmp.columns:
-                        tmp["_label"] = tmp["student_id"].astype(str).str.strip() + "｜" + tmp["display_name"].astype(str).str.strip()
-                    else:
-                        tmp["_label"] = tmp["student_id"].astype(str).str.strip()
-                    labels = tmp["_label"].tolist()
-                    picked = st.selectbox("生徒を選択", labels, key="pass_pick_student")
-                    student_for_pass = str(picked).split("｜")[0].strip()
+                if selected_student == "（全員）":
+                    st.info("左のフィルタから、生徒を1人選んでください。")
+                    st.stop()
 
-                # 同じ student_id + grade があれば削除（重複防止）
-                results_df = results_df[
-                    ~(
-                        (results_df["student_id"].astype(str).str.strip() == str(student_id))
-                        &
-                        (results_df["grade"].astype(str).str.strip() == str(selected_grade))
-                    )
-                ]
+
+                student_for_pass = str(student_id).strip()
+                st.info(f"対象生徒: {student_for_pass}｜{selected_student}")
+
                 st.markdown("### ✅ 新規登録")
                 grade_for_pass = st.text_input("合格した級", value="", key="pass_new_grade")
                 score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
@@ -2069,9 +2054,23 @@ if page == "閲覧":
                 colA, colB = st.columns([1, 2])
                 with colA:
                     if st.button("✅ 合格として登録", key="pass_add_btn"):
+
+
                         if grade_for_pass.strip() == "":
                             st.error("級を入力してください。")
+
+
                         else:
+                            # 同じ生徒＋同じ級を削除（ここでやる）
+                            results_df = results_df[
+                                ~(
+                                    (results_df["student_id"].astype(str).str.strip() == str(student_for_pass))
+                                    &
+                                    (results_df["grade"].astype(str).str.strip() == str(grade_for_pass))
+                                )
+                            ]
+
+
                             new_row = pd.DataFrame([{
                                 "student_id": str(student_for_pass).strip(),
                                 "grade": str(grade_for_pass).strip(),
@@ -2079,27 +2078,16 @@ if page == "閲覧":
                                 "pass_date": str(pass_date),
                                 "memo": str(pass_memo).strip()
                             }])
+
+
                             results_df = pd.concat([results_df, new_row], ignore_index=True)
+
+
                             save_kentei_results(results_df)
 
-                            # B方式：進捗側も一括合格反映（存在する場合のみ）
-                            try:
-                                if "kentei_prog" in globals():
-                                    prog = kentei_prog
-                                    if "student_id" in prog.columns and "grade" in prog.columns:
-                                        mask = (
-                                            prog["student_id"].astype(str).str.strip() == str(student_for_pass).strip()
-                                        ) & (
-                                            prog["grade"].astype(str).str.strip() == str(grade_for_pass).strip()
-                                        )
-                                        if "status" in prog.columns:
-                                            prog.loc[mask, "status"] = "passed"
-                                            write_csv_atomic(prog, KENTEI_PROGRESS_CSV)
-                            except Exception:
-                                st.warning("進捗一括更新でエラーが発生しましたが、合格登録自体は完了しています。")
 
-                            st.success("保存しました。")
-                            st.rerun()
+                            st.success("合格登録しました")
+
                 with colB:
                     st.caption("※ 間違えた場合は下の「修正／削除」から変更できます。")
 
