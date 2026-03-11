@@ -934,6 +934,88 @@ if page == "閲覧":
     today = dt.date.today()
     today_wd = weekday_map[today.weekday()]
 
+
+    # =====================================================
+    # 🚨 未完了アラート（昨日以前）
+    # =====================================================
+
+
+    st.subheader("🚨 未完了タスク（確認）")
+
+
+    att_df_check = load_attendance_log().copy()
+
+
+    overdue_rows = []
+
+
+    if not att_df_check.empty:
+
+
+        att_df_check["date"] = att_df_check["date"].astype(str).str.strip()
+
+
+        for _, r in student_schedule.iterrows():
+
+
+            sid = str(r.get("student_id","")).strip()
+
+
+            if sid == "":
+                continue
+
+
+            sched_wd = str(r.get("weekday","")).strip()
+
+
+            if sched_wd == "":
+                continue
+
+
+            # 予定日を簡易チェック
+            if sched_wd == today_wd:
+                continue
+
+
+            hit = att_df_check[
+                (att_df_check["student_id"].astype(str).str.strip() == sid)
+            ]
+
+
+            if hit.empty:
+
+
+                name = students.loc[
+                    students["student_id"].astype(str).str.strip() == sid,
+                    "display_name"
+                ].astype(str).values
+
+
+                name = name[0] if len(name) > 0 else sid
+
+
+                overdue_rows.append({
+                    "生徒": name,
+                    "状態": "出欠未確認"
+                })
+
+
+    if len(overdue_rows) == 0:
+
+
+        st.caption("未完了はありません。")
+
+
+    else:
+
+
+        st.dataframe(
+            pd.DataFrame(overdue_rows),
+            use_container_width=True,
+            hide_index=True
+        )
+
+
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
 
 
