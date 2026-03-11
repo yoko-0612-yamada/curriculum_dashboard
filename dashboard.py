@@ -1112,6 +1112,7 @@ if page == "閲覧":
 
             overdue_rows.append({
                 "日付": d_str,
+                "student_id": sid,
                 "コマ": str(r.get("slot", "")).strip(),
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
@@ -1119,14 +1120,117 @@ if page == "閲覧":
             })
 
 
+
     if len(overdue_rows) == 0:
         st.caption("未完了タスクはありません。")
     else:
-        overdue_df = pd.DataFrame(overdue_rows).sort_values(by=["日付", "コマ", "生徒"], na_position="last")
-        st.dataframe(overdue_df, use_container_width=True, hide_index=True)
+        overdue_df = pd.DataFrame(overdue_rows).sort_values(
+            by=["日付", "コマ", "生徒"],
+            na_position="last"
+        )
+
+
+        st.caption("未完了タスクから、そのまま出席登録できます。")
+
+
+        for i, row in overdue_df.reset_index(drop=True).iterrows():
+            d_str = str(row.get("日付", "")).strip()
+            sid = str(row.get("student_id", "")).strip()
+            slot = str(row.get("コマ", "")).strip()
+            name = str(row.get("生徒", "")).strip()
+            kind_label = str(row.get("種別", "")).strip()
+            status = str(row.get("状態", "")).strip()
+
+
+            c1, c2, c3, c4, c5 = st.columns([3.0, 1.1, 1.1, 1.1, 1.3])
+
+
+            with c1:
+                st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{status}")
+
+
+            with c2:
+                if st.button("授業で記録", key=f"overdue_lesson_{d_str}_{sid}_{slot}_{i}"):
+                    att_df = load_attendance_log().copy()
+                    d_obj = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(d_obj):
+                        att_df = upsert_attendance(
+                            att_df,
+                            student_id=sid,
+                            d=d_obj.date(),
+                            kind="lesson",
+                            memo="未完了タスクから登録"
+                        )
+                        save_attendance_log(att_df)
+                        st.success(f"{name} を授業で記録しました。")
+                        st.rerun()
+                    else:
+                        st.error("日付の変換に失敗しました。")
+
+
+            with c3:
+                if st.button("自習で記録", key=f"overdue_self_{d_str}_{sid}_{slot}_{i}"):
+                    att_df = load_attendance_log().copy()
+                    d_obj = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(d_obj):
+                        att_df = upsert_attendance(
+                            att_df,
+                            student_id=sid,
+                            d=d_obj.date(),
+                            kind="self",
+                            memo="未完了タスクから登録"
+                        )
+                        save_attendance_log(att_df)
+                        st.success(f"{name} を自習で記録しました。")
+                        st.rerun()
+                    else:
+                        st.error("日付の変換に失敗しました。")
+
+
+            with c4:
+                if st.button("欠席で記録", key=f"overdue_absence_{d_str}_{sid}_{slot}_{i}"):
+                    att_df = load_attendance_log().copy()
+                    d_obj = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(d_obj):
+                        att_df = upsert_attendance(
+                            att_df,
+                            student_id=sid,
+                            d=d_obj.date(),
+                            kind="absence",
+                            memo="未完了タスクから欠席登録"
+                        )
+                        save_attendance_log(att_df)
+                        st.success(f"{name} を欠席で記録しました。")
+                        st.rerun()
+                    else:
+                        st.error("日付の変換に失敗しました。")
+
+
+            with c5:
+                if st.button("キャンセルで記録", key=f"overdue_cancel_{d_str}_{sid}_{slot}_{i}"):
+                    att_df = load_attendance_log().copy()
+                    d_obj = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(d_obj):
+                        att_df = upsert_attendance(
+                            att_df,
+                            student_id=sid,
+                            d=d_obj.date(),
+                            kind="cancel",
+                            memo="未完了タスクからキャンセル登録"
+                        )
+                        save_attendance_log(att_df)
+                        st.success(f"{name} をキャンセルで記録しました。")
+                        st.rerun()
+                    else:
+                        st.error("日付の変換に失敗しました。")
+
+
+            st.divider()
+
 
 
     st.divider()
+
 
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
