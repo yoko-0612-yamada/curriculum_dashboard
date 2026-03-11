@@ -2118,18 +2118,59 @@ if page == "閲覧":
                     df_s = df_s.reset_index(drop=True)
                     df_s["_label"] = df_s.apply(_mk_label, axis=1)
 
-                    picked_label = st.selectbox("修正したい行を選択", df_s["_label"].tolist(), key="pass_edit_pick")
+                    picked_label = st.selectbox(
+                        "修正したい行を選択",
+                        df_s["_label"].tolist(),
+                        key="pass_edit_pick"
+                    )
+
+
                     row = df_s[df_s["_label"] == picked_label].iloc[0]
 
-                    edit_grade = st.text_input("級（修正）", value=str(row.get("grade", "")), key="pass_edit_grade")
+
+                    # 行ごとに一意なキーを作る
+                    edit_key_base = (
+                        f"{student_for_pass}_"
+                        f"{str(row.get('grade', '')).strip()}_"
+                        f"{str(row.get('pass_date', '')).strip()}_"
+                        f"{row.name}"
+                    )
+
+
                     try:
                         _d = pd.to_datetime(row.get("pass_date", ""), errors="coerce")
                         _d = _d.date() if pd.notna(_d) else date.today()
                     except Exception:
                         _d = date.today()
-                    edit_score = st.text_input("点数（修正）", value=str(row.get("score", "")), key="pass_edit_score")
-                    edit_date = st.date_input("合格日（修正）", value=pd.to_datetime(row.get("pass_date", date.today())).date(), key="pass_edit_date")
-                    edit_memo = st.text_area("メモ（修正）", value=str(row.get("memo", "")), key="pass_edit_memo")
+
+
+                    edit_grade = st.text_input(
+                        "級（修正）",
+                        value=str(row.get("grade", "")),
+                        key=f"pass_edit_grade_{edit_key_base}"
+                    )
+
+
+                    edit_score = st.text_input(
+                        "点数（修正）",
+                        value=str(row.get("score", "")),
+                        key=f"pass_edit_score_{edit_key_base}"
+                    )
+
+
+                    edit_date = st.date_input(
+                        "合格日（修正）",
+                        value=_d,
+                        key=f"pass_edit_date_{edit_key_base}"
+                    )
+
+
+                    edit_memo = st.text_area(
+                        "メモ（修正）",
+                        value=str(row.get("memo", "")),
+                        key=f"pass_edit_memo_{edit_key_base}"
+                    )
+
 
 
                     col1, col2, col3 = st.columns([1, 1, 2])
