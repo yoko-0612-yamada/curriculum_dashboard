@@ -251,6 +251,74 @@ def count_month_lessons(df: pd.DataFrame, student_id: str, d: date) -> int:
     tmp = tmp[tmp["kind"].astype(str).str.strip().isin(["lesson", "授業"])]
     return int(len(tmp))
 
+def is_attendance_done_today(att_df: pd.DataFrame, student_id: str, d: date) -> bool:
+    if att_df is None or att_df.empty:
+        return False
+    sid = str(student_id).strip()
+    ds = str(d)
+    m = (
+        att_df["student_id"].astype(str).str.strip().eq(sid)
+        & att_df["date"].astype(str).str.strip().eq(ds)
+    )
+    return bool(m.any())
+
+
+
+
+def is_progress_done_today(progress_df: pd.DataFrame, student_id: str, d: date) -> bool:
+    if progress_df is None or progress_df.empty:
+        return False
+
+
+    sid = str(student_id).strip()
+    ds = str(d)
+
+
+    tmp = progress_df.copy()
+
+
+    if "student_id" not in tmp.columns:
+        return False
+
+
+    tmp["student_id"] = tmp["student_id"].astype(str).fillna("").str.strip()
+
+
+    # done_date がある場合は、それを最優先で使う
+    if "done_date" in tmp.columns:
+        tmp["done_date"] = tmp["done_date"].astype(str).fillna("").str.strip()
+        m = (
+            tmp["student_id"].eq(sid)
+            & tmp["done_date"].eq(ds)
+        )
+        if bool(m.any()):
+            return True
+
+
+    # date 列運用なら保険で対応
+    if "date" in tmp.columns:
+        tmp["date"] = tmp["date"].astype(str).fillna("").str.strip()
+        m = (
+            tmp["student_id"].eq(sid)
+            & tmp["date"].eq(ds)
+        )
+        if bool(m.any()):
+            return True
+
+
+    return False
+
+
+
+
+def build_today_task_status(att_done: bool, prog_done: bool) -> str:
+    if att_done and prog_done:
+        return "✅ 出欠済 / 進捗済"
+    if (not att_done) and (not prog_done):
+        return "🚨 出欠未 / 進捗未"
+    if not att_done:
+        return "⚠ 出欠未"
+    return "⚠ 進捗未"
 
 
 STUDENTS_CSV = DATA_DIR / "students.csv"
@@ -979,6 +1047,30 @@ if page == "閲覧":
 
         today_view["コマ"] = today_view["slot"]
         today_view["生徒"] = today_view["display_name"].fillna("").astype(str)
+        
+
+        att_df_for_status = load_attendance_log().copy()
+        prog_df_for_status = progress_log.copy() if "progress_log" in locals() else pd.DataFrame()
+
+
+        today_view["出欠完了"] = today_view["student_id"].apply(
+            lambda sid: is_attendance_done_today(att_df_for_status, sid, today)
+        )
+
+
+        today_view["進捗完了"] = today_view["student_id"].apply(
+            lambda sid: is_progress_done_today(prog_df_for_status, sid, today)
+        )
+
+
+        today_view["状態"] = today_view.apply(
+            lambda r: build_today_task_status(
+                bool(r.get("出欠完了", False)),
+                bool(r.get("進捗完了", False))
+            ),
+            axis=1
+        )
+
       # =====================================================
         # 今日の予定に「今月の回数」を表示
         # 例: 3/4 山田花子
@@ -1105,7 +1197,14 @@ if page == "閲覧":
             )
 
             if view_mode.startswith("A"):
-                show_cols = ["コマ", "start", "end", "生徒", "種別", "現在コース", "現在項目", "状態", "note"]
+                today_view["未完了状態"] = today_view.apply(
+                    lambda r: build_today_task_status(
+                        bool(r.get("出欠完了", False)),
+                        bool(r.get("進捗完了", False))
+                    ),
+                    axis=1
+                )
+                show_cols = ["コマ", "start", "end", "生徒", "種別", "現在コース", "現在項目", "未完了状態", "note"]
                 show_cols = [c for c in show_cols if c in today_view.columns]
                 df_show = today_view[show_cols].copy()
 
@@ -1149,10 +1248,15 @@ if page == "閲覧":
             else:
                 # --- B案：コマ（時間）ごとにまとめて、同じコマの生徒を縦に並べる ---
                 def fmt_line(r: pd.Series) -> str:
-                    # B案は「名前だけ」でスッキリ表示
                     name = str(r.get("生徒","")).strip()
                     mark = str(r.get("種別","")).strip()
-                    return f"{name}{mark}".strip()
+                    status = str(r.get("未完了状態","")).strip()
+
+
+                    if status:
+                        return f"{name}{mark}  {status}"
+                    else:
+                        return f"{name}{mark}".strip()
 
                 gcols = ["slot_num", "コマ", "start", "end"]
                 base = today_view.copy()
