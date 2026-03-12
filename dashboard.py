@@ -1162,6 +1162,7 @@ if page == "閲覧":
             name = str(row.get("生徒", "")).strip()
             kind_label = str(row.get("種別", "")).strip()
             status = str(row.get("状態", "")).strip()
+            attendance_done = "出欠未" not in status
 
 
             c1, c2, c3, c4, c5 = st.columns([3.0, 1.1, 1.1, 1.1, 1.3])
@@ -1172,7 +1173,8 @@ if page == "閲覧":
 
 
             with c2:
-                if st.button("授業で記録", key=f"overdue_lesson_{d_str}_{sid}_{slot}_{i}"):
+                if st.button("授業で記録", key=f"overdue_lesson_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
+
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1191,7 +1193,7 @@ if page == "閲覧":
 
 
             with c3:
-                if st.button("自習で記録", key=f"overdue_self_{d_str}_{sid}_{slot}_{i}"):
+                if st.button("自習で記録", key=f"overdue_self_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1210,7 +1212,7 @@ if page == "閲覧":
 
 
             with c4:
-                if st.button("欠席で記録", key=f"overdue_absence_{d_str}_{sid}_{slot}_{i}"):
+                 if st.button("欠席で記録", key=f"overdue_absence_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1229,7 +1231,7 @@ if page == "閲覧":
 
 
             with c5:
-                if st.button("キャンセルで記録", key=f"overdue_cancel_{d_str}_{sid}_{slot}_{i}"):
+                 if st.button("キャンセルで記録", key=f"overdue_cancel_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
