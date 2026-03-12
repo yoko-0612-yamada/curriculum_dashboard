@@ -1103,7 +1103,23 @@ if page == "閲覧":
 
 
             att_done = (d_str, sid) in done_keys
-            prog_done = is_progress_done_today(log, sid, d_date)
+
+            curr_done = is_progress_done_today(
+                curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                sid,
+                d_date
+            )
+
+
+            kentei_done = is_progress_done_today(
+                kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                sid,
+                d_date
+            )
+
+
+            prog_done = curr_done or kentei_done
+
 
 
             # 出欠も進捗も済んでいるなら未完了ではない
@@ -1619,6 +1635,23 @@ if page == "閲覧":
                             )
                         )
 
+                # 今日の予定から、生徒ごとの予定種別を拾う
+                # ルール:
+                #   - 今日の予定に selfstudy が1件でもあれば selfstudy
+                #   - それ以外は lesson
+                planned_kind_map = {}
+                if not today_view.empty and {"student_id", "session_type"}.issubset(today_view.columns):
+                    tmp_tv = today_view[["student_id", "session_type"]].copy()
+                    tmp_tv["student_id"] = tmp_tv["student_id"].fillna("").astype(str).str.strip()
+                    tmp_tv["session_type"] = tmp_tv["session_type"].fillna("").astype(str).str.strip().str.lower()
+
+
+                    for sid2, g in tmp_tv.groupby("student_id"):
+                        vals = set(g["session_type"].tolist())
+                        if "selfstudy" in vals or "自習" in vals:
+                            planned_kind_map[sid2] = "selfstudy"
+                        else:
+                            planned_kind_map[sid2] = "lesson"
 
                 # 今日の予定を「未確認」「確認済み」に分ける
                 pending_ids = []
@@ -1656,9 +1689,20 @@ if page == "閲覧":
 
 
                         kind_options = [("lesson", "授業"), ("selfstudy", "自習")]
+
+
+                        # 初期値の優先順
+                        # 1) 既存の出席記録
+                        # 2) 今日の予定の種別（例外を含む）
+                        # 3) lesson
                         default_kind = "lesson"
+
+
                         if rec_kind in ["selfstudy", "自習"]:
                             default_kind = "selfstudy"
+                        elif sid in planned_kind_map:
+                            default_kind = planned_kind_map[sid]
+
 
 
                         month_lesson_cnt = count_month_lessons(att_df, sid, today)
