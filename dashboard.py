@@ -174,6 +174,7 @@ def is_kentei_passed(student_id: str, grade: str) -> bool:
 #   - date × student_id は 1日1レコード（重複防止）
 # =========================================================
 ATTENDANCE_LOG_CSV = DATA_DIR / "attendance_log.csv"
+PROGRESS_SKIP_OK_CSV = DATA_DIR / "progress_skip_ok.csv"
 
 def load_attendance_log() -> pd.DataFrame:
     if ATTENDANCE_LOG_CSV.exists():
@@ -197,6 +198,68 @@ def save_attendance_log(df: pd.DataFrame) -> None:
             df[c] = ""
     df = df[["date", "student_id", "kind", "memo"]].copy()
     write_csv_atomic(df, ATTENDANCE_LOG_CSV)
+
+def load_progress_skip_ok() -> pd.DataFrame:
+    if PROGRESS_SKIP_OK_CSV.exists():
+        df = pd.read_csv(PROGRESS_SKIP_OK_CSV, dtype=str).fillna("")
+    else:
+        df = pd.DataFrame(columns=["date", "student_id", "note"])
+        write_csv_atomic(df, PROGRESS_SKIP_OK_CSV)
+        return df
+
+
+    for c in ["date", "student_id", "note"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).fillna("").str.strip()
+
+
+    return df[["date", "student_id", "note"]]
+
+def save_progress_skip_ok(df: pd.DataFrame) -> None:
+    for c in ["date", "student_id", "note"]:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[["date", "student_id", "note"]].copy()
+    write_csv_atomic(df, PROGRESS_SKIP_OK_CSV)
+
+def is_progress_skip_ok_today(df: pd.DataFrame, student_id: str, d: date) -> bool:
+    if df is None or df.empty:
+        return False
+
+    sid = str(student_id).strip()
+    ds = str(d)
+
+    tmp = df.copy()
+    tmp["student_id"] = tmp["student_id"].astype(str).fillna("").str.strip()
+    tmp["date"] = tmp["date"].astype(str).fillna("").str.strip()
+
+    m = (
+        tmp["student_id"].eq(sid)
+        & tmp["date"].eq(ds)
+    )
+    return bool(m.any())
+
+def upsert_progress_skip_ok(df: pd.DataFrame, student_id: str, d: date, note: str = "") -> pd.DataFrame:
+    sid = str(student_id).strip()
+    ds = str(d)
+    note = str(note).strip()
+
+    if not df.empty:
+        mask = (
+            df["student_id"].astype(str).str.strip().eq(sid)
+            & df["date"].astype(str).str.strip().eq(ds)
+        )
+        df = df.loc[~mask].copy()
+
+    new_row = pd.DataFrame([{
+        "date": ds,
+        "student_id": sid,
+        "note": note,
+    }])
+
+    return pd.concat([df, new_row], ignore_index=True)
+
 
 def get_attendance_today(df: pd.DataFrame, student_id: str, d: date) -> dict | None:
     if df.empty:
@@ -942,9 +1005,8 @@ if page == "閲覧":
     # =========================================================
     st.subheader("🚨 未完了タスク（昨日以前）")
 
-
     att_df_check = load_attendance_log().copy()
-
+    prog_skip_df = load_progress_skip_ok().copy()
 
     # 出席ログ正規化
     if att_df_check.empty:
@@ -1110,16 +1172,15 @@ if page == "閲覧":
                 d_date
             )
 
-
             kentei_done = is_progress_done_today(
                 kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
                 sid,
                 d_date
             )
 
+            skip_done = is_progress_skip_ok_today(prog_skip_df, sid, d_date)
 
-            prog_done = curr_done or kentei_done
-
+            prog_done = curr_done or kentei_done or skip_done
 
 
             # 出欠も進捗も済んでいるなら未完了ではない
@@ -1163,10 +1224,9 @@ if page == "閲覧":
             kind_label = str(row.get("種別", "")).strip()
             status = str(row.get("状態", "")).strip()
             attendance_done = "出欠未" not in status
+            progress_done = "進捗未" not in status
 
-
-            c1, c2, c3, c4, c5 = st.columns([3.0, 1.1, 1.1, 1.1, 1.3])
-
+            c1, c2, c3, c4, c5, c6 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6])
 
             with c1:
                 st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{status}")
@@ -1244,6 +1304,27 @@ if page == "閲覧":
                         )
                         save_attendance_log(att_df)
                         st.success(f"{name} をキャンセルで記録しました。")
+                        st.rerun()
+                    else:
+                        st.error("日付の変換に失敗しました。")
+
+            with c6:
+                if st.button(
+                    "進捗なしで完了",
+                    key=f"overdue_no_progress_{d_str}_{sid}_{slot}_{i}",
+                    disabled=progress_done
+                ):
+                    d_obj = pd.to_datetime(d_str, errors="coerce")
+                    if pd.notna(d_obj):
+                        prog_skip_df2 = load_progress_skip_ok().copy()
+                        prog_skip_df2 = upsert_progress_skip_ok(
+                            prog_skip_df2,
+                            student_id=sid,
+                            d=d_obj.date(),
+                            note="未完了タスクから進捗なしで完了"
+                        )
+                        save_progress_skip_ok(prog_skip_df2)
+                        st.success(f"{name} を『進捗なしで完了』にしました。")
                         st.rerun()
                     else:
                         st.error("日付の変換に失敗しました。")
