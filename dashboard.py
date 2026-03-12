@@ -1102,7 +1102,12 @@ if page == "閲覧":
                 continue
 
 
-            if (d_str, sid) in done_keys:
+            att_done = (d_str, sid) in done_keys
+            prog_done = is_progress_done_today(log, sid, d_date)
+
+
+            # 出欠も進捗も済んでいるなら未完了ではない
+            if att_done and prog_done:
                 continue
 
 
@@ -1116,8 +1121,9 @@ if page == "閲覧":
                 "コマ": str(r.get("slot", "")).strip(),
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
-                "状態": "出欠未登録",
+                "状態": build_today_task_status(att_done, prog_done),
             })
+
 
 
 
