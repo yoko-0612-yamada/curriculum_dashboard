@@ -1157,12 +1157,10 @@ if page == "閲覧":
             )
         )
 
-
         for _, r in plan_day.iterrows():
             sid = str(r.get("student_id", "")).strip()
             if sid == "":
                 continue
-
 
             att_done = (d_str, sid) in done_keys
 
@@ -1186,7 +1184,12 @@ if page == "閲覧":
             # 出欠も進捗も済んでいるなら未完了ではない
             if att_done and prog_done:
                 continue
+            
+            session_type = str(r.get("session_type", "")).strip()
 
+            # 授業以外（自習 / 欠席 / キャンセル）は未完了タスク対象外
+            if session_type not in ["lesson", "授業", ""]:
+                continue
 
             session_type = str(r.get("session_type", "")).strip()
             session_mark_text = "授業" if session_type in ["lesson", "授業", ""] else "自習"
@@ -1200,8 +1203,6 @@ if page == "閲覧":
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
             })
-
-
 
 
     if len(overdue_rows) == 0:
