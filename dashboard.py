@@ -1178,21 +1178,50 @@ if page == "閲覧":
 
             skip_done = is_progress_skip_ok_today(prog_skip_df, sid, d_date)
 
-            prog_done = curr_done or kentei_done or skip_done
+            # まず予定の種別
+            session_type = str(r.get("session_type", "")).strip()
+
+            # その日の出欠実績があれば、実績の kind を優先する
+            actual_kind = ""
+            att_row = att_df_check[
+                (att_df_check["date"].astype(str).str.strip() == d_str) &
+                (att_df_check["student_id"].astype(str).str.strip() == sid)
+            ]
+
+            if not att_row.empty:
+                actual_kind = str(att_row.iloc[-1].get("kind", "")).strip().lower()
+
+            if actual_kind in ["lesson", "授業", ""]:
+                effective_kind = "lesson"
+                session_mark_text = "授業"
+            elif actual_kind in ["self", "selfstudy", "自習"]:
+                effective_kind = "self"
+                session_mark_text = "自習"
+            elif actual_kind in ["absence", "欠席"]:
+                effective_kind = "absence"
+                session_mark_text = "欠席"
+            elif actual_kind in ["cancel", "キャンセル"]:
+                effective_kind = "cancel"
+                session_mark_text = "キャンセル"
+            else:
+                # 出欠実績が無いときだけ予定の種別を使う
+                if session_type in ["lesson", "授業", ""]:
+                    effective_kind = "lesson"
+                    session_mark_text = "授業"
+                else:
+                    effective_kind = "self"
+                    session_mark_text = "自習"
+
+            # 進捗対象は授業だけ
+            if effective_kind != "lesson":
+                prog_done = True
+            else:
+                prog_done = curr_done or kentei_done or skip_done
 
 
             # 出欠も進捗も済んでいるなら未完了ではない
             if att_done and prog_done:
                 continue
-            
-            session_type = str(r.get("session_type", "")).strip()
-
-            # 授業以外（自習 / 欠席 / キャンセル）は未完了タスク対象外
-            if session_type not in ["lesson", "授業", ""]:
-                continue
-
-            session_type = str(r.get("session_type", "")).strip()
-            session_mark_text = "授業" if session_type in ["lesson", "授業", ""] else "自習"
 
 
             overdue_rows.append({
@@ -1203,7 +1232,6 @@ if page == "閲覧":
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
             })
-
 
     if len(overdue_rows) == 0:
         st.caption("未完了タスクはありません。")
