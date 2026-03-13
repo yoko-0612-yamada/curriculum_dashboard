@@ -1063,14 +1063,13 @@ if page == "閲覧":
 
     active_ids = set(student_name_map.keys()) if student_name_map else set()
 
-
+    today_rows = []
     overdue_rows = []
 
-
-    # 今月1日〜昨日までを対象
+    # 今月1日〜今日までを対象
     first_day = today.replace(day=1)
-    check_days = pd.date_range(first_day, today - dt.timedelta(days=1), freq="D")
-
+    today_str = today.strftime("%Y-%m-%d")
+    check_days = pd.date_range(first_day, today, freq="D")
 
     for d in check_days:
         d_date = d.date()
@@ -1224,19 +1223,32 @@ if page == "閲覧":
                 continue
 
 
-            overdue_rows.append({
+            row_data = {
                 "日付": d_str,
                 "student_id": sid,
                 "コマ": str(r.get("slot", "")).strip(),
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
-            })
+            }
 
-    if len(overdue_rows) == 0:
-        st.caption("未完了タスクはありません。")
-    else:
-        overdue_df = pd.DataFrame(overdue_rows).sort_values(
+
+            if d_str == today_str:
+                today_rows.append(row_data)
+            else:
+                overdue_rows.append(row_data)
+
+
+    def render_unfinished_section(title: str, df: pd.DataFrame, key_prefix: str):
+        st.subheader(title)
+
+
+        if df.empty:
+            st.caption("なし")
+            return
+
+
+        df = df.sort_values(
             by=["日付", "コマ", "生徒"],
             na_position="last"
         )
@@ -1245,7 +1257,7 @@ if page == "閲覧":
         st.caption("未完了タスクから、そのまま出席登録できます。")
 
 
-        for i, row in overdue_df.reset_index(drop=True).iterrows():
+        for i, row in df.reset_index(drop=True).iterrows():
             d_str = str(row.get("日付", "")).strip()
             sid = str(row.get("student_id", "")).strip()
             slot = str(row.get("コマ", "")).strip()
@@ -1255,15 +1267,20 @@ if page == "閲覧":
             attendance_done = "出欠未" not in status
             progress_done = "進捗未" not in status
 
+
             c1, c2, c3, c4, c5, c6 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6])
+
 
             with c1:
                 st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{status}")
 
 
             with c2:
-                if st.button("授業で記録", key=f"overdue_lesson_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
-
+                if st.button(
+                    "授業で記録",
+                    key=f"{key_prefix}_lesson_{d_str}_{sid}_{slot}_{i}",
+                    disabled=attendance_done
+                ):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1282,7 +1299,11 @@ if page == "閲覧":
 
 
             with c3:
-                if st.button("自習で記録", key=f"overdue_self_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
+                if st.button(
+                    "自習で記録",
+                    key=f"{key_prefix}_self_{d_str}_{sid}_{slot}_{i}",
+                    disabled=attendance_done
+                ):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1301,7 +1322,11 @@ if page == "閲覧":
 
 
             with c4:
-                 if st.button("欠席で記録", key=f"overdue_absence_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
+                if st.button(
+                    "欠席で記録",
+                    key=f"{key_prefix}_absence_{d_str}_{sid}_{slot}_{i}",
+                    disabled=attendance_done
+                ):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1320,7 +1345,11 @@ if page == "閲覧":
 
 
             with c5:
-                 if st.button("キャンセルで記録", key=f"overdue_cancel_{d_str}_{sid}_{slot}_{i}", disabled=attendance_done):
+                if st.button(
+                    "キャンセルで記録",
+                    key=f"{key_prefix}_cancel_{d_str}_{sid}_{slot}_{i}",
+                    disabled=attendance_done
+                ):
                     att_df = load_attendance_log().copy()
                     d_obj = pd.to_datetime(d_str, errors="coerce")
                     if pd.notna(d_obj):
@@ -1337,10 +1366,11 @@ if page == "閲覧":
                     else:
                         st.error("日付の変換に失敗しました。")
 
+
             with c6:
                 if st.button(
                     "進捗なしで完了",
-                    key=f"overdue_no_progress_{d_str}_{sid}_{slot}_{i}",
+                    key=f"{key_prefix}_no_progress_{d_str}_{sid}_{slot}_{i}",
                     disabled=progress_done
                 ):
                     d_obj = pd.to_datetime(d_str, errors="coerce")
@@ -1363,12 +1393,19 @@ if page == "閲覧":
 
 
 
+
+    today_df = pd.DataFrame(today_rows)
+    overdue_df = pd.DataFrame(overdue_rows)
+
+
+    render_unfinished_section("⚠ 未完了タスク（今日）", today_df, "today")
+    render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
+
     st.divider()
 
-
+#    st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
-
 
     if student_schedule.empty:
         st.info("student_schedule.csv が無い/空なので、今日の予定は表示できません。")
