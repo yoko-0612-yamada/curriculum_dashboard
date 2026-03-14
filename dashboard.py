@@ -1512,9 +1512,33 @@ if page == "閲覧":
         today_view["コマ"] = today_view["slot"]
         today_view["生徒"] = today_view["display_name"].fillna("").astype(str)
         
-
         att_df_for_status = load_attendance_log().copy()
-        prog_df_for_status = progress_log.copy() if "progress_log" in locals() else pd.DataFrame()
+        prog_skip_df_for_status = load_progress_skip_ok().copy()
+
+
+        curr_done_df = curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy()
+        kentei_done_df = kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy()
+
+
+        def get_today_attendance_kind(att_df: pd.DataFrame, student_id: str, d: date) -> str:
+            if att_df is None or att_df.empty:
+                return ""
+            sid = str(student_id).strip()
+            ds = str(d)
+
+
+            tmp = att_df.copy()
+            tmp["student_id"] = tmp["student_id"].astype(str).fillna("").str.strip()
+            tmp["date"] = tmp["date"].astype(str).fillna("").str.strip()
+            if "kind" not in tmp.columns:
+                return ""
+            tmp["kind"] = tmp["kind"].astype(str).fillna("").str.strip().str.lower()
+
+
+            hit = tmp[(tmp["student_id"] == sid) & (tmp["date"] == ds)]
+            if hit.empty:
+                return ""
+            return str(hit.iloc[-1]["kind"]).strip().lower()
 
 
         today_view["出欠完了"] = today_view["student_id"].apply(
@@ -1522,9 +1546,25 @@ if page == "閲覧":
         )
 
 
-        today_view["進捗完了"] = today_view["student_id"].apply(
-            lambda sid: is_progress_done_today(prog_df_for_status, sid, today)
-        )
+        def calc_today_progress_done(sid: str) -> bool:
+            actual_kind = get_today_attendance_kind(att_df_for_status, sid, today)
+
+
+            # 授業以外は進捗不要
+            if actual_kind in ["self", "selfstudy", "自習", "absence", "欠席", "cancel", "キャンセル"]:
+                return True
+
+
+            # 授業のときだけ進捗判定
+            curr_done = is_progress_done_today(curr_done_df, sid, today)
+            kentei_done = is_progress_done_today(kentei_done_df, sid, today)
+            skip_done = is_progress_skip_ok_today(prog_skip_df_for_status, sid, today)
+
+
+            return bool(curr_done or kentei_done or skip_done)
+
+
+        today_view["進捗完了"] = today_view["student_id"].apply(calc_today_progress_done)
 
 
         today_view["状態"] = today_view.apply(
