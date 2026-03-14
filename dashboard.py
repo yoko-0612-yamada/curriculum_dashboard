@@ -2780,9 +2780,7 @@ if page == "閲覧":
                         key="pass_edit_pick"
                     )
 
-
                     row = df_s[df_s["_label"] == picked_label].iloc[0]
-
 
                     # 行ごとに一意なキーを作る
                     edit_key_base = (
@@ -3034,6 +3032,22 @@ if page == "閲覧":
         st.subheader("生徒一覧：Scratch検定取得級＋月回数＋完了数（全コース合計）")
 
         done_counts = log_done.groupby("student_id").size().reset_index(name="done_total")
+        if not kentei_results.empty:
+            best_score_small = (
+                kentei_results[["student_id", "score"]]
+                .copy()
+            )
+            best_score_small["student_id"] = best_score_small["student_id"].fillna("").astype(str).str.strip()
+            best_score_small["score_num"] = pd.to_numeric(best_score_small["score"], errors="coerce")
+            best_score_small = (
+                best_score_small.sort_values(by=["student_id", "score_num"], ascending=[True, False])
+                .drop_duplicates(subset=["student_id"], keep="first")
+                [["student_id", "score_num"]]
+                .rename(columns={"score_num": "best_score"})
+            )
+        else:
+            best_score_small = pd.DataFrame(columns=["student_id", "best_score"])
+
 
         if not scratch_best.empty:
             scratch_best_small = scratch_best[["student_id", "item"]].rename(columns={"item": "scratch_best"})
@@ -3043,9 +3057,11 @@ if page == "閲覧":
         summary = students.copy()
         summary = summary.merge(done_counts, on="student_id", how="left")
         summary = summary.merge(scratch_best_small, on="student_id", how="left")
+        summary = summary.merge(best_score_small, on="student_id", how="left")
 
         summary["done_total"] = summary["done_total"].fillna(0).astype(int)
         summary["scratch_best"] = summary["scratch_best"].fillna("—")
+        summary["best_score"] = summary["best_score"].fillna("—")
 
         # Apply grade/student filters
         if selected_grade != "（全て）":
@@ -3053,7 +3069,7 @@ if page == "閲覧":
         if selected_student != "（全員）":
             summary = summary[summary["display_name"] == selected_student]
 
-        show_cols = ["grade", "display_name", "number_of_times", "scratch_best", "done_total"]
+        show_cols = ["grade", "display_name", "number_of_times", "scratch_best", "best_score", "done_total"]
         summary_show = summary.sort_values(by=["join_date", "display_name"], na_position="last")[show_cols]
         st.dataframe(summary_show, use_container_width=True, hide_index=True)
         st.caption("done_total は progress_log.csv の status=done の行数（全コース合計）です。")
