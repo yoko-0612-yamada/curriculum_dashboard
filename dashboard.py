@@ -1003,7 +1003,7 @@ if page == "閲覧":
     # 予定があったのに attendance_log が無いものを出す
     # 判定単位：date × student_id
     # =========================================================
-    st.subheader("🚨 未完了タスク（昨日以前）")
+    #st.subheader("🚨 未完了タスク（昨日以前）")
 
     att_df_check = load_attendance_log().copy()
     prog_skip_df = load_progress_skip_ok().copy()
@@ -1388,17 +1388,11 @@ if page == "閲覧":
                     else:
                         st.error("日付の変換に失敗しました。")
 
-
             st.divider()
-
-
-
 
     today_df = pd.DataFrame(today_rows)
     overdue_df = pd.DataFrame(overdue_rows)
 
-
-    render_unfinished_section("⚠ 未完了タスク（今日）", today_df, "today")
     render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
 
     st.divider()
@@ -1871,7 +1865,7 @@ if page == "閲覧":
 
                         with st.container():
                             st.markdown("---")
-                            c1, c2, c3, c4 = st.columns([3, 2, 3, 2])
+                            c1, c2, c3, c4, c5 = st.columns([3, 2, 3, 3, 2])
 
 
                             with c1:
@@ -1924,20 +1918,40 @@ if page == "閲覧":
                                     key=f"att_memo_{today}_{sid}"
                                 )
 
-
                             with c4:
+                                progress_state = st.radio(
+                                    "進捗状態",
+                                    ["進捗登録済み", "進捗なしで完了"],
+                                    index=0,
+                                    key=f"att_progress_state_{today}_{sid}",
+                                    horizontal=False
+                                )
+
+                            with c5:
                                 if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
                                     att_df2 = upsert_attendance(att_df, sid, today, picked_kind, memo, count=count)
                                     save_attendance_log(att_df2)
+
+                                    # 進捗状態を保存
+                                    if progress_state == "進捗なしで完了":
+                                        prog_skip_df2 = load_progress_skip_ok().copy()
+                                        prog_skip_df2 = upsert_progress_skip_ok(
+                                            prog_skip_df2,
+                                            student_id=sid,
+                                            d=today,
+                                            note="出席記録画面から進捗なしで完了"
+                                        )
+                                        save_progress_skip_ok(prog_skip_df2)
+
                                     st.success("保存しました。")
                                     st.rerun()
-
 
                                 if st.button("↩ 取消", key=f"att_del_{today}_{sid}"):
                                     att_df2 = delete_attendance(att_df, sid, today)
                                     save_attendance_log(att_df2)
                                     st.success("取り消しました。")
                                     st.rerun()
+
 
 
                 # 確認済みを別枠で表示
