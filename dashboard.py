@@ -1400,6 +1400,8 @@ if page == "閲覧":
 #    st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
+    #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
+    st.warning("授業が終わったら『進捗登録』または『進捗なしで完了』を押してください。未登録は未完了タスクに残ります。")
 
     if student_schedule.empty:
         st.info("student_schedule.csv が無い/空なので、今日の予定は表示できません。")
@@ -2341,7 +2343,7 @@ if page == "閲覧":
     # =========================================================
     tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
        # ['生徒ごと一覧', '生徒別（done）', 'コース別（件数）', 'Scratch最高級', '詳細（最新状態）', 'カリキュラム課題', '検定課題']
-       ['カリキュラム課題', '検定課題','コース別（件数）',  'Scratch最高級','生徒ごと一覧', '生徒別（done）', '詳細（最新状態）', ]
+       ['カリキュラム課題', '検定課題','コース別（件数）',  'Scratch検定一覧','生徒ごと一覧', '生徒別（done）', '詳細（最新状態）', ]
     )
 
     with tab0:
@@ -2705,7 +2707,7 @@ if page == "閲覧":
                 st.markdown("### ✅ 新規登録")
                 grade_for_pass = st.text_input("合格した級", value="", key="pass_new_grade")
                 score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
-                pass_date = st.date_input("合格日", value=date.today(), key="pass_new_date")
+                pass_date = st.date_input("受験日", value=date.today(), key="pass_new_date")
                 pass_memo = st.text_area("メモ（任意）", value="", key="pass_new_memo")
                 colA, colB = st.columns([1, 2])
                 with colA:
@@ -2813,7 +2815,7 @@ if page == "閲覧":
 
 
                     edit_date = st.date_input(
-                        "合格日（修正）",
+                        "受験日（修正）",
                         value=_d,
                         key=f"pass_edit_date_{edit_key_base}"
                     )
@@ -2969,62 +2971,125 @@ if page == "閲覧":
 
             return [f"background-color: {color}"] * len(row)
 
-        # Scratch最高級
-        st.subheader("Scratch検定：最高取得級（生徒ごと）")
+
+        # Scratch検定専用画面
+        st.subheader("Scratch検定一覧（生徒ごと）")
+
+        # 級フィルタ
+        grade_filter = st.selectbox(
+            "級フィルタ",
+            ["（全て）", "4級", "3級", "2級", "1級"],
+            key="scratch_grade_filter"
+        )
 
 
-        scratch_best_filtered = scratch_best.copy()
-
-
-        # フィルタ
-        if selected_grade != "（全て）":
-            scratch_best_filtered = scratch_best_filtered[
-                scratch_best_filtered["grade"] == selected_grade
-            ]
-
-
-        if selected_student != "（全員）":
-            scratch_best_filtered = scratch_best_filtered[
-                scratch_best_filtered["display_name"] == selected_student
-            ]
-
-
-        # 表示
-        if scratch_best_filtered.empty:
+        if kentei_results.empty:
             st.info("Scratch検定ログがまだありません。")
         else:
+            # 元データを整える
+            score_src = kentei_results.copy()
+            score_src["student_id"] = score_src["student_id"].fillna("").astype(str).str.strip()
+            score_src["grade"] = score_src["grade"].fillna("").astype(str).str.strip()
+            score_src["score_num"] = pd.to_numeric(score_src["score"], errors="coerce")
 
 
-            # grade抽出（検定◯級 → ◯）
-            scratch_best_filtered["grade_num"] = (
-                scratch_best_filtered["item"]
-                .str.extract(r"検定(\d+)級")[0]
-                .astype(float)
+            # 4級 / 3級 / 2級 / 1級 の列を作る
+            score_src["grade_col"] = score_src["grade"] + "級"
+
+
+            score_pivot = (
+                score_src.pivot_table(
+                    index="student_id",
+                    columns="grade_col",
+                    values="score_num",
+                    aggfunc="max"
+                )
+                .reset_index()
             )
 
 
-            # 生徒ごと最高級
-            best = (
-                scratch_best_filtered
-                .sort_values("grade_num", ascending=True)
-                .drop_duplicates("student_id", keep="first")
+            # 必要な列を必ず揃える
+            for col in ["4級", "3級", "2級", "1級"]:
+                if col not in score_pivot.columns:
+                    score_pivot[col] = np.nan
+
+
+            # 最高級
+            if not scratch_best.empty:
+                scratch_best_small = scratch_best[["student_id", "item"]].rename(columns={"item": "scratch_best"})
+            else:
+                scratch_best_small = pd.DataFrame(columns=["student_id", "scratch_best"])
+
+
+            # 最高点
+            best_score_small = (
+                score_src.groupby("student_id", as_index=False)["score_num"]
+                .max()
+                .rename(columns={"score_num": "best_score"})
             )
 
 
-            view = best[["grade", "display_name", "item"]].copy()
+            # ベースは students
+            scratch_view = students.copy()
+            scratch_view = scratch_view.merge(scratch_best_small, on="student_id", how="left")
+            scratch_view = scratch_view.merge(score_pivot, on="student_id", how="left")
+            scratch_view = scratch_view.merge(best_score_small, on="student_id", how="left")
 
 
-            styled = view.style.apply(color_by_grade, axis=1)
+            # Scratch検定が1件もない生徒は除外
+            scratch_view = scratch_view[
+                scratch_view["scratch_best"].notna()
+                | scratch_view["4級"].notna()
+                | scratch_view["3級"].notna()
+                | scratch_view["2級"].notna()
+                | scratch_view["1級"].notna()
+            ].copy()
 
 
-            st.dataframe(
-                styled,
-                use_container_width=True,
-                hide_index=True
-            )
+            # フィルタ反映
+            if selected_grade != "（全て）":
+                scratch_view = scratch_view[scratch_view["grade"] == selected_grade]
 
 
+            if selected_student != "（全員）":
+                scratch_view = scratch_view[scratch_view["display_name"] == selected_student]
 
+           # 級フィルタ適用
+            if grade_filter != "（全て）":
+
+                # その級の点数が入っている生徒だけ残す
+                scratch_view = scratch_view[scratch_view[grade_filter].notna()].copy()
+
+                # 点数でソート（高い順）
+                scratch_view = scratch_view.sort_values(
+                    by=grade_filter,
+                    ascending=False,
+                    na_position="last"
+                )
+
+            if scratch_view.empty:
+                st.info("該当するScratch検定データがありません。")
+            else:
+                scratch_view["scratch_best"] = scratch_view["scratch_best"].fillna("—")
+
+                # ソート用に数値コピー
+                for col in ["4級", "3級", "2級", "1級"]:
+                    scratch_view[col] = pd.to_numeric(scratch_view[col], errors="coerce")
+
+                for col in ["4級", "3級", "2級", "1級", "best_score"]:
+                    scratch_view[col] = scratch_view[col].apply(
+                        lambda x: "—" if pd.isna(x) else str(int(x)) if float(x).is_integer() else str(x)
+                    )
+
+
+                show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score"]
+
+
+                st.dataframe(
+                    scratch_view.sort_values(by=["grade", "display_name"], na_position="last")[show_cols],
+                    use_container_width=True,
+                    hide_index=True
+                )
 
     with tab4:
 
