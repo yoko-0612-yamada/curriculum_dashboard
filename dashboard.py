@@ -1576,6 +1576,72 @@ if page == "閲覧":
             axis=1
         )
 
+        # =====================================================
+        # 次に見る候補
+        # =====================================================
+        next_candidates = today_view.copy()
+
+
+        # 表示名が空でも落ちないように保険
+        if "display_name" not in next_candidates.columns:
+            next_candidates["display_name"] = next_candidates["student_id"].astype(str)
+
+
+        # 優先度
+        # 0: 出欠済み & 進捗未
+        # 1: 未着席
+        # 2: それ以外
+        def calc_priority(r):
+            attended = bool(r.get("出欠完了", False))
+            progressed = bool(r.get("進捗完了", False))
+            if attended and not progressed:
+                return 0
+            elif not attended:
+                return 1
+            return 2
+
+
+        next_candidates["priority"] = next_candidates.apply(calc_priority, axis=1)
+
+
+        # 候補だけ残す
+        next_candidates = next_candidates[next_candidates["priority"] < 2].copy()
+
+
+        # 並び順
+        if "slot_num" not in next_candidates.columns:
+            next_candidates["slot_num"] = pd.to_numeric(next_candidates["slot"], errors="coerce")
+
+
+        next_candidates = next_candidates.sort_values(
+            by=["priority", "slot_num", "display_name"],
+            na_position="last"
+        )
+
+
+        st.subheader("👀 次に見る候補")
+
+
+        if next_candidates.empty:
+            st.caption("候補なし")
+        else:
+            for i, (_, r) in enumerate(next_candidates.head(5).iterrows(), start=1):
+                name = str(r.get("display_name", "")).strip()
+                sid = str(r.get("student_id", "")).strip()
+                status = str(r.get("状態", "")).strip()
+                slot = str(r.get("slot", "")).strip()
+
+
+                if not name:
+                    name = sid
+
+
+                st.write(f"{i}. {slot}限 / {name} / {status}")
+
+
+        st.divider()
+
+
       # =====================================================
         # 今日の予定に「今月の回数」を表示
         # 例: 3/4 山田花子
