@@ -6,8 +6,7 @@ from datetime import date
 import os
 
 import pandas as pd
-
-import pandas as pd
+from datetime import datetime
 
 def ui_str(x) -> str:
     if x is None:
@@ -2902,7 +2901,7 @@ if page == "閲覧":
                             st.rerun()
 
     with tab2:
-        #コース別（件数
+        # コース別（件数）
         st.subheader("コース別：完了状況（ジャンル＋コース名）")
 
         logs_df = log.copy() if 'log' in globals() else pd.DataFrame()
@@ -2919,34 +2918,86 @@ if page == "閲覧":
             if active_students.empty:
                 active_students = students.copy()
 
-            active_students['label'] = active_students['student_id'].astype(str) + " | " + active_students['display_name'].astype(str)
-            labels = active_students['label'].tolist()
-            label_to_id = dict(zip(labels, active_students['student_id'].tolist()))
 
-            selected_label = st.selectbox("生徒を選択", labels, key='course_done_student')
-            sid = label_to_id.get(selected_label)
+            active_students["student_id"] = active_students["student_id"].astype(str).str.strip()
+            active_students["display_name"] = active_students["display_name"].astype(str).str.strip()
+            active_students["label"] = active_students["student_id"] + " | " + active_students["display_name"]
 
-            student_done = logs_df[(logs_df['student_id'].astype(str) == str(sid)) & (logs_df['status'].astype(str) == 'done')].copy()
-            done_set = set(zip(student_done['curriculum'].astype(str), student_done['item'].astype(str)))
 
-            cc = curr_courses.copy()
-            if 'course_order' in cc.columns:
-                cc['course_order_num'] = pd.to_numeric(cc['course_order'], errors='coerce').fillna(9999)
+            labels = active_students["label"].tolist()
+            label_to_id = dict(zip(labels, active_students["student_id"].tolist()))
+
+
+            # 左フィルタで生徒が選ばれているときは、それを優先する
+            if selected_student != "（全員）":
+                student_row = active_students[active_students["display_name"] == str(selected_student).strip()].head(1)
+                if student_row.empty:
+                    st.info("左の生徒フィルタに該当する生徒が見つかりません。")
+                    sid = None
+                else:
+                    sid = str(student_row.iloc[0]["student_id"]).strip()
+                    st.caption(f"対象生徒：{sid} | {selected_student}")
             else:
-                cc['course_order_num'] = 9999
+                selected_label = st.selectbox("生徒を選択", labels, key="course_done_student")
+                sid = label_to_id.get(selected_label)
 
-            for (genre_id, genre_name), gdf in cc.groupby(['genre_id','genre_name'], dropna=False):
-                gdf = gdf.sort_values(by=['course_order_num','course_name'], kind='stable')
-                genre_has_done = any((str(genre_id), str(cn)) in done_set for cn in gdf['course_name'].astype(str).tolist())
-                genre_mark = '⭕️' if genre_has_done else ''
-                title = f"{genre_name} ({genre_id}) {genre_mark}" if str(genre_name).strip() not in ['nan','None',''] else f"{genre_id} {genre_mark}"
 
-                with st.expander(title, expanded=False):
-                    for _, row in gdf.iterrows():
-                        course_name = str(row.get('course_name',''))
-                        mark = '⭕️' if (str(genre_id), course_name) in done_set else ''
-                        st.write(f"- {course_name} {mark}")
+            if sid:
+                student_done = logs_df[
+                    (logs_df["student_id"].astype(str).str.strip() == str(sid).strip()) &
+                    (logs_df["status"].astype(str).str.strip() == "done")
+                ].copy()
 
+
+                student_done["curriculum"] = student_done["curriculum"].astype(str).str.strip()
+                student_done["item"] = student_done["item"].astype(str).str.strip()
+
+
+                done_set = set(zip(student_done["curriculum"], student_done["item"]))
+                done_curriculum_set = set(student_done["curriculum"])
+
+
+                cc = curr_courses.copy()
+                if "course_order" in cc.columns:
+                    cc["course_order_num"] = pd.to_numeric(cc["course_order"], errors="coerce").fillna(9999)
+                else:
+                    cc["course_order_num"] = 9999
+
+
+                for (genre_id, genre_name), gdf in cc.groupby(["genre_id", "genre_name"], dropna=False):
+                    gdf = gdf.sort_values(by=["course_order_num", "course_name"], kind="stable")
+                    genre_id_str = str(genre_id).strip()
+
+
+                    # ジャンル単位で done があれば、タイトルには○をつける
+                    genre_has_done = genre_id_str in done_curriculum_set
+                    genre_mark = "⭕️" if genre_has_done else ""
+                    title = (
+                        f"{genre_name} ({genre_id}) {genre_mark}"
+                        if str(genre_name).strip() not in ["nan", "None", ""]
+                        else f"{genre_id} {genre_mark}"
+                    )
+
+
+                    with st.expander(title, expanded=False):
+                        single_course_genre = len(gdf) == 1
+
+
+                        for _, row in gdf.iterrows():
+                            course_name = str(row.get("course_name", "")).strip()
+
+
+                            # 通常は curriculum + item 完全一致で判定
+                            exact_done = (genre_id_str, course_name) in done_set
+
+
+                            # HTML など単一コースのジャンルは、旧名称が混ざっていても
+                            # curriculum が done なら ○ を出す
+                            fallback_done = single_course_genre and (genre_id_str in done_curriculum_set)
+
+
+                            mark = "⭕️" if (exact_done or fallback_done) else ""
+                            st.write(f"- {course_name} {mark}")
 
     with tab3:
        # st.write("DUBUG before= ", len(scratch_best_filtered))
