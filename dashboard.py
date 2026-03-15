@@ -762,6 +762,7 @@ if page == "閲覧":
 
     # Student selector: 今日の予定を上に（🔔表示）
     today_ids = get_today_student_ids(student_schedule, schedule_overrides)
+    show_today_only = st.sidebar.checkbox("今日の生徒だけ表示", value=False)
     students_view_sorted = students_view.copy()
     if "student_id" in students_view_sorted.columns:
         students_view_sorted["__priority"] = students_view_sorted["student_id"].astype(str).apply(lambda x: 0 if x in today_ids else 1)
@@ -3167,9 +3168,14 @@ if page == "閲覧":
             if selected_grade != "（全て）":
                 scratch_view = scratch_view[scratch_view["grade"] == selected_grade]
 
-
             if selected_student != "（全員）":
                 scratch_view = scratch_view[scratch_view["display_name"] == selected_student]
+
+            if show_today_only:
+                    scratch_view = scratch_view[
+                        scratch_view["student_id"].astype(str).isin(today_ids)
+                    ]
+
 
            # 級フィルタ適用
             if grade_filter != "（全て）":
@@ -3251,10 +3257,15 @@ if page == "閲覧":
         if selected_student != "（全員）":
             summary = summary[summary["display_name"] == selected_student]
 
-        show_cols = ["grade", "display_name", "number_of_times", "scratch_best", "best_score", "done_total"]
-        summary_show = summary.sort_values(by=["join_date", "display_name"], na_position="last")[show_cols]
-        st.dataframe(summary_show, use_container_width=True, hide_index=True)
-        st.caption("done_total は progress_log.csv の status=done の行数（全コース合計）です。")
+            show_cols = ["grade", "display_name", "number_of_times", "scratch_best", "best_score", "done_total"]
+            summary_show = summary.sort_values(by=["join_date", "display_name"], na_position="last")[show_cols]
+            st.dataframe(summary_show, use_container_width=True, hide_index=True)
+            st.caption("done_total は progress_log.csv の status=done の行数（全コース合計）です。")
+
+        if show_today_only:
+                summary = summary[
+                    summary["student_id"].astype(str).isin(today_ids)
+                ]
 
 
 
@@ -3264,7 +3275,11 @@ if page == "閲覧":
         st.subheader("生徒別：完了したもの（done）")
         cols = ["date", "grade", "display_name", "curriculum", "item", "note"]
         cols = [c for c in cols if c in filtered_done.columns]
-        show = filtered_done[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"])
+        done_view = filtered_done.copy()
+        if show_today_only and "student_id" in done_view.columns:
+            done_view = done_view[done_view["student_id"].astype(str).isin(today_ids)]
+
+        show = done_view[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"])
         st.dataframe(show, use_container_width=True, hide_index=True)
 
     with tab6:
@@ -3277,11 +3292,11 @@ if page == "閲覧":
             use_container_width=True,
             hide_index=True,
         )
+        latest_view = latest_filtered.copy()
+        if show_today_only and "student_id" in latest_view.columns:
+            latest_view = latest_view[latest_view["student_id"].astype(str).isin(today_ids)]
+
         st.caption("※ 同じ項目が複数回ログにあっても、最後の状態だけ表示します。")
-
-
-
-
 
 else:
     # 管理画面中は、左サイドバーの閲覧フィルタを無効化
