@@ -1978,8 +1978,12 @@ if page == "閲覧":
 
                             with c1:
                                 prefix = "🟡 未確認" if rec is None else "✅ 確認済み"
-                                st.markdown(f"**{prefix}｜👤 {label}**")
+                                kind_badge = "📘 授業" if default_kind == "lesson" else "🟡 自習"
+                                st.markdown(f"**{prefix}｜{kind_badge}｜👤 {label}**")
                                 st.caption(badge)
+
+
+
 
 
                             with c2:
@@ -2027,10 +2031,14 @@ if page == "閲覧":
                                 )
 
                             with c4:
+                                default_progress_index = 0
+                                if session_type == "自習":
+                                    default_progress_index = 1
+
                                 progress_state = st.radio(
                                     "進捗状態",
                                     ["進捗登録済み", "進捗なしで完了"],
-                                    index=0,
+                                    index=default_progress_index,
                                     key=f"att_progress_state_{today}_{sid}",
                                     horizontal=False
                                 )
