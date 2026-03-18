@@ -1642,8 +1642,93 @@ if page == "閲覧":
 
         st.divider()
 
+        # =====================================================
+        # 次の準備メモ（簡易版）
+        # =====================================================
+        st.subheader("📝 次の準備メモ")
 
-      # =====================================================
+
+        # 今日の生徒候補
+        prep_candidates = today_view.copy()
+        if "display_name" not in prep_candidates.columns:
+            prep_candidates["display_name"] = prep_candidates["student_id"].astype(str)
+
+
+        prep_candidates["student_id"] = prep_candidates["student_id"].astype(str).str.strip()
+        prep_candidates["display_name"] = prep_candidates["display_name"].astype(str).str.strip()
+        prep_candidates["label"] = prep_candidates["student_id"] + "｜" + prep_candidates["display_name"]
+
+
+        prep_labels = prep_candidates["label"].dropna().tolist()
+
+
+        if "prep_memo_map" not in st.session_state:
+            st.session_state["prep_memo_map"] = {}
+
+
+        if prep_labels:
+            c_p1, c_p2 = st.columns([3, 2])
+
+
+            with c_p1:
+                prep_label = st.selectbox(
+                    "生徒",
+                    prep_labels,
+                    key="prep_target_label"
+                )
+
+
+            with c_p2:
+                prep_text = st.text_input(
+                    "内容",
+                    placeholder="例）次はHTML課題3を準備",
+                    key="prep_text_input"
+                )
+
+
+            c_p3, c_p4 = st.columns([1, 5])
+
+
+            with c_p3:
+                if st.button("追加", key="prep_add_btn"):
+                    sid = prep_label.split("｜", 1)[0].strip()
+                    txt = str(st.session_state.get("prep_text_input", "")).strip()
+                    if txt:
+                        st.session_state["prep_memo_map"][sid] = txt
+                        st.rerun()
+
+
+            with c_p4:
+                st.caption("授業中に『あとで準備』と思ったことを一時メモできます")
+
+
+            prep_map = st.session_state.get("prep_memo_map", {})
+
+
+            if prep_map:
+                st.markdown("**現在のメモ**")
+                for _, r in prep_candidates.iterrows():
+                    sid = str(r.get("student_id", "")).strip()
+                    name = str(r.get("display_name", "")).strip() or sid
+                    memo = prep_map.get(sid, "").strip()
+                    if memo:
+                        c_m1, c_m2 = st.columns([6, 1])
+                        with c_m1:
+                            st.write(f"- {sid}｜{name}：{memo}")
+                        with c_m2:
+                            if st.button("削除", key=f"prep_del_{sid}"):
+                                st.session_state["prep_memo_map"].pop(sid, None)
+                                st.rerun()
+            else:
+                st.caption("メモなし")
+        else:
+            st.caption("今日の生徒がいないため、準備メモは表示されません。")
+
+
+        st.divider()
+
+
+        # =====================================================
         # 今日の予定に「今月の回数」を表示
         # 例: 3/4 山田花子
         # =====================================================
