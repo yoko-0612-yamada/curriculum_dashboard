@@ -174,6 +174,7 @@ def is_kentei_passed(student_id: str, grade: str) -> bool:
 # =========================================================
 ATTENDANCE_LOG_CSV = DATA_DIR / "attendance_log.csv"
 PROGRESS_SKIP_OK_CSV = DATA_DIR / "progress_skip_ok.csv"
+PREP_MEMO_CSV = DATA_DIR / "prep_memo.csv"
 
 def load_attendance_log() -> pd.DataFrame:
     if ATTENDANCE_LOG_CSV.exists():
@@ -256,6 +257,58 @@ def upsert_progress_skip_ok(df: pd.DataFrame, student_id: str, d: date, note: st
         "student_id": sid,
         "note": note,
     }])
+
+    return pd.concat([df, new_row], ignore_index=True)
+
+def load_prep_memo() -> pd.DataFrame:
+    if PREP_MEMO_CSV.exists():
+        df = pd.read_csv(PREP_MEMO_CSV, dtype=str).fillna("")
+    else:
+        df = pd.DataFrame(columns=["student_id", "memo"])
+        write_csv_atomic(df, PREP_MEMO_CSV)
+        return df
+
+
+    for c in ["student_id", "memo"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].astype(str).fillna("").str.strip()
+
+
+    return df[["student_id", "memo"]]
+
+
+
+
+def save_prep_memo(df: pd.DataFrame) -> None:
+    for c in ["student_id", "memo"]:
+        if c not in df.columns:
+            df[c] = ""
+    df = df[["student_id", "memo"]].copy()
+    write_csv_atomic(df, PREP_MEMO_CSV)
+
+
+
+
+def upsert_prep_memo(df: pd.DataFrame, student_id: str, memo: str) -> pd.DataFrame:
+    sid = str(student_id).strip()
+    memo = str(memo).strip()
+
+
+    if not df.empty:
+        mask = df["student_id"].astype(str).str.strip().eq(sid)
+        df = df.loc[~mask].copy()
+
+
+    if memo == "":
+        return df
+
+
+    new_row = pd.DataFrame([{
+        "student_id": sid,
+        "memo": memo,
+    }])
+
 
     return pd.concat([df, new_row], ignore_index=True)
 
@@ -1632,12 +1685,16 @@ if page == "閲覧":
                 status = str(r.get("状態", "")).strip()
                 slot = str(r.get("slot", "")).strip()
 
-
                 if not name:
                     name = sid
 
+                prep_map = st.session_state.get("prep_memo_map", {})
+                memo = prep_map.get(sid, "").strip()
 
                 st.write(f"{i}. {slot}限 / {name} / {status}")
+
+                if memo:
+                    st.caption(f"📝 {memo}")
 
 
         st.divider()
@@ -1646,6 +1703,7 @@ if page == "閲覧":
         # 次の準備メモ（簡易版）
         # =====================================================
         st.subheader("📝 次の準備メモ")
+        prep_df = load_prep_memo().copy()
 
 
         # 今日の生徒候補
@@ -1660,10 +1718,6 @@ if page == "閲覧":
 
 
         prep_labels = prep_candidates["label"].dropna().tolist()
-
-
-        if "prep_memo_map" not in st.session_state:
-            st.session_state["prep_memo_map"] = {}
 
 
         if prep_labels:
@@ -1694,7 +1748,8 @@ if page == "閲覧":
                     sid = prep_label.split("｜", 1)[0].strip()
                     txt = str(st.session_state.get("prep_text_input", "")).strip()
                     if txt:
-                        st.session_state["prep_memo_map"][sid] = txt
+                        prep_df2 = upsert_prep_memo(prep_df, sid, txt)
+                        save_prep_memo(prep_df2)
                         st.rerun()
 
 
@@ -1702,7 +1757,13 @@ if page == "閲覧":
                 st.caption("授業中に『あとで準備』と思ったことを一時メモできます")
 
 
-            prep_map = st.session_state.get("prep_memo_map", {})
+            prep_map = dict(
+                    zip(
+                        prep_df["student_id"].astype(str).str.strip(),
+                        prep_df["memo"].astype(str).str.strip()
+                    )
+                )
+
 
 
             if prep_map:
@@ -1717,8 +1778,10 @@ if page == "閲覧":
                             st.write(f"- {sid}｜{name}：{memo}")
                         with c_m2:
                             if st.button("削除", key=f"prep_del_{sid}"):
-                                st.session_state["prep_memo_map"].pop(sid, None)
+                                prep_df2 = upsert_prep_memo(prep_df, sid, "")
+                                save_prep_memo(prep_df2)
                                 st.rerun()
+
             else:
                 st.caption("メモなし")
         else:
@@ -2067,7 +2130,20 @@ if page == "閲覧":
                                 st.markdown(f"**{prefix}｜{kind_badge}｜👤 {label}**")
                                 st.caption(badge)
 
+                               # 準備メモ表示
+                                prep_df_card = load_prep_memo().copy()
+                                sid_str = str(sid).strip()
 
+                                memo_row = prep_df_card[
+                                    prep_df_card["student_id"].astype(str).str.strip() == sid_str
+                                ]
+
+                                memo = ""
+                                if not memo_row.empty:
+                                    memo = str(memo_row.iloc[0]["memo"]).strip()
+
+                                if memo:
+                                    st.info(f"📝 次の準備：{memo}")
 
 
 
