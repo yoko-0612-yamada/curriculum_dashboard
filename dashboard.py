@@ -1743,6 +1743,7 @@ if page == "閲覧":
             c_p3, c_p4 = st.columns([1, 5])
 
 
+            
             with c_p3:
                 if st.button("追加", key="prep_add_btn"):
                     sid = prep_label.split("｜", 1)[0].strip()
@@ -3949,6 +3950,27 @@ else:
                 sel_id = sel.split("|")[0].strip()
                 cur = courses_sel.loc[courses_sel["course_id"].astype(str).str.strip() == sel_id].iloc[0]
 
+                # 選択したコースに合わせて編集フォームを同期
+                last_course_id = st.session_state.get("c_edit_last_id")
+                if last_course_id != sel_id:
+                    st.session_state["c_edit_last_id"] = sel_id
+
+
+                    st.session_state["c_edit_genre_id"] = str(cur.get("genre_id", "") or "")
+                    st.session_state["c_edit_genre_name"] = str(cur.get("genre_name", "") or "")
+                    st.session_state["c_edit_course_name"] = str(cur.get("course_name", "") or "")
+
+
+                    try:
+                        st.session_state["c_edit_course_order"] = int(float(cur.get("course_order", 0) or 0))
+                    except Exception:
+                        st.session_state["c_edit_course_order"] = 0
+
+
+                    st.session_state["c_edit_is_active"] = normalize_bool_str(cur.get("is_active", True))
+                    st.rerun()
+
+
                 e_genre_id = st.text_input("genre_id", value=str(cur.get("genre_id","")), key="c_edit_genre_id")
                 e_genre_name = st.text_input("genre_name", value=str(cur.get("genre_name","")), key="c_edit_genre_name")
                 e_course_name = st.text_input("course_name", value=str(cur.get("course_name","")), key="c_edit_course_name")
@@ -4017,7 +4039,8 @@ else:
         course_ids = []
         if not courses.empty:
             course_ids = sorted(courses["course_id"].astype(str).str.strip().unique().tolist())
-        task_course = st.selectbox("表示するコース（課題）", ["（全て）"] + course_ids, key="t_course_filter")
+        task_course = st.selectbox("編集対象のコースで絞り込み", ["（全て）"] + course_ids, key="t_course_filter")
+
 
         tasks_view = tasks.copy()
         if task_course != "（全て）":
@@ -4097,10 +4120,36 @@ else:
                     sel_t = st.selectbox("編集する課題", pick_df2["label"].tolist(), key="t_edit_sel")
                     sel_tid = sel_t.split("|")[0].strip()
                     cur_t = pick_df2.loc[pick_df2["task_id"].astype(str).str.strip() == sel_tid].iloc[0]
+                    # 選択した課題に合わせて編集フォームを同期
+                    last_task_id = st.session_state.get("t_edit_last_id")
+                    if last_task_id != sel_tid:
+                        st.session_state["t_edit_last_id"] = sel_tid
+
+
+                        st.session_state["t_edit_course_id"] = str(cur_t.get("course_id", "") or "")
+                        st.session_state["t_edit_task_name"] = str(cur_t.get("task_name", "") or "")
+
+
+                        try:
+                            st.session_state["t_edit_order"] = int(float(cur_t.get("order", 0) or 0))
+                        except Exception:
+                            st.session_state["t_edit_order"] = 0
+
+
+                        st.session_state["t_edit_is_active"] = normalize_bool_str(cur_t.get("is_active", True))
+                        st.session_state["t_edit_student_id"] = str(cur_t.get("student_id", "") or "")
+                        st.rerun()
 
                     cur_course = str(cur_t.get("course_id","")).strip()
-                    course_index = course_ids.index(cur_course) if course_ids and cur_course in course_ids else 0
-                    e_course_id = st.selectbox("course_id（変更可）", course_ids if course_ids else [cur_course], index=course_index, key="t_edit_course_id")
+                    edit_course_options = course_ids if course_ids else [cur_course]
+                    if "t_edit_course_id" in st.session_state and st.session_state["t_edit_course_id"] in edit_course_options:
+                        course_index = edit_course_options.index(st.session_state["t_edit_course_id"])
+                    else:
+                        course_index = edit_course_options.index(cur_course) if cur_course in edit_course_options else 0
+
+
+                    e_course_id = st.selectbox("course_id（変更可）", edit_course_options, index=course_index, key="t_edit_course_id")
+
                     e_task_name = st.text_input("task_name", value=str(cur_t.get("task_name","")), key="t_edit_task_name")
                     try:
                         default_t_order = int(float(cur_t.get("order", 0) or 0))
