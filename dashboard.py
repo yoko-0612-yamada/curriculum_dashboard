@@ -4039,19 +4039,42 @@ else:
         course_ids = []
         if not courses.empty:
             course_ids = sorted(courses["course_id"].astype(str).str.strip().unique().tolist())
-        task_course = st.selectbox("編集対象のコースで絞り込み", ["（全て）"] + course_ids, key="t_course_filter")
+        
+        task_course = st.session_state.get("t_course_filter", "（全て）")
 
 
         tasks_view = tasks.copy()
         if task_course != "（全て）":
-            tasks_view = tasks_view[tasks_view["course_id"].astype(str).str.strip() == task_course].copy()
+            tasks_view = tasks_view[
+                tasks_view["course_id"].astype(str).str.strip() == task_course
+            ].copy()
 
-        # order sort
+
+        task_course = st.session_state.get("t_course_filter", "（全て）")
+
+
+        tasks_view = tasks.copy()
+        if task_course != "（全て）":
+            tasks_view = tasks_view[
+                tasks_view["course_id"].astype(str).str.strip() == task_course
+            ].copy()
+
+
         if "order" in tasks_view.columns:
             tasks_view["order_num"] = pd.to_numeric(tasks_view["order"], errors="coerce").fillna(9999).astype(int)
-            tasks_view = tasks_view.sort_values(["course_id","order_num","task_id"], na_position="last").drop(columns=["order_num"])
+            tasks_view = tasks_view.sort_values(["course_id", "order_num", "task_id"], na_position="last").drop(columns=["order_num"])
+
 
         st.dataframe(tasks_view, use_container_width=True, hide_index=True)
+
+
+        st.selectbox(
+            "編集対象のコースで絞り込み",
+            ["（全て）"] + course_ids,
+            key="t_course_filter"
+        )
+
+
 
         colT1, colT2 = st.columns(2)
 
@@ -4125,10 +4148,8 @@ else:
                     if last_task_id != sel_tid:
                         st.session_state["t_edit_last_id"] = sel_tid
 
-
                         st.session_state["t_edit_course_id"] = str(cur_t.get("course_id", "") or "")
                         st.session_state["t_edit_task_name"] = str(cur_t.get("task_name", "") or "")
-
 
                         try:
                             st.session_state["t_edit_order"] = int(float(cur_t.get("order", 0) or 0))
@@ -4137,7 +4158,11 @@ else:
 
 
                         st.session_state["t_edit_is_active"] = normalize_bool_str(cur_t.get("is_active", True))
-                        st.session_state["t_edit_student_id"] = str(cur_t.get("student_id", "") or "")
+                        raw_sid = cur_t.get("student_id", "")
+                        if pd.isna(raw_sid):
+                            raw_sid = ""
+                        st.session_state["t_edit_student_id"] = str(raw_sid).strip()
+
                         st.rerun()
 
                     cur_course = str(cur_t.get("course_id","")).strip()
@@ -4157,7 +4182,22 @@ else:
                         default_t_order = 0
                     e_order = st.number_input("order（並び順）", min_value=0, value=default_t_order, step=1, key="t_edit_order")
                     e_is_active = st.checkbox("is_active（ON=表示）", value=normalize_bool_str(cur_t.get("is_active", True)), key="t_edit_is_active")
-                    e_student_id = st.text_input("student_id（空=共通 / 入れる=個別課題）", value=str(cur_t.get("student_id","")), key="t_edit_student_id")
+                    raw_sid = cur_t.get("student_id", "")
+                    if pd.isna(raw_sid):
+                        raw_sid = ""
+
+
+                    raw_sid = cur_t.get("student_id", "")
+                    if pd.isna(raw_sid):
+                        raw_sid = ""
+
+
+                    e_student_id = st.text_input(
+                        "student_id（空=共通 / 入れる=個別課題）",
+                        value=str(raw_sid).strip(),
+                        key="t_edit_student_id"
+                    )
+
 
                     colTE1, colTE2 = st.columns(2)
                     with colTE1:
