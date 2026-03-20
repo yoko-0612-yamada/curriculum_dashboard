@@ -1707,7 +1707,7 @@ if page == "閲覧":
 
 
         # 今日の生徒候補
-        prep_candidates = today_view.copy()
+        prep_candidates = base_students.copy()
         if "display_name" not in prep_candidates.columns:
             prep_candidates["display_name"] = prep_candidates["student_id"].astype(str)
 
@@ -2344,11 +2344,51 @@ if page == "閲覧":
                     slot_candidates = sorted(slot_candidates)
                 _slot_index = slot_candidates.index(_slot_state) if _slot_state in slot_candidates else 0
 
+               # コマ番号ごとの表示名を作る（保存値は slot 番号のまま）
+                slot_label_map = {}
+
+
+                # まず「今日の予定」から時間を拾う
+                if not _stu_rows.empty and "slot" in _stu_rows.columns:
+                    for _, _r in _stu_rows.iterrows():
+                        try:
+                            _s = int(pd.to_numeric(_r.get("slot"), errors="coerce"))
+                        except Exception:
+                            continue
+                        _start = str(_r.get("start", "") or "").strip()
+                        _end = str(_r.get("end", "") or "").strip()
+                        if _start or _end:
+                            slot_label_map[_s] = f"{_s}｜{_start}〜{_end}".strip("〜")
+
+
+                # 足りないものは timeslots から補完
+                if "slot" in timeslots.columns:
+                    for _, _r in timeslots.iterrows():
+                        try:
+                            _s = int(pd.to_numeric(_r.get("slot"), errors="coerce"))
+                        except Exception:
+                            continue
+                        if _s in slot_label_map:
+                            continue
+                        _start = str(_r.get("start", "") or "").strip()
+                        _end = str(_r.get("end", "") or "").strip()
+                        if _start or _end:
+                            slot_label_map[_s] = f"{_s}｜{_start}〜{_end}".strip("〜")
+
+
                 with c2:
-                    picked_slot = st.selectbox("コマ番号", slot_candidates, index=_slot_index, key="ov_slot")
+                    picked_slot = st.selectbox(
+                        "コマ番号",
+                        slot_candidates,
+                        index=_slot_index,
+                        key="ov_slot",
+                        format_func=lambda x: slot_label_map.get(int(x), str(x))
+                    )
+
 
                 with c3:
                     picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
+
 
                 # 選択中のslotに応じたデフォルト（start/end/session_type）
                 try:
@@ -2383,13 +2423,6 @@ if page == "閲覧":
                     st.session_state[k_end] = default_end
                 if k_note not in st.session_state:
                     st.session_state[k_note] = ""
-
-                # 重要：このコマが「授業」か「自習」かは準備に直結するので、明示的に選べるようにする
-                cur_type_disp = (default_session_type or st.session_state.get(k_type, "") or "").strip()
-                if cur_type_disp:
-                    st.markdown(f"**このコマの種別： `{cur_type_disp}`**")
-                else:
-                    st.markdown("**このコマの種別： `未設定`（必ず設定してください）**")
 
                 with c4:
                     type_options = ["授業", "自習", "検定", "その他（自由入力）"]
