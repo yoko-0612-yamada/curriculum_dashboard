@@ -2397,36 +2397,26 @@ if page == "閲覧":
                     slot_candidates = sorted(slot_candidates)
                 _slot_index = slot_candidates.index(_slot_state) if _slot_state in slot_candidates else 0
 
-               # コマ番号ごとの表示名を作る（保存値は slot 番号のまま）
-                slot_label_map = {}
+                # コマ番号ごとの表示名を作る（共通関数を使用）
+                slot_label_map = build_slot_label_map(timeslots)
 
 
-                # まず「今日の予定」から時間を拾う
+                # 今日の予定に start/end がある場合は、そちらを優先して上書き
                 if not _stu_rows.empty and "slot" in _stu_rows.columns:
                     for _, _r in _stu_rows.iterrows():
+                        _s_norm = normalize_slot(_r.get("slot", ""))
+                        if not _s_norm:
+                            continue
                         try:
-                            _s = int(pd.to_numeric(_r.get("slot"), errors="coerce"))
+                            _s_int = int(_s_normp)
                         except Exception:
                             continue
+
+
                         _start = str(_r.get("start", "") or "").strip()
                         _end = str(_r.get("end", "") or "").strip()
                         if _start or _end:
-                            slot_label_map[_s] = f"{_s}｜{_start}〜{_end}".strip("〜")
-
-
-                # 足りないものは timeslots から補完
-                if "slot" in timeslots.columns:
-                    for _, _r in timeslots.iterrows():
-                        try:
-                            _s = int(pd.to_numeric(_r.get("slot"), errors="coerce"))
-                        except Exception:
-                            continue
-                        if _s in slot_label_map:
-                            continue
-                        _start = str(_r.get("start", "") or "").strip()
-                        _end = str(_r.get("end", "") or "").strip()
-                        if _start or _end:
-                            slot_label_map[_s] = f"{_s}｜{_start}〜{_end}".strip("〜")
+                            slot_label_map[_s_int] = f"{_s_int}｜{_start}〜{_end}".strip("〜")
 
 
                 with c2:
@@ -2435,9 +2425,8 @@ if page == "閲覧":
                         slot_candidates,
                         index=_slot_index,
                         key="ov_slot",
-                        format_func=lambda x: slot_label_map.get(int(x), str(x))
+                        format_func=lambda x: format_slot_label(x, slot_label_map)
                     )
-
 
                 with c3:
                     picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
