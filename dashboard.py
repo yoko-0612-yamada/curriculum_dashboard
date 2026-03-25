@@ -4591,19 +4591,41 @@ else:
             with colT1:
                 st.markdown("#### ➕ 追加")
                 t_wd = st.selectbox("曜日", weekday_opts, key="ts_add_wd")
-                t_slot = st.number_input("コマ（数字）", min_value=1, value=1, step=1, key="ts_add_slot")
+
+
+                ts_slot_label_map = build_slot_label_map(timeslots)
+                ts_slot_options = [str(k) for k in sorted(ts_slot_label_map.keys())] + ["その他（自由入力）"]
+
+
+                t_slot_sel = st.selectbox(
+                    "コマ（数字）",
+                    options=ts_slot_options,
+                    index=0,
+                    key="ts_add_slot_sel",
+                    format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, ts_slot_label_map)
+                )
+
+
+                t_slot_free = ""
+                if t_slot_sel == "その他（自由入力）":
+                    t_slot_free = st.text_input("コマ（自由入力）", value="", key="ts_add_slot_free")
+
+
+                t_slot = t_slot_free if t_slot_sel == "その他（自由入力）" else normalize_slot(t_slot_sel)
+
+
                 t_start = st.text_input("開始（例 16:00）", value="", key="ts_add_start")
                 t_end = st.text_input("終了（例 16:50）", value="", key="ts_add_end")
 
                 if st.button("追加", key="ts_add_btn"):
                     dup = (
                         (slots["weekday"].astype(str).str.strip() == str(t_wd).strip())
-                        & (pd.to_numeric(slots["slot"], errors="coerce").fillna(-1).astype(int) == int(t_slot))
+                        & (slots["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(t_slot))
                     )
                     if dup.any():
                         st.error("同じ（曜日×コマ）が既にあります。編集を使ってください。")
                     else:
-                        new_row = {"weekday": str(t_wd).strip(), "slot": int(t_slot), "start": str(t_start).strip(), "end": str(t_end).strip()}
+                        new_row = {"weekday": str(t_wd).strip(), "slot": normalize_slot(t_slot), "start": str(t_start).strip(), "end": str(t_end).strip()}
                         _backup(TIMESLOTS_CSV)
                         slots_new = pd.concat([slots, pd.DataFrame([new_row])], ignore_index=True)
                         write_csv_atomic(slots_new, TIMESLOTS_CSV)
@@ -4627,10 +4649,47 @@ else:
                     sel_idx = int(slots3.index[slots3["label"] == sel][0])
                     row = slots.loc[sel_idx]
 
-                    e_wd = st.selectbox("曜日", weekday_opts, index=weekday_opts.index(str(row.get("weekday","月")).strip()) if str(row.get("weekday","月")).strip() in weekday_opts else 0, key="ts_edit_wd")
-                    e_slot = st.number_input("コマ", min_value=1, value=int(pd.to_numeric(row.get("slot",1), errors="coerce") or 1), step=1, key="ts_edit_slot")
-                    e_start = st.text_input("開始", value=str(row.get("start","")), key="ts_edit_start")
-                    e_end = st.text_input("終了", value=str(row.get("end","")), key="ts_edit_end")
+                    e_wd = st.selectbox(
+                        "曜日",
+                        weekday_opts,
+                        index=weekday_opts.index(str(row.get("weekday", "月")).strip()) if str(row.get("weekday", "月")).strip() in weekday_opts else 0,
+                        key="ts_edit_wd"
+                    )
+                    cur_slot = normalize_slot(row.get("slot", ""))
+                    ts_edit_slot_label_map = build_slot_label_map(timeslots)
+                    ts_edit_slot_options = [str(k) for k in sorted(ts_edit_slot_label_map.keys())] + ["その他（自由入力）"]
+
+
+                    if cur_slot and cur_slot not in ts_edit_slot_options and cur_slot != "その他（自由入力）":
+                        ts_edit_slot_options = ts_edit_slot_options[:-1] + [cur_slot] + [ts_edit_slot_options[-1]]
+
+
+                    try:
+                        ts_edit_slot_index = ts_edit_slot_options.index(cur_slot) if cur_slot in ts_edit_slot_options else 0
+                    except Exception:
+                        ts_edit_slot_index = 0
+
+
+                    e_slot_sel = st.selectbox(
+                        "コマ",
+                        options=ts_edit_slot_options,
+                        index=ts_edit_slot_index,
+                        key="ts_edit_slot_sel",
+                        format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, ts_edit_slot_label_map)
+                    )
+
+
+                    e_slot_free = ""
+                    if e_slot_sel == "その他（自由入力）":
+                        e_slot_free = st.text_input("コマ（自由入力）", value=cur_slot, key="ts_edit_slot_free")
+
+
+                    e_slot = e_slot_free if e_slot_sel == "その他（自由入力）" else normalize_slot(e_slot_sel)
+
+
+                    e_start = st.text_input("開始", value=str(row.get("start", "")), key="ts_edit_start")
+                    e_end = st.text_input("終了", value=str(row.get("end", "")), key="ts_edit_end")
+
 
                     c5, c6 = st.columns(2)
                     with c5:
@@ -4638,14 +4697,14 @@ else:
                             dup = (
                                 (slots.index != sel_idx)
                                 & (slots["weekday"].astype(str).str.strip() == str(e_wd).strip())
-                                & (pd.to_numeric(slots["slot"], errors="coerce").fillna(-1).astype(int) == int(e_slot))
+                                 & (slots["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(e_slot))
                             )
                             if dup.any():
                                 st.error("更新後に（曜日×コマ）が他の行と重複します。")
                             else:
                                 _backup(TIMESLOTS_CSV)
                                 slots.loc[sel_idx, "weekday"] = str(e_wd).strip()
-                                slots.loc[sel_idx, "slot"] = int(e_slot)
+                                sslots.loc[sel_idx, "slot"] = normalize_slot(e_slot)
                                 slots.loc[sel_idx, "start"] = str(e_start).strip()
                                 slots.loc[sel_idx, "end"] = str(e_end).strip()
                                 write_csv_atomic(slots, TIMESLOTS_CSV)
