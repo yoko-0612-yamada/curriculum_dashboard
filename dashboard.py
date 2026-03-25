@@ -4432,7 +4432,27 @@ else:
                 add_student = st.selectbox("生徒", students2["label"].tolist(), key="ss_add_student")
                 add_student_id = add_student.split("|")[0].strip()
                 add_weekday = st.selectbox("曜日", weekday_opts, key="ss_add_weekday")
-                add_slot = st.number_input("コマ（数字）", min_value=1, value=1, step=1, key="ss_add_slot")
+               # コマ：リスト＋自由入力
+                ss_slot_label_map = build_slot_label_map(timeslots)
+                ss_slot_options = [str(k) for k in sorted(ss_slot_label_map.keys())] + ["その他（自由入力）"]
+
+
+                add_slot_sel = st.selectbox(
+                    "コマ（数字）",
+                    options=ss_slot_options,
+                    index=0,
+                    key="ss_add_slot_sel",
+                    format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, ss_slot_label_map)
+                )
+
+
+                add_slot_free = ""
+                if add_slot_sel == "その他（自由入力）":
+                    add_slot_free = st.text_input("コマ（自由入力）", value="", key="ss_add_slot_free")
+
+
+                add_slot = add_slot_free if add_slot_sel == "その他（自由入力）" else normalize_slot(add_slot_sel)
+
                 add_sess = st.selectbox("種類（session_type）", sess_type_opts, key="ss_add_sess")
                 add_note = st.text_input("メモ（任意）", value="", key="ss_add_note")
 
@@ -4441,7 +4461,7 @@ else:
                     dup = (
                         (sched["student_id"].astype(str).str.strip() == add_student_id)
                         & (sched["weekday"].astype(str).str.strip() == str(add_weekday).strip())
-                        & (pd.to_numeric(sched["slot"], errors="coerce").fillna(-1).astype(int) == int(add_slot))
+                        & (sched["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(add_slot))
                     )
                     if dup.any():
                         st.error("同じ（生徒×曜日×コマ）の行が既にあります。編集を使ってください。")
@@ -4449,7 +4469,7 @@ else:
                         new_row = {
                             "student_id": add_student_id,
                             "weekday": str(add_weekday).strip(),
-                            "slot": int(add_slot),
+                            "slot": normalize_slot(add_slot),  
                             "session_type": str(add_sess).strip(),
                             "note": str(add_note).strip(),
                         }
@@ -4478,7 +4498,38 @@ else:
                     row = sched.loc[sel_idx]
 
                     e_weekday = st.selectbox("曜日", weekday_opts, index=weekday_opts.index(str(row.get("weekday","月")).strip()) if str(row.get("weekday","月")).strip() in weekday_opts else 0, key="ss_edit_weekday")
-                    e_slot = st.number_input("コマ", min_value=1, value=int(pd.to_numeric(row.get("slot",1), errors="coerce") or 1), step=1, key="ss_edit_slot")
+                    # コマ：リスト＋自由入力
+                    cur_slot = normalize_slot(row.get("slot", ""))
+                    ss_edit_slot_label_map = build_slot_label_map(timeslots)
+                    ss_edit_slot_options = [str(k) for k in sorted(ss_edit_slot_label_map.keys())] + ["その他（自由入力）"]
+
+
+                    if cur_slot and cur_slot not in ss_edit_slot_options and cur_slot != "その他（自由入力）":
+                        ss_edit_slot_options = ss_edit_slot_options[:-1] + [cur_slot] + [ss_edit_slot_options[-1]]
+
+
+                    try:
+                        ss_edit_slot_index = ss_edit_slot_options.index(cur_slot) if cur_slot in ss_edit_slot_options else 0
+                    except Exception:
+                        ss_edit_slot_index = 0
+
+
+                    e_slot_sel = st.selectbox(
+                        "コマ",
+                        options=ss_edit_slot_options,
+                        index=ss_edit_slot_index,
+                        key="ss_edit_slot_sel",
+                        format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, ss_edit_slot_label_map)
+                    )
+
+
+                    e_slot_free = ""
+                    if e_slot_sel == "その他（自由入力）":
+                        e_slot_free = st.text_input("コマ（自由入力）", value=cur_slot, key="ss_edit_slot_free")
+
+
+                    e_slot = e_slot_free if e_slot_sel == "その他（自由入力）" else normalize_slot(e_slot_sel)       
+
                     e_sess = st.selectbox("種類（session_type）", sess_type_opts, index=sess_type_opts.index(str(row.get("session_type","lesson")).strip()) if str(row.get("session_type","lesson")).strip() in sess_type_opts else 0, key="ss_edit_sess")
                     e_note = st.text_input("メモ", value=str(row.get("note","")), key="ss_edit_note")
 
@@ -4490,14 +4541,15 @@ else:
                                 (sched.index != sel_idx)
                                 & (sched["student_id"].astype(str).str.strip() == str(row.get("student_id","")).strip())
                                 & (sched["weekday"].astype(str).str.strip() == str(e_weekday).strip())
-                                & (pd.to_numeric(sched["slot"], errors="coerce").fillna(-1).astype(int) == int(e_slot))
+                                & (sched["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(e_slot))
+
                             )
                             if dup.any():
                                 st.error("更新後に（生徒×曜日×コマ）が他の行と重複します。")
                             else:
                                 _backup(STUDENT_SCHEDULE_CSV)
                                 sched.loc[sel_idx, "weekday"] = str(e_weekday).strip()
-                                sched.loc[sel_idx, "slot"] = int(e_slot)
+                                sched.loc[sel_idx, "slot"] = normalize_slot(e_slot)
                                 sched.loc[sel_idx, "session_type"] = str(e_sess).strip()
                                 sched.loc[sel_idx, "note"] = str(e_note).strip()
                                 write_csv_atomic(sched, STUDENT_SCHEDULE_CSV)
