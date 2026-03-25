@@ -3615,11 +3615,25 @@ else:
             new_weekday = new_weekday_free if new_weekday_sel == "その他（自由入力）" else new_weekday_sel
 
             # コマ：timeslots/scheduleから候補（任意）
-            new_slot_sel = st.selectbox("コマ（任意）", options=slot_options, index=0, key="stu_add_slot_sel")
+            slot_label_map = build_slot_label_map(timeslots)
+
+
+            new_slot_sel = st.selectbox(
+                "コマ（任意）",
+                options=slot_options,
+                index=0,
+                key="stu_add_slot_sel",
+                format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, slot_label_map)
+            )
+
+
             new_slot_free = ""
             if new_slot_sel == "その他（自由入力）":
                 new_slot_free = st.text_input("コマ（自由入力）", value="", key="stu_add_slot_free")
-            new_slot = new_slot_free if new_slot_sel == "その他（自由入力）" else new_slot_sel
+
+
+            new_slot = new_slot_free if new_slot_sel == "その他（自由入力）" else normalize_slot(new_slot_sel)
+
 
             new_memo = st.text_area("メモ（補足）", value="", height=80, key="stu_add_memo")
 
@@ -3750,7 +3764,39 @@ else:
             e_active = st.checkbox("在籍中（ON=在籍 / OFF=退会）", value=bool(cur.get("is_active", True)), key="stu_edit_active")
 
             e_weekday = st.text_input("曜日（任意）", value=str(cur.get("weekday", "")), key="stu_edit_weekday")
-            e_slot = st.text_input("コマ（任意）", value=str(cur.get("slot", "")), key="stu_edit_slot")
+
+
+            # コマ：リスト＋自由入力（追加時と同じ形式）
+            cur_slot = normalize_slot(cur.get("slot", ""))
+            if cur_slot and cur_slot not in slot_options and cur_slot != "その他（自由入力）":
+                slot_options = slot_options[:-1] + [cur_slot] + [slot_options[-1]]
+
+
+            try:
+                default_slot_index = slot_options.index(cur_slot) if cur_slot in slot_options else 0
+            except Exception:
+                default_slot_index = 0
+
+
+            slot_label_map = build_slot_label_map(slots_base)
+
+
+            e_slot_sel = st.selectbox(
+                "コマ（任意）",
+                options=slot_options,
+                index=default_slot_index,
+                key="stu_edit_slot_sel",
+                format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, slot_label_map)
+            )
+
+
+            e_slot_free = ""
+            if e_slot_sel == "その他（自由入力）":
+                e_slot_free = st.text_input("コマ（自由入力）", value=cur_slot, key="stu_edit_slot_free")
+
+
+            e_slot = e_slot_free if e_slot_sel == "その他（自由入力）" else normalize_slot(e_slot_sel)
+
 
             if st.button("保存（更新）", key="stu_edit_save"):
                 mask = students["student_id"].astype(str) == sel_id
