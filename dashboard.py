@@ -3777,9 +3777,7 @@ else:
             except Exception:
                 default_slot_index = 0
 
-
             slot_label_map = build_slot_label_map(slots_base)
-
 
             e_slot_sel = st.selectbox(
                 "コマ（任意）",
@@ -3887,7 +3885,29 @@ else:
         with colA:
             wday = st.selectbox("曜日", WEEKDAY_PRESETS, index=0, key=f"weekly_add_wday_{target_id}")
         with colB:
-            slot_in = st.text_input("コマ", value="", placeholder="例）1", key=f"weekly_add_slot_{target_id}")
+            # コマ：リスト＋自由入力（統一フォーマット）
+            cur_slot = normalize_slot("")
+            fs_slot_options = slot_options.copy()
+
+
+            slot_label_map = build_slot_label_map(timeslots)
+
+
+            fs_slot_sel = st.selectbox(
+                "コマ",
+                options=fs_slot_options,
+                index=0,
+                key="fs_slot_sel",
+                format_func=lambda x: "その他（自由入力）" if str(x) == "その他（自由入力）" else format_slot_label(x, slot_label_map)
+            )
+
+
+            fs_slot_free = ""
+            if fs_slot_sel == "その他（自由入力）":
+                fs_slot_free = st.text_input("コマ（自由入力）", value="", key="fs_slot_free")
+
+
+            slot_in = fs_slot_free if fs_slot_sel == "その他（自由入力）" else normalize_slot(fs_slot_sel)
         with colC:
             stype = st.selectbox("種別", ["授業", "自習", "検定", "その他"], index=0, key=f"weekly_add_type_{target_id}")
         with colD:
