@@ -1741,8 +1741,15 @@ if page == "閲覧":
                 if not name:
                     name = sid
 
-                prep_map = st.session_state.get("prep_memo_map", {})
-                memo = prep_map.get(sid, "").strip()
+                prep_df = load_prep_memo().copy()
+                memo_row = prep_df[prep_df["student_id"].astype(str).str.strip() == sid]
+
+
+                if not memo_row.empty:
+                    memo = str(memo_row.iloc[0]["memo"]).strip()
+                else:
+                    memo = ""    
+
 
                 st.write(f"{i}. {slot}限 / {name} / {status}")
 
@@ -4189,17 +4196,6 @@ else:
             tasks_view = tasks_view[
                 tasks_view["course_id"].astype(str).str.strip() == task_course
             ].copy()
-
-
-        task_course = st.session_state.get("t_course_filter", "（全て）")
-
-
-        tasks_view = tasks.copy()
-        if task_course != "（全て）":
-            tasks_view = tasks_view[
-                tasks_view["course_id"].astype(str).str.strip() == task_course
-            ].copy()
-
 
         if "order" in tasks_view.columns:
             tasks_view["order_num"] = pd.to_numeric(tasks_view["order"], errors="coerce").fillna(9999).astype(int)
