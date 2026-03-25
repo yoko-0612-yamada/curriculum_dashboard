@@ -8,6 +8,59 @@ import os
 import pandas as pd
 from datetime import datetime
 
+# --- slot ユーティリティ（統一用） ------------------------------
+def normalize_slot(v):
+    """1, '1', 1.0 → '1' に統一（文字列）"""
+    if v is None:
+        return ""
+    try:
+        n = int(float(v))
+        return str(n)
+    except Exception:
+        s = str(v).strip()
+        # もし '1.0' みたいなのが来たら '1' に寄せる
+        try:
+            n = int(float(s))
+            return str(n)
+        except Exception:
+            return s
+
+def build_slot_label_map(timeslots_df):
+    """
+    timeslots から
+    {1: '1｜16:00〜17:00', ...} を作る
+    """
+    m = {}
+    if timeslots_df is None or "slot" not in timeslots_df.columns:
+        return m
+
+    for _, r in timeslots_df.iterrows():
+        try:
+            s = int(float(r.get("slot")))
+        except Exception:
+            continue
+
+        start = str(r.get("start", "") or "").strip()
+        end = str(r.get("end", "") or "").strip()
+
+        if start or end:
+            m[s] = f"{s}｜{start}〜{end}".strip("〜")
+        else:
+            m[s] = str(s)
+    return m
+
+
+
+
+def format_slot_label(x, slot_label_map):
+    """selectbox の format_func 用"""
+    try:
+        k = int(float(x))
+        return slot_label_map.get(k, str(k))
+    except Exception:
+        return str(x)
+
+
 def ui_str(x) -> str:
     if x is None:
         return ""
