@@ -1499,9 +1499,20 @@ if page == "閲覧":
     today_df = pd.DataFrame(today_rows)
     overdue_df = pd.DataFrame(overdue_rows)
 
+    overdue_count = len(overdue_df)
+
+
+    if overdue_count > 0:
+        st.error(f"🚨 未完了タスク（昨日以前）：{overdue_count}件あります（優先的に対応してください）")
+    else:
+        st.success("✅ 未完了タスク（昨日以前）はありません")
+
+
     render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
 
+
     st.divider()
+
 
 #    st.divider()
 
