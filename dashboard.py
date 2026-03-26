@@ -1361,7 +1361,6 @@ if page == "閲覧":
 
 
         if df.empty:
-            st.caption("なし")
             return
 
 
@@ -1534,13 +1533,11 @@ if page == "閲覧":
         st.success("✅ 未完了タスク（昨日以前）はありません")
 
 
-    render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
-
+    overdue_count = len(overdue_df)
+    today_count = len(today_df)
+    render_unfinished_section(f"🚨 今日の未完了（{today_count}件）", today_df, "today")
 
     st.divider()
-
-
-#    st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
     #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
