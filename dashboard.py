@@ -866,9 +866,16 @@ if page == "閲覧":
     if not include_inactive:
         students_view = students_view[students_view["is_active"] == "true"].copy()
 
-    # Student selector: 今日の予定を上に（🔔表示）
+   # Student selector: 今日の予定を上に（🔔表示）
     today_ids = get_today_student_ids(student_schedule, schedule_overrides)
-    show_today_only = st.sidebar.checkbox("今日の生徒だけ表示", value=False)
+    today_student_ids = set(str(x).strip() for x in today_ids if str(x).strip())
+
+    show_today_only = st.sidebar.checkbox(
+        "今日の生徒だけ表示",
+        value=False,
+        key="today_only"
+    )
+    
     students_view_sorted = students_view.copy()
     if "student_id" in students_view_sorted.columns:
         students_view_sorted["__priority"] = students_view_sorted["student_id"].astype(str).apply(lambda x: 0 if x in today_ids else 1)
@@ -3554,24 +3561,30 @@ if page == "閲覧":
         cols = [c for c in cols if c in filtered_done.columns]
         done_view = filtered_done.copy()
         if show_today_only and "student_id" in done_view.columns:
-            done_view = done_view[done_view["student_id"].astype(str).isin(today_ids)]
+            done_view = done_view[done_view["student_id"].astype(str).str.strip().isin(today_student_ids)].copy()
+
+
 
         show = done_view[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"])
         st.dataframe(show, use_container_width=True, hide_index=True)
+
 
     with tab6:
          #詳細（最新状態）
         st.subheader("項目ごとの最新状態（フィルタ反映）")
         cols = ["date", "grade", "display_name", "curriculum", "item", "status", "note"]
         cols = [c for c in cols if c in latest_filtered.columns]
+        latest_view = latest_filtered.copy()
+        if show_today_only and "student_id" in latest_view.columns:
+            latest_view = latest_view[latest_view["student_id"].astype(str).str.strip().isin(today_student_ids)].copy()
+
+
+
         st.dataframe(
-            latest_filtered[cols].sort_values(by=["grade", "display_name", "curriculum", "item"]),
+            latest_view[cols].sort_values(by=["grade", "display_name", "curriculum", "item"]),
             use_container_width=True,
             hide_index=True,
         )
-        latest_view = latest_filtered.copy()
-        if show_today_only and "student_id" in latest_view.columns:
-            latest_view = latest_view[latest_view["student_id"].astype(str).isin(today_ids)]
 
         st.caption("※ 同じ項目が複数回ログにあっても、最後の状態だけ表示します。")
 
