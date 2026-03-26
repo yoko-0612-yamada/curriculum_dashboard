@@ -1497,6 +1497,12 @@ if page == "閲覧":
             st.divider()
 
     today_df = pd.DataFrame(today_rows)
+    today_count = len(today_df)
+    if today_count > 0:
+        st.warning(f"⚠️ 今日の未完了タスク：{today_count}件あります")
+    else:
+        st.success("✅ 今日の未完了タスクはありません")
+
     overdue_df = pd.DataFrame(overdue_rows)
 
     overdue_count = len(overdue_df)
