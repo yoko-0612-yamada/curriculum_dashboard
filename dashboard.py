@@ -1369,9 +1369,7 @@ if page == "閲覧":
             na_position="last"
         )
 
-
         st.caption("未完了タスクから、そのまま出席登録できます。")
-
 
         for i, row in df.reset_index(drop=True).iterrows():
             d_str = str(row.get("日付", "")).strip()
@@ -1535,7 +1533,10 @@ if page == "閲覧":
 
     overdue_count = len(overdue_df)
     today_count = len(today_df)
-    render_unfinished_section(f"🚨 今日の未完了（{today_count}件）", today_df, "today")
+    if today_count > 0:
+        st.error(f"🚨 今日の未完了：{today_count}件あります（最優先）")
+        render_unfinished_section("今日の未完了", today_df, "today")
+
 
     st.divider()
 
