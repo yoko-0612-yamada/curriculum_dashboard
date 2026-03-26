@@ -1815,12 +1815,7 @@ if page == "閲覧":
 
 
             with c_p1:
-                prep_label = st.selectbox(
-                    "生徒",
-                    prep_labels,
-                    key="prep_target_label"
-                )
-
+                st.write(f"対象生徒：{selected_student}")
 
             with c_p2:
                 prep_text = st.text_input(
