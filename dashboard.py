@@ -887,6 +887,10 @@ if page == "閲覧":
         sid = name_to_id.get(opt, "")
         return ("🔔 " if sid in today_ids else "") + opt
 
+    if "sidebar_student_pending" in st.session_state:
+        pending_name = st.session_state.pop("sidebar_student_pending")
+        st.session_state["sidebar_student"] = pending_name
+
     selected_student = st.sidebar.selectbox(
         "生徒",
         ["（全員）"] + [n for n in student_names if n],
@@ -1374,8 +1378,7 @@ if page == "閲覧":
             progress_done = "進捗未" not in status
 
 
-            c1, c2, c3, c4, c5, c6 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6])
-
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6, 1.2])
 
             with c1:
                 st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{status}")
@@ -1494,6 +1497,16 @@ if page == "閲覧":
                     else:
                         st.error("日付の変換に失敗しました。")
 
+            with c7:
+                if st.button(
+                    "この生徒",
+                    key=f"{key_prefix}_focus_{d_str}_{sid}_{slot}_{i}"
+                ):
+                    target_name = name if name else sid
+                    st.session_state["sidebar_student_pending"] = target_name
+                    st.rerun()
+
+                        
             st.divider()
 
     today_df = pd.DataFrame(today_rows)
