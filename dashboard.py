@@ -673,7 +673,7 @@ def safe_read_csv(
     required_cols=None,
     *,
     stop_on_missing: bool = False,
-    show_message: bool = True,
+   #show_message: bool = True,
     encoding: str = "utf-8",
 ) -> pd.DataFrame:
     """CSVを安全に読み込むヘルパー。
@@ -1113,6 +1113,85 @@ if page == "閲覧":
     weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
     today = dt.date.today()
     today_wd = weekday_map[today.weekday()]
+    
+    
+    # =========================================================
+    # ⚠ 検定結果未登録アラート
+    # =========================================================
+
+
+    kentei_alert_rows = []
+
+
+    if not schedule_overrides.empty:
+        ov_k = schedule_overrides.copy()
+
+
+        # 必須列整形
+        for c in ["student_id", "date", "slot", "note"]:
+            if c not in ov_k.columns:
+                ov_k[c] = ""
+            ov_k[c] = ov_k[c].fillna("").astype(str).str.strip()
+
+
+        # 検定予定っぽいものだけ拾う（noteに「検定」含む）
+        ov_k = ov_k[ov_k["note"].str.contains("検定", na=False)]
+
+
+        # 結果側
+        kentei_df = load_kentei_results().copy()
+        if not kentei_df.empty:
+            for c in ["student_id", "pass_date"]:
+                if c not in kentei_df.columns:
+                    kentei_df[c] = ""
+                kentei_df[c] = kentei_df[c].fillna("").astype(str).str.strip()
+
+
+        today_str = date.today().strftime("%Y-%m-%d")
+
+
+        for _, r in ov_k.iterrows():
+            sid = str(r.get("student_id", "")).strip()
+            d_str = str(r.get("date", "")).strip()
+
+
+            if sid == "" or d_str == "":
+                continue
+
+
+            # 今日以前だけ
+            if d_str > today_str:
+                continue
+
+
+            # 結果があるか
+            has_result = False
+            if not kentei_df.empty:
+                chk = kentei_df[
+                    (kentei_df["student_id"] == sid)
+                ]
+                if not chk.empty:
+                    has_result = True
+
+
+            if not has_result:
+                kentei_alert_rows.append({
+                    "student_id": sid,
+                    "日付": d_str
+                })
+
+
+    # 表示
+    if kentei_alert_rows:
+        k_df = pd.DataFrame(kentei_alert_rows)
+
+        st.warning(f"⚠ 検定結果未登録：{len(k_df)}件あります")
+
+        for _, row in k_df.iterrows():
+            sid = row["student_id"]
+            d_str = row["日付"]
+
+            st.write(f"{sid} / 受験日: {d_str}")
 
 
     # =========================================================
@@ -3420,7 +3499,6 @@ if page == "閲覧":
             else:
                 scratch_best_small = pd.DataFrame(columns=["student_id", "scratch_best"])
 
-
             # 最高点
             best_score_small = (
                 score_src.groupby("student_id", as_index=False)["score_num"]
@@ -3591,18 +3669,17 @@ else:
     st.sidebar.header("管理")
     override_passed_lock = st.session_state.get("override_passed_lock", False)  # (v6.5.5) 2重生成防止
 
-    # NOTE: 閲覧側のサイドバーでも同じ設定をcheckboxとして生成している。
-    # Streamlitは同一keyの要素を同一実行内で2回生成できないため、管理側は別keyで表示し、
-    # 値だけを session_state["override_done_lock"] に同期する。
+    # NOTE: 閲覧側の sidebar checkbox(key="override_done_lock") とは別keyで表示する。
+    # widget key を後から直接書き換えると StreamlitAPIException になるため、
+    # 管理側ではローカル変数としてだけ使う。
     override_done_lock_admin = st.sidebar.checkbox(
         "⚠ 完了済み課題を編集する（通常はOFF）",
         key="override_done_lock_admin",
-        value=st.session_state.get("override_done_lock", False),
+        value=st.session_state.get("override_done_lock_admin", False),
     )
-    st.session_state["override_done_lock"] = override_done_lock_admin
     override_done_lock = override_done_lock_admin
-
-    st.header("管理（入力）")
+    
+    st.header("管理（入力）TEST123")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
 
     sub_stu, sub_weekly, sub_kentei, sub_curr, sub_sys, sub_override, sub_info = st.tabs(
@@ -4077,7 +4154,7 @@ else:
             CURRICULUM_COURSES_CSV,
             ["course_id", "genre_id", "genre_name", "course_name", "course_order", "is_active"],
             stop_on_missing=False,
-            show_message=True,
+          #  show_message=True,
         )
         if courses.empty:
             courses = pd.DataFrame(columns=["course_id","genre_id","genre_name","course_name","course_order","is_active"])
@@ -4195,7 +4272,7 @@ else:
                                 CURRICULUM_TASKS_CSV,
                                 ["course_id","task_id","task_name","order","is_active","student_id"],
                                 stop_on_missing=False,
-                                show_message=False,
+                             #   show_message=False,
                             )
                             if not tasks_now.empty:
                                 tasks2 = tasks_now[tasks_now["course_id"].astype(str).str.strip() != sel_id].copy()
@@ -4214,7 +4291,7 @@ else:
             CURRICULUM_TASKS_CSV,
             ["course_id", "task_id", "task_name", "order", "is_active", "student_id"],
             stop_on_missing=False,
-            show_message=True,
+         #   show_message=True,
         )
         if tasks.empty:
             tasks = pd.DataFrame(columns=["course_id","task_id","task_name","order","is_active","student_id"])
@@ -4430,7 +4507,7 @@ else:
                 STUDENT_SCHEDULE_CSV,
                 ["student_id", "weekday", "slot", "session_type"],
                 stop_on_missing=False,
-                show_message=False,
+            #    show_message=False,
             )
             if sched.empty:
                 sched = pd.DataFrame(columns=["student_id", "weekday", "slot", "session_type", "note"])
@@ -4448,7 +4525,7 @@ else:
 
             st.divider()
 
-            students2 = safe_read_csv(STUDENTS_CSV, ["student_id", "display_name"], show_message=False)
+            students2 = safe_read_csv(STUDENTS_CSV, ["student_id", "display_name"])
             if students2.empty:
                 st.warning("students.csv が空です。先に『生徒管理』で生徒を登録してください。")
                 st.stop()
@@ -4605,7 +4682,7 @@ else:
                 TIMESLOTS_CSV,
                 ["weekday", "slot", "start", "end"],
                 stop_on_missing=False,
-                show_message=False,
+                #show_message=False,
             )
             if slots.empty:
                 slots = pd.DataFrame(columns=["weekday", "slot", "start", "end"])
