@@ -1115,33 +1115,37 @@ if page == "閲覧":
     today_wd = weekday_map[today.weekday()]
     
     
-    # =========================================================
     # ⚠ 検定結果未登録アラート
     # =========================================================
 
 
     kentei_alert_rows = []
+    
+    name_map = {
+        str(r["student_id"]).strip(): str(r["display_name"]).strip()
+        for _, r in students.iterrows()
+    }
+
+    exam_sched = safe_read_csv(
+        KENTEI_EXAM_SCHEDULE_CSV,
+        required_cols=["student_id", "grade", "exam_date", "exam_type", "kentei"]
+    ).copy() 
+
+    if not exam_sched.empty:
+        for c in ["student_id", "grade", "exam_date", "exam_type", "kentei"]:
+            if c not in exam_sched.columns:
+                exam_sched[c] = ""
+            exam_sched[c] = exam_sched[c].fillna("").astype(str).str.strip()
 
 
-    if not schedule_overrides.empty:
-        ov_k = schedule_overrides.copy()
-
-
-        # 必須列整形
-        for c in ["student_id", "date", "slot", "note"]:
-            if c not in ov_k.columns:
-                ov_k[c] = ""
-            ov_k[c] = ov_k[c].fillna("").astype(str).str.strip()
-
-
-        # 検定予定っぽいものだけ拾う（noteに「検定」含む）
-        ov_k = ov_k[ov_k["note"].str.contains("検定", na=False)]
+        # 受験日が入っている予定だけ対象
+        exam_sched = exam_sched[exam_sched["exam_date"] != ""].copy()
 
 
         # 結果側
         kentei_df = load_kentei_results().copy()
         if not kentei_df.empty:
-            for c in ["student_id", "pass_date"]:
+            for c in ["student_id", "grade", "pass_date"]:
                 if c not in kentei_df.columns:
                     kentei_df[c] = ""
                 kentei_df[c] = kentei_df[c].fillna("").astype(str).str.strip()
@@ -1150,25 +1154,27 @@ if page == "閲覧":
         today_str = date.today().strftime("%Y-%m-%d")
 
 
-        for _, r in ov_k.iterrows():
+        for _, r in exam_sched.iterrows():
             sid = str(r.get("student_id", "")).strip()
-            d_str = str(r.get("date", "")).strip()
+            grade = str(r.get("grade", "")).strip()
+            exam_date = str(r.get("exam_date", "")).strip()
 
 
-            if sid == "" or d_str == "":
+            if sid == "" or grade == "" or exam_date == "":
                 continue
 
 
             # 今日以前だけ
-            if d_str > today_str:
+            if exam_date > today_str:
                 continue
 
 
-            # 結果があるか
+            # student_id + grade で結果を確認
             has_result = False
             if not kentei_df.empty:
                 chk = kentei_df[
-                    (kentei_df["student_id"] == sid)
+                    (kentei_df["student_id"].astype(str).str.strip() == sid) &
+                    (kentei_df["grade"].astype(str).str.strip() == grade)
                 ]
                 if not chk.empty:
                     has_result = True
@@ -1177,21 +1183,26 @@ if page == "閲覧":
             if not has_result:
                 kentei_alert_rows.append({
                     "student_id": sid,
-                    "日付": d_str
+                    "grade": grade,
+                    "受験日": exam_date
                 })
 
 
     # 表示
     if kentei_alert_rows:
-        k_df = pd.DataFrame(kentei_alert_rows)
+        k_df = pd.DataFrame(kentei_alert_rows).drop_duplicates()
+
 
         st.warning(f"⚠ 検定結果未登録：{len(k_df)}件あります")
 
+
         for _, row in k_df.iterrows():
             sid = row["student_id"]
-            d_str = row["日付"]
+            grade = row["grade"]
+            exam_date = row["受験日"]
 
-            st.write(f"{sid} / 受験日: {d_str}")
+            name = name_map.get(str(sid).strip(), sid)
+            st.write(f"{name}（{sid}） / {grade}級 / 受験日: {exam_date}")
 
 
     # =========================================================
@@ -2945,6 +2956,12 @@ if page == "閲覧":
                     p = curr_prog.copy()
                     p = p[(p["student_id"].astype(str).str.strip() == student_id) & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())].copy()
                     done_map = {str(r["task_id"]).strip(): (str(r["is_done"]).strip().lower() == "true") for _, r in p.iterrows()}
+                    done_date_map = {
+                        str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
+                        for _, r in p.iterrows()
+                        if str(r["student_id"]).strip() == str(student_id).strip()
+                        and str(r["course_id"]).strip() == str(selected_course_id).strip()
+                    }
 
                     st.markdown("### 課題一覧")
                     updated_rows = []
@@ -2953,7 +2970,9 @@ if page == "閲覧":
                         task_id = str(row["task_id"]).strip()
                         task_name = str(row["task_name"]).strip()
                         was_done = bool(done_map.get(task_id, False))
+                        prev_done_date = str(done_date_map.get(task_id, "")).strip()
                         disabled = (was_done and is_locked_done_tasks)
+
 
                         checked = st.checkbox(
                             task_name,
@@ -2962,12 +2981,17 @@ if page == "閲覧":
                             disabled=disabled
                         )
 
+
                         updated_rows.append({
                             "student_id": student_id,
                             "course_id": str(selected_course_id).strip(),
                             "task_id": task_id,
                             "is_done": "true" if checked else "false",
-                            "done_date": dt.date.today().isoformat() if checked else "",
+                            "done_date": (
+                                dt.date.today().isoformat()
+                                if checked and not was_done
+                                else prev_done_date
+                            ) if checked else "",
                             "note": ""
                         })
 
@@ -3084,12 +3108,18 @@ if page == "閲覧":
             ].copy()
 
             done_map = {str(r["task_id"]).strip(): (str(r["is_done"]).strip().lower() == "true") for _, r in prog.iterrows()}
+            done_date_map = {
+                str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
+                for _, r in prog.iterrows()
+            }
 
             st.markdown("### 課題一覧")
             updated = []
 
             for _, row in tasks.iterrows():
                 task_id = str(row["task_id"]).strip()
+                was_done = bool(done_map.get(task_id, False))
+                prev_done_date = str(done_date_map.get(task_id, "")).strip()
                 checked = st.checkbox(
                     str(row["task_name"]).strip(),
                     value=bool(done_map.get(task_id, False)),
@@ -3102,7 +3132,11 @@ if page == "閲覧":
                     "grade": grade_sel,
                     "task_id": task_id,
                     "is_done": "true" if checked else "false",
-                    "done_date": dt.date.today().isoformat() if checked else "",
+                    "done_date": (
+                        dt.date.today().isoformat()
+                        if checked and not was_done
+                        else prev_done_date
+                    ),
                     "note": ""
                 })
 
