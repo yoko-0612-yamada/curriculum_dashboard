@@ -1411,7 +1411,21 @@ if page == "閲覧":
             if effective_kind != "lesson":
                 prog_done = True
             else:
-                prog_done = curr_done or kentei_done or skip_done
+                prog_done = (
+                    is_progress_done_today(
+                        curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                        sid,
+                        d_date
+                    )
+                    or is_progress_done_today(
+                        kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                        sid,
+                        d_date
+                    )
+                    or is_progress_skip_ok_today(prog_skip_df, sid, d_date)
+                )
+
+
 
 
             # 出欠も進捗も済んでいるなら未完了ではない
@@ -1429,10 +1443,15 @@ if page == "閲覧":
             }
 
 
+            # 今日分は「出席記録」で処理するので、
+            # 今日の未完了には「出欠済み かつ 進捗未」だけ出す
             if d_str == today_str:
-                today_rows.append(row_data)
+                if att_done and (not prog_done):
+                    today_rows.append(row_data)
             else:
-                overdue_rows.append(row_data)
+                # 昨日以前は未完了だけ
+                if (not att_done) or (not prog_done):
+                    overdue_rows.append(row_data)
 
 
     def render_unfinished_section(title: str, df: pd.DataFrame, key_prefix: str):
@@ -1595,33 +1614,24 @@ if page == "閲覧":
     today_df = pd.DataFrame(today_rows)
     today_count = len(today_df)
     if today_count > 0:
-        st.warning(f"⚠️ 今日の未完了タスク：{today_count}件あります")
+        st.warning(f"⚠️ 今日の未完了タスク：{today_count}件あります（最優先）")
     else:
         st.success("✅ 今日の未完了タスクはありません")
 
     overdue_df = pd.DataFrame(overdue_rows)
 
     overdue_count = len(overdue_df)
-
-
     if overdue_count > 0:
         st.error(f"🚨 未完了タスク（昨日以前）：{overdue_count}件あります（優先的に対応してください）")
+        render_unfinished_section(f"🚨 未完了タスク（昨日以前）({overdue_count}件)", overdue_df, "overdue")
     else:
         st.success("✅ 未完了タスク（昨日以前）はありません")
-
-
-    overdue_count = len(overdue_df)
-    today_count = len(today_df)
-    if today_count > 0:
-        st.error(f"🚨 今日の未完了：{today_count}件あります（最優先）")
-        render_unfinished_section("今日の未完了", today_df, "today")
-
 
     st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
     #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
-    st.warning("授業が終わったら『進捗登録』または『進捗なしで完了』を押してください。未登録は未完了タスクに残ります。")
+    st.warning("授業が終わったら、出欠を記録してください。進捗がある場合は下のカリキュラム課題 / 検定課題で登録してください。進捗が無い場合だけ「進捗なしで完了」を押してください。")
 
     if student_schedule.empty:
         st.info("student_schedule.csv が無い/空なので、今日の予定は表示できません。")
@@ -2366,13 +2376,10 @@ if page == "閲覧":
                                 if session_type == "自習":
                                     default_progress_index = 1
 
-                                progress_state = st.radio(
-                                    "進捗状態",
-                                    ["進捗登録済み", "進捗なしで完了"],
-                                    index=default_progress_index,
-                                    key=f"att_progress_state_{today}_{sid}",
-                                    horizontal=False
+                                no_progress_done = st.checkbox(
+                                    "進捗なしで完了にする",key=f"no_progress_done_{d_str}_{sid}_{slot}_{i}"
                                 )
+
 
                             with c5:
                                 if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
@@ -2380,7 +2387,7 @@ if page == "閲覧":
                                     save_attendance_log(att_df2)
 
                                     # 進捗状態を保存
-                                    if progress_state == "進捗なしで完了":
+                                    if no_progress_done:
                                         prog_skip_df2 = load_progress_skip_ok().copy()
                                         prog_skip_df2 = upsert_progress_skip_ok(
                                             prog_skip_df2,
