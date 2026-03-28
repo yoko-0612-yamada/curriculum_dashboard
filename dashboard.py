@@ -860,50 +860,79 @@ if page == "閲覧":
         .unique()
         .tolist()
     )
-    selected_grade = st.sidebar.selectbox("学年", ["（全て）"] + grade_list)
 
-    students_view = students.copy()
-    if not include_inactive:
-        students_view = students_view[students_view["is_active"] == "true"].copy()
 
-   # Student selector: 今日の予定を上に（🔔表示）
     today_ids = get_today_student_ids(student_schedule, schedule_overrides)
     today_student_ids = set(str(x).strip() for x in today_ids if str(x).strip())
+
 
     show_today_only = st.sidebar.checkbox(
         "今日の生徒だけ表示",
         value=False,
         key="today_only"
     )
-    
+
+
+    st.sidebar.markdown("### 👤 **生徒**")
+
+
+    students_view = students.copy()
+    if not include_inactive:
+        students_view = students_view[students_view["is_active"] == "true"].copy()
+
+
+    if show_today_only and "student_id" in students_view.columns:
+        students_view = students_view[
+            students_view["student_id"].astype(str).str.strip().isin(today_student_ids)
+        ].copy()
+
+
     students_view_sorted = students_view.copy()
     if "student_id" in students_view_sorted.columns:
-        students_view_sorted["__priority"] = students_view_sorted["student_id"].astype(str).apply(lambda x: 0 if x in today_ids else 1)
+        students_view_sorted["__priority"] = students_view_sorted["student_id"].astype(str).apply(
+            lambda x: 0 if str(x).strip() in today_ids else 1
+        )
     else:
         students_view_sorted["__priority"] = 1
 
-    students_view_sorted = students_view_sorted.sort_values(by=["__priority", "join_date", "display_name"], na_position="last")
 
-    # options are display_name (既存ロジック互換)
+    students_view_sorted = students_view_sorted.sort_values(
+        by=["__priority", "join_date", "display_name"],
+        na_position="last"
+    )
+
+
     student_names = students_view_sorted["display_name"].fillna("").astype(str).str.strip().tolist()
-    name_to_id = dict(zip(students_view_sorted["display_name"].astype(str), students_view_sorted.get("student_id", pd.Series(dtype=str)).astype(str)))
+    name_to_id = dict(
+        zip(
+            students_view_sorted["display_name"].astype(str),
+            students_view_sorted.get("student_id", pd.Series(dtype=str)).astype(str)
+        )
+    )
+
 
     def _student_label(opt):
         if opt == "（全員）":
             return opt
-        sid = name_to_id.get(opt, "")
+        sid = str(name_to_id.get(opt, "")).strip()
         return ("🔔 " if sid in today_ids else "") + opt
+
 
     if "sidebar_student_pending" in st.session_state:
         pending_name = st.session_state.pop("sidebar_student_pending")
         st.session_state["sidebar_student"] = pending_name
 
+
     selected_student = st.sidebar.selectbox(
-        "生徒",
+        "",
         ["（全員）"] + [n for n in student_names if n],
         format_func=_student_label,
         key="sidebar_student",
     )
+
+
+    selected_grade = st.sidebar.selectbox("学年", ["（全て）"] + grade_list)
+
 
     # Course/genre ordering (optional)
     course_order_map: dict[str, int] = {}
@@ -1454,11 +1483,12 @@ if page == "閲覧":
             }
 
 
-            # 今日分は「出席記録」で処理するので、
-            # 今日の未完了には「出欠済み かつ 進捗未」だけ出す
+            # 今日の未完了は、出欠未 または 進捗未 を広く検出する
+            # ミス防止のため、どちらか未完了なら表示する
             if d_str == today_str:
-                if att_done and (not prog_done):
+                if (not att_done) or (not prog_done):
                     today_rows.append(row_data)
+
             else:
                 # 昨日以前は未完了だけ
                 if (not att_done) or (not prog_done):
@@ -1619,15 +1649,38 @@ if page == "閲覧":
                     st.session_state["sidebar_student_pending"] = target_name
                     st.rerun()
 
-                        
-            st.divider()
-
     today_df = pd.DataFrame(today_rows)
     today_count = len(today_df)
+
     if today_count > 0:
         st.warning(f"⚠️ 今日の未完了タスク：{today_count}件あります（最優先）")
+
+
+        today_show = today_df.copy()
+        if not today_show.empty:
+            today_show = today_show[["生徒", "状態"]].copy()
+            today_show = today_show.drop_duplicates().reset_index(drop=True)
+            
+            priority_map = {
+                "🚨 出欠未 / 進捗未": 0,
+                "⚠ 出欠未": 1,
+                "⚠ 進捗未": 2,
+            }
+
+            today_show["priority"] = today_show["状態"].map(priority_map).fillna(99)
+            today_show = today_show.sort_values(["priority", "生徒"]).reset_index(drop=True)
+
+
+            for _, r in today_show.iterrows():
+                name = str(r.get("生徒", "")).strip()
+                status = str(r.get("状態", "")).strip()
+                st.write(f"• {name} / {status}")
     else:
         st.success("✅ 今日の未完了タスクはありません")
+
+
+    st.divider()
+
 
     overdue_df = pd.DataFrame(overdue_rows)
 
@@ -2907,51 +2960,74 @@ if page == "閲覧":
 
                     st.markdown('---')
                     st.caption("コース完了（done）は、課題が全て終わっていなくても付けられます")
+                    
+                    course_done_mask = (
+                        log["student_id"].astype(str).str.strip() == str(student_id).strip()
+                    ) & (
+                        log["curriculum"].astype(str).str.strip() == str(genre_id).strip()
+                    ) & (
+                        log["item"].astype(str).str.strip() == str(course_name).strip()
+                    ) & (
+                        log["status"].astype(str).str.strip() == "done"
+                    )
+
+
+                    is_course_done = bool(course_done_mask.any())
+
 
                     col_done1, col_done2 = st.columns([1, 2])
+
                     with col_done1:
-                        mark_done = st.checkbox(
-                            "このカリキュラムを完了にする",
-                            value=False,
-                            key=f"mark_course_done_{student_id}_{selected_course_id}",
-                        )
+                        if is_course_done:
+                            st.success("✅ 完了済みです")
+                            mark_done = False
+                        else:
+                            mark_done = st.checkbox(
+                                "このカリキュラムを完了にする",
+                                value=False,
+                                key=f"mark_course_done_{student_id}_{selected_course_id}",
+                            )
+
                     with col_done2:
-                        if st.button(
-                            "完了を保存",
-                            disabled=not mark_done,
-                            key=f"save_course_done_{student_id}_{selected_course_id}",
-                        ):
-                            today_str = datetime.now().strftime('%Y-%m-%d')
-                            new_row = {
-                                'date': today_str,
-                                'student_id': str(student_id).strip(),
-                                'curriculum': str(genre_id).strip(),
-                                'item': str(course_name).strip(),
-                                'status': 'done',
-                                'note': 'course_done',
-                            }
+                        if not is_course_done:
+                            if st.button(
+                                "完了を保存",
+                                disabled=(not mark_done),
+                                key=f"save_course_done_{student_id}_{selected_course_id}",
+                            ):
+                                # 保存処理
 
-                            df_log = log.copy()
-                            if df_log.empty:
-                                df_log = pd.DataFrame([new_row])
-                            else:
-                                mask = (
-                                    df_log['student_id'].astype(str).str.strip() == str(student_id).strip()
-                                ) & (
-                                    df_log['curriculum'].astype(str).str.strip() == str(genre_id).strip()
-                                ) & (
-                                    df_log['item'].astype(str).str.strip() == str(course_name).strip()
-                                )
-                                if mask.any():
-                                    df_log.loc[mask, 'date'] = today_str
-                                    df_log.loc[mask, 'status'] = 'done'
-                                    df_log.loc[mask, 'note'] = 'course_done'
+                                today_str = datetime.now().strftime('%Y-%m-%d')
+                                new_row = {
+                                    'date': today_str,
+                                    'student_id': str(student_id).strip(),
+                                    'curriculum': str(genre_id).strip(),
+                                    'item': str(course_name).strip(),
+                                    'status': 'done',
+                                    'note': 'course_done',
+                                }
+
+                                df_log = log.copy()
+                                if df_log.empty:
+                                    df_log = pd.DataFrame([new_row])
                                 else:
-                                    df_log = pd.concat([df_log, pd.DataFrame([new_row])], ignore_index=True)
+                                    mask = (
+                                        df_log['student_id'].astype(str).str.strip() == str(student_id).strip()
+                                    ) & (
+                                        df_log['curriculum'].astype(str).str.strip() == str(genre_id).strip()
+                                    ) & (
+                                        df_log['item'].astype(str).str.strip() == str(course_name).strip()
+                                    )
+                                    if mask.any():
+                                        df_log.loc[mask, 'date'] = today_str
+                                        df_log.loc[mask, 'status'] = 'done'
+                                        df_log.loc[mask, 'note'] = 'course_done'
+                                    else:
+                                        df_log = pd.concat([df_log, pd.DataFrame([new_row])], ignore_index=True)
 
-                            write_csv_atomic(df_log, PROGRESS_LOG_CSV)
-                            st.success("保存しました（コース完了）")
-                            st.rerun()
+                                write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                st.success("保存しました（コース完了）")
+                                st.rerun()
 
                     p = curr_prog.copy()
                     p = p[(p["student_id"].astype(str).str.strip() == student_id) & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())].copy()
