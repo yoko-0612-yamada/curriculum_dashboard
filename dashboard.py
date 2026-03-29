@@ -85,6 +85,22 @@ def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].astype(str).replace({"nan": "", "NaN": "", "None": ""}).str.strip()
     return df
 
+
+def judge_next_step(score):
+    try:
+        s = int(score)
+    except:
+        return "不明"
+
+
+    if s >= 80:
+        return "🚀 次いける"
+    elif s >= 70:
+        return "👍 ほぼOK"
+    else:
+        return "⚠ 少しフォロー"
+    
+
 import re
 import streamlit as st
 
@@ -1192,7 +1208,6 @@ if page == "閲覧":
 
         # 受験日が入っている予定だけ対象
         exam_sched = exam_sched[exam_sched["exam_date"] != ""].copy()
-
 
         # 結果側
         kentei_df = load_kentei_results().copy()
@@ -3718,6 +3733,7 @@ if page == "閲覧":
                 .rename(columns={"score_num": "best_score"})
             )
 
+            best_score_small["次の判断"] = best_score_small["best_score"].apply(judge_next_step)
 
             # ベースは students
             scratch_view = students.copy()
@@ -3777,7 +3793,7 @@ if page == "閲覧":
                     )
 
 
-                show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score"]
+                show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score", "次の判断"]
 
 
                 st.dataframe(
