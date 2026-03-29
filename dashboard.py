@@ -489,6 +489,23 @@ def build_today_task_status(att_done: bool, prog_done: bool) -> str:
     return "⚠ 進捗未"
 
 
+def build_overdue_urgency_mark(d_str: str, today_date: date) -> str:
+    d_obj = pd.to_datetime(d_str, errors="coerce")
+    if pd.isna(d_obj):
+        return "🚨"
+
+
+    days_diff = (today_date - d_obj.date()).days
+
+
+    if days_diff >= 2:
+        return "🔥"
+    if days_diff == 1:
+        return "🚨"
+    return "⚠"
+
+
+
 STUDENTS_CSV = DATA_DIR / "students.csv"
 PROGRESS_LOG_CSV = DATA_DIR / "progress_log.csv"
 
@@ -1391,6 +1408,8 @@ if page == "閲覧":
                 att_df_check["student_id"].astype(str).str.strip()
             )
         )
+        
+        show_progress_warning = False
 
         for _, r in plan_day.iterrows():
             sid = str(r.get("student_id", "")).strip()
@@ -1464,14 +1483,14 @@ if page == "閲覧":
                     )
                     or is_progress_skip_ok_today(prog_skip_df, sid, d_date)
                 )
-
-
-
+                
+            # 出欠済みだけど進捗未なら警告
+            if att_done and (not prog_done):
+                show_progress_warning = True
 
             # 出欠も進捗も済んでいるなら未完了ではない
             if att_done and prog_done:
                 continue
-
 
             row_data = {
                 "日付": d_str,
@@ -1481,7 +1500,6 @@ if page == "閲覧":
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
             }
-
 
             # 今日の未完了は、出欠未 または 進捗未 を広く検出する
             # ミス防止のため、どちらか未完了なら表示する
@@ -1493,7 +1511,9 @@ if page == "閲覧":
                 # 昨日以前は未完了だけ
                 if (not att_done) or (not prog_done):
                     overdue_rows.append(row_data)
-
+                    
+    if show_progress_warning:
+        st.warning("⚠ 進捗登録がまだです")
 
     def render_unfinished_section(title: str, df: pd.DataFrame, key_prefix: str):
         st.subheader(title)
@@ -1502,15 +1522,37 @@ if page == "閲覧":
         if df.empty:
             return
 
+        show_df = df.copy()
 
-        df = df.sort_values(
-            by=["日付", "コマ", "生徒"],
+        priority_map = {
+            "🚨 出欠未 / 進捗未": 0,
+            "⚠ 出欠未": 1,
+            "⚠ 進捗未": 2,
+        }
+
+        if "状態" in show_df.columns:
+            show_df["priority"] = show_df["状態"].map(priority_map).fillna(99)
+        else:
+            show_df["priority"] = 99
+
+
+        sort_cols = ["priority"]
+        for col in ["日付", "コマ", "生徒"]:
+            if col in show_df.columns:
+                sort_cols.append(col)
+
+
+        show_df = show_df.sort_values(
+            by=sort_cols,
             na_position="last"
-        )
+        ).reset_index(drop=True)
+
 
         st.caption("未完了タスクから、そのまま出席登録できます。")
 
-        for i, row in df.reset_index(drop=True).iterrows():
+
+        for i, row in show_df.iterrows():
+
             d_str = str(row.get("日付", "")).strip()
             sid = str(row.get("student_id", "")).strip()
             slot = str(row.get("コマ", "")).strip()
@@ -1520,11 +1562,17 @@ if page == "閲覧":
             attendance_done = "出欠未" not in status
             progress_done = "進捗未" not in status
 
+            display_status = status
+            if key_prefix == "overdue":
+                urgency_mark = build_overdue_urgency_mark(d_str, today)
+                if status:
+                    display_status = f"{urgency_mark} {status}"
+
 
             c1, c2, c3, c4, c5, c6, c7 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6, 1.2])
 
             with c1:
-                st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{status}")
+                st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{display_status}")
 
 
             with c2:
@@ -1654,27 +1702,59 @@ if page == "閲覧":
 
     if today_count > 0:
         st.warning(f"⚠️ 今日の未完了タスク：{today_count}件あります（最優先）")
-
+        st.markdown(f"### ⚠ 今日の未完了：**{today_count}件**")
 
         today_show = today_df.copy()
         if not today_show.empty:
-            today_show = today_show[["生徒", "状態"]].copy()
+            today_show = today_df[["生徒", "状態"]].copy()
             today_show = today_show.drop_duplicates().reset_index(drop=True)
-            
+
+
+            summary_rows = []
+            for name, group in today_show.groupby("生徒", dropna=False):
+                states = list(dict.fromkeys(group["状態"].astype(str).tolist()))
+
+
+                if "🚨 出欠未 / 進捗未" in states:
+                    merged_status = "🚨 出欠未 / 進捗未あり"
+                else:
+                    parts = []
+                    if "⚠ 出欠未" in states:
+                        parts.append("出欠未")
+                    if "⚠ 進捗未" in states:
+                        parts.append("進捗未")
+
+                    if parts:
+                        merged_status = "⚠ " + "・".join(parts)
+                    else:
+                        merged_status = ""
+
+                summary_rows.append({
+                    "生徒": str(name).strip(),
+                    "状態": merged_status,
+                })
+
+
+            today_show = pd.DataFrame(summary_rows)
+
+
             priority_map = {
-                "🚨 出欠未 / 進捗未": 0,
+                "🚨 出欠未 / 進捗未あり": 0,
+                "⚠ 出欠未・進捗未": 0,
                 "⚠ 出欠未": 1,
                 "⚠ 進捗未": 2,
             }
+
 
             today_show["priority"] = today_show["状態"].map(priority_map).fillna(99)
             today_show = today_show.sort_values(["priority", "生徒"]).reset_index(drop=True)
 
 
             for _, r in today_show.iterrows():
-                name = str(r.get("生徒", "")).strip()
+                label = str(r.get("生徒", "")).strip()
                 status = str(r.get("状態", "")).strip()
-                st.write(f"• {name} / {status}")
+                st.write(f"• {label} / {status}")
+
     else:
         st.success("✅ 今日の未完了タスクはありません")
 
@@ -1687,6 +1767,7 @@ if page == "閲覧":
     overdue_count = len(overdue_df)
     if overdue_count > 0:
         st.error(f"🚨 未完了タスク（昨日以前）：{overdue_count}件あります（優先的に対応してください）")
+        st.markdown(f"### 🚨 昨日以前の未完了：**{overdue_count}件**")
         render_unfinished_section(f"🚨 未完了タスク（昨日以前）({overdue_count}件)", overdue_df, "overdue")
     else:
         st.success("✅ 未完了タスク（昨日以前）はありません")
