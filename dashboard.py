@@ -860,6 +860,17 @@ log_done = log_all[norm_lower(log_all["status"]) == "done"].copy()
 if page == "閲覧":
     # Sidebar filters
     # =========================================================
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] label {
+        margin-bottom: -6px;
+    }
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] {
+        margin-bottom: 0.4rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     st.sidebar.header("フィルタ")
     override_passed_lock = st.sidebar.checkbox("⚠ 合格済み検定課題を編集する（通常はOFF）", key="override_passed_lock")
     # 閲覧側はこのkeyを正とする（管理側は別keyで表示し、ここへ同期する）
@@ -888,9 +899,6 @@ if page == "閲覧":
         value=False,
         key="today_only"
     )
-
-
-    st.sidebar.markdown("### 👤 **生徒**")
 
 
     students_view = students.copy()
@@ -939,17 +947,15 @@ if page == "閲覧":
         pending_name = st.session_state.pop("sidebar_student_pending")
         st.session_state["sidebar_student"] = pending_name
 
-
     selected_student = st.sidebar.selectbox(
-        "",
+        "👤 生徒 ",
         ["（全員）"] + [n for n in student_names if n],
         format_func=_student_label,
         key="sidebar_student",
     )
 
-
-    selected_grade = st.sidebar.selectbox("学年", ["（全て）"] + grade_list)
-
+    
+    selected_grade = st.sidebar.selectbox("学年", ["（全て）"] + grade_list, key="sidebar_grade")
 
     # Course/genre ordering (optional)
     course_order_map: dict[str, int] = {}
@@ -2297,11 +2303,10 @@ if page == "閲覧":
                     mark = str(r.get("種別","")).strip()
                     status = str(r.get("未完了状態","")).strip()
 
-
                     if status:
-                        return f"{name}{mark}  {status}"
+                        return f"{name} / {mark} / {status}"
                     else:
-                        return f"{name}{mark}".strip()
+                        return f"{name} / {mark} / {status}"
 
                 gcols = ["slot_num", "コマ", "start", "end"]
                 base = today_view.copy()
@@ -3877,7 +3882,7 @@ else:
     )
     override_done_lock = override_done_lock_admin
     
-    st.header("管理（入力）TEST123")
+    st.header("管理（入力）")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
 
     sub_stu, sub_weekly, sub_kentei, sub_curr, sub_sys, sub_override, sub_info = st.tabs(
