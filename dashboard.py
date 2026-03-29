@@ -3461,7 +3461,7 @@ if page == "閲覧":
 
                     col1, col2, col3 = st.columns([1, 1, 2])
                     with col1:
-                        if st.button("💾 修正を保存", key="pass_save_edit"):
+                        if st.button("💾 修正を保存", key=f"pass_save_edit_{edit_key_base}"):
                             sid = str(student_for_pass).strip()
                             old_g = str(row.get("grade", "")).strip()
                             old_d = str(row.get("pass_date", "")).strip()
@@ -3490,9 +3490,18 @@ if page == "閲覧":
                                 st.rerun()
 
                     with col2:
-                        undo_progress = st.checkbox("進捗のpassedも戻す", value=False, key="pass_del_undo_progress")
+                        undo_progress = st.checkbox(
+                            "進捗のpassedも戻す",
+                            value=False,
+                            key=f"pass_del_undo_progress_{edit_key_base}"
+                        )
+
                     with col3:
-                        confirm = st.checkbox("削除してもOK（確認）", value=False, key="pass_del_confirm")
+                        confirm = st.checkbox(
+                            "削除してもOK（確認）",
+                            value=False,
+                            key=f"pass_del_confirm_{edit_key_base}"
+                        )
                         if st.button("🗑️ この合格記録を削除", disabled=(not confirm), key="pass_delete_btn"):
                             sid = str(student_for_pass).strip()
                             old_g = str(row.get("grade", "")).strip()
