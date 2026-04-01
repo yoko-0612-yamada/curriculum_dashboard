@@ -123,6 +123,18 @@ def get_next_grade(grade):
     return f"{g-1}級"
 
 
+def build_kentei_hint(judge, grade):
+    judge_str = str(judge).strip()
+    grade_str = str(grade).strip()
+
+    if not judge_str or judge_str.lower() == "nan":
+        return ""
+    if not grade_str or grade_str.lower() == "nan" or grade_str == "不明":
+        return judge_str
+    return f"{judge_str} / {grade_str}"
+
+
+
 # =========================================================
 # Page
 # =========================================================
@@ -1352,6 +1364,64 @@ if page == "閲覧":
                 students_check["display_name"].fillna("").astype(str).str.strip()
             )
         )
+        
+    kentei_hint_map = {}
+    try:
+        kentei_df = load_kentei_results()
+        if not kentei_df.empty:
+            score_src = kentei_df.copy()
+
+
+            if "score" in score_src.columns:
+                score_src["score_num"] = pd.to_numeric(score_src["score"], errors="coerce")
+            else:
+                score_src["score_num"] = np.nan
+
+
+            score_src["item"] = score_src["grade"].astype(str).str.strip() + "級"
+
+
+            scratch_best = (
+                score_src.dropna(subset=["grade"])
+                .copy()
+                .assign(grade_num=pd.to_numeric(score_src["grade"], errors="coerce"))
+                .sort_values(["student_id", "grade_num"], ascending=[True, True])
+                .drop_duplicates(subset=["student_id"], keep="first")
+            )
+
+
+            if not scratch_best.empty:
+                scratch_best_small = scratch_best[["student_id", "item"]].rename(columns={"item": "scratch_best"})
+            else:
+                scratch_best_small = pd.DataFrame(columns=["student_id", "scratch_best"])
+
+
+            best_score_small = (
+                score_src.groupby("student_id", as_index=False)["score_num"]
+                .max()
+                .rename(columns={"score_num": "best_score"})
+            )
+
+
+            kentei_view = students.copy()
+            kentei_view = kentei_view.merge(scratch_best_small, on="student_id", how="left")
+            kentei_view = kentei_view.merge(best_score_small, on="student_id", how="left")
+            kentei_view["次の判断"] = kentei_view["best_score"].apply(judge_next_step)
+            kentei_view["次の級"] = kentei_view["scratch_best"].apply(get_next_grade)
+            kentei_view["検定目安"] = kentei_view.apply(
+                lambda r: build_kentei_hint(r.get("次の判断", ""), r.get("次の級", "")),
+                axis=1
+            )
+
+
+            kentei_hint_map = dict(
+                zip(
+                    kentei_view["student_id"].astype(str).str.strip(),
+                    kentei_view["検定目安"].fillna("").astype(str)
+                )
+            )
+    except Exception:
+        kentei_hint_map = {}
 
 
     active_ids = set(student_name_map.keys()) if student_name_map else set()
@@ -1541,6 +1611,7 @@ if page == "閲覧":
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
+                "検定目安": kentei_hint_map.get(str(sid).strip(), "")
             }
 
             # 今日の未完了は、出欠未 または 進捗未 を広く検出する
