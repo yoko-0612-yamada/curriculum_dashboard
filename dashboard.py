@@ -8,6 +8,9 @@ import os
 import pandas as pd
 from datetime import datetime
 
+import re
+import streamlit as st
+
 # --- slot ユーティリティ（統一用） ------------------------------
 def normalize_slot(v):
     """1, '1', 1.0 → '1' に統一（文字列）"""
@@ -99,10 +102,26 @@ def judge_next_step(score):
         return "👍 ほぼOK"
     else:
         return "⚠ 少しフォロー"
-    
 
-import re
-import streamlit as st
+
+def get_next_grade(grade):
+    g_str = str(grade).strip()
+    if not g_str or g_str.lower() == "nan":
+        return "不明"
+
+    m = re.search(r"([1-4])\s*級", g_str)
+    if not m:
+        m = re.search(r"\b([1-4])\b", g_str)
+
+    if not m:
+        return "不明"
+
+    g = int(m.group(1))
+
+    if g <= 1:
+        return "終了"
+    return f"{g-1}級"
+
 
 # =========================================================
 # Page
@@ -3734,15 +3753,14 @@ if page == "閲覧":
                 .max()
                 .rename(columns={"score_num": "best_score"})
             )
-
-            best_score_small["次の判断"] = best_score_small["best_score"].apply(judge_next_step)
-
+            
             # ベースは students
             scratch_view = students.copy()
             scratch_view = scratch_view.merge(scratch_best_small, on="student_id", how="left")
             scratch_view = scratch_view.merge(score_pivot, on="student_id", how="left")
             scratch_view = scratch_view.merge(best_score_small, on="student_id", how="left")
-
+            scratch_view["次の判断"] = scratch_view["best_score"].apply(judge_next_step)
+            scratch_view["次の級"] = scratch_view["scratch_best"].apply(get_next_grade)
 
             # Scratch検定が1件もない生徒は除外
             scratch_view = scratch_view[
@@ -3795,8 +3813,7 @@ if page == "閲覧":
                     )
 
 
-                show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score", "次の判断"]
-
+                show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score", "次の判断","次の級"]
 
                 st.dataframe(
                     scratch_view.sort_values(by=["grade", "display_name"], na_position="last")[show_cols],
