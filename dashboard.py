@@ -134,6 +134,20 @@ def build_kentei_hint(judge, grade):
     return f"{judge_str} / {grade_str}"
 
 
+def colorize_kentei_hint(text):
+    s = str(text).strip()
+    if not s or s.lower() == "nan":
+        return ""
+
+
+    if "次いける" in s:
+        return f"🟢 {s}"
+    elif "ほぼOK" in s:
+        return f"🟡 {s}"
+    elif "少しフォロー" in s:
+        return f"🔴 {s}"
+    return s
+
 
 # =========================================================
 # Page
@@ -1059,9 +1073,9 @@ if page == "閲覧":
     # =========================================================
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("生徒数", int(len(students)))
-    col2.metric("ログ総数", int(len(log_all)))
-    col3.metric("完了ログ（done）", int(len(log_done)))
-    col4.metric("表示中（done）", int(len(filtered_done)))
+  #  col2.metric("ログ総数", int(len(log_all)))
+  #  col3.metric("完了ログ（done）", int(len(log_done)))
+  #  col4.metric("表示中（done）", int(len(filtered_done)))
     st.divider()
 
     # =========================================================
@@ -1611,7 +1625,9 @@ if page == "閲覧":
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
                 "状態": build_today_task_status(att_done, prog_done),
-                "検定目安": kentei_hint_map.get(str(sid).strip(), "")
+                "検定目安": colorize_kentei_hint(
+                    kentei_hint_map.get(str(sid).strip(), "")
+                )
             }
 
             # 今日の未完了は、出欠未 または 進捗未 を広く検出する
@@ -2002,6 +2018,10 @@ if page == "閲覧":
         today_view["コマ"] = today_view["slot"]
         today_view["生徒"] = today_view["display_name"].fillna("").astype(str)
         
+        today_view["検定目安"] = today_view["student_id"].astype(str).str.strip().map(
+            lambda sid: colorize_kentei_hint(kentei_hint_map.get(sid, ""))
+        )
+
         att_df_for_status = load_attendance_log().copy()
         prog_skip_df_for_status = load_progress_skip_ok().copy()
 
@@ -2362,7 +2382,7 @@ if page == "閲覧":
                     ),
                     axis=1
                 )
-                show_cols = ["コマ", "start", "end", "生徒", "種別", "現在コース", "現在項目", "未完了状態", "note"]
+                show_cols = ["コマ", "start", "end", "生徒", "種別", "現在コース", "現在項目", "未完了状態", "検定目安"]
                 show_cols = [c for c in show_cols if c in today_view.columns]
                 df_show = today_view[show_cols].copy()
 
@@ -2402,18 +2422,26 @@ if page == "閲覧":
                     hide_index=True,
                 )
 
-
             else:
                 # --- B案：コマ（時間）ごとにまとめて、同じコマの生徒を縦に並べる ---
                 def fmt_line(r: pd.Series) -> str:
-                    name = str(r.get("生徒","")).strip()
-                    mark = str(r.get("種別","")).strip()
-                    status = str(r.get("未完了状態","")).strip()
+                    name = str(r.get("生徒", "")).strip()
+                    mark = str(r.get("種別", "")).strip()
+                    status = str(r.get("未完了状態", "")).strip()
+                    hint = str(r.get("検定目安", "")).strip()
 
+
+                    parts = [name]
+                    if mark:
+                        parts.append(mark)
                     if status:
-                        return f"{name} / {mark} / {status}"
-                    else:
-                        return f"{name} / {mark} / {status}"
+                        parts.append(status)
+                    if hint:
+                        parts.append(hint)
+
+
+                    return " / ".join([p for p in parts if p])
+
 
                 gcols = ["slot_num", "コマ", "start", "end"]
                 base = today_view.copy()
