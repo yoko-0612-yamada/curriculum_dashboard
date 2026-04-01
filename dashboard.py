@@ -1344,6 +1344,8 @@ if page == "閲覧":
     first_day = today.replace(day=1)
     today_str = today.strftime("%Y-%m-%d")
     check_days = pd.date_range(first_day, today, freq="D")
+    
+    show_progress_warning = False
 
     for d in check_days:
         d_date = d.date()
