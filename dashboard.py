@@ -139,7 +139,6 @@ def colorize_kentei_hint(text):
     if not s or s.lower() == "nan":
         return ""
 
-
     if "次いける" in s:
         return f"🟢 {s}"
     elif "ほぼOK" in s:
@@ -147,6 +146,17 @@ def colorize_kentei_hint(text):
     elif "少しフォロー" in s:
         return f"🔴 {s}"
     return s
+
+
+def build_today_status(att_done, prog_done):
+    if att_done and prog_done:
+        return "🟢 完了"
+    elif att_done and not prog_done:
+        return "🟡 進捗待ち"
+    elif not att_done:
+        return "🔴 出欠未"
+    return ""
+
 
 
 # =========================================================
@@ -720,7 +730,7 @@ def get_today_student_ids(schedule_df: pd.DataFrame, overrides_df: pd.DataFrame)
                 if not sid:
                     continue
                 action = str(r.get("action", "")).strip().lower()
-                if action in ("add", "move"):
+                if action in ("追加", "move"):
                     counts[sid] = counts.get(sid, 0) + 1
                 elif action == "cancel":
                     counts[sid] = counts.get(sid, 0) - 1
@@ -931,121 +941,153 @@ if page == "閲覧":
     }
     </style>
     """, unsafe_allow_html=True)
+    
+    # =========================
+    # タブ状態（初期）
+    # =========================
+    is_log_tab = False
 
     st.sidebar.header("フィルタ")
-    override_passed_lock = st.sidebar.checkbox("⚠ 合格済み検定課題を編集する（通常はOFF）", key="override_passed_lock")
-    # 閲覧側はこのkeyを正とする（管理側は別keyで表示し、ここへ同期する）
-    override_done_lock = st.sidebar.checkbox("⚠ 完了済み課題を編集する（通常はOFF）", key="override_done_lock")
-    st.sidebar.caption("※ 合格済み/完了済みの編集を一時的に許可したい時だけONにしてください")
-    include_inactive = st.sidebar.checkbox("退会した生徒も含める", value=False)
 
-    grade_list = sorted(
-        students["grade"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .replace("", pd.NA)
-        .dropna()
-        .unique()
-        .tolist()
+
+    # =========================
+    # フィルタ候補を作る
+    # =========================
+    include_inactive = st.session_state.get("include_inactive", False)
+
+
+    students_for_filter = students.copy()
+    if (not include_inactive) and ("is_active" in students_for_filter.columns):
+        students_for_filter = students_for_filter[
+            students_for_filter["is_active"].astype(str).str.strip().str.lower() == "true"
+        ].copy()
+
+
+    student_names = sorted(
+        [
+            str(n).strip()
+            for n in students_for_filter.get("display_name", pd.Series(dtype=str)).fillna("").astype(str)
+            if str(n).strip()
+        ]
     )
 
 
-    today_ids = get_today_student_ids(student_schedule, schedule_overrides)
-    today_student_ids = set(str(x).strip() for x in today_ids if str(x).strip())
+    grade_list = sorted(
+        [
+            str(g).strip()
+            for g in students_for_filter.get("grade", pd.Series(dtype=str)).fillna("").astype(str)
+            if str(g).strip()
+        ]
+    )
+
+
+    curriculum_list = sorted(
+        [
+            str(c).strip()
+            for c in log_all.get("curriculum", pd.Series(dtype=str)).fillna("").astype(str)
+            if str(c).strip()
+        ]
+    )
+
+
+    status_list = sorted(
+        list(
+            {
+                str(s).strip().lower()
+                for s in log_all.get("status", pd.Series(dtype=str)).fillna("").astype(str)
+                if str(s).strip()
+            }
+        )
+    )
+
+
+    # =========================
+    # フィルタ活性条件
+    # =========================
+    current_student = st.session_state.get("sidebar_student", "（全員）")
+    is_single_student = current_student != "（全員）"
+
+
+    # 「閲覧」ではログ表示系は使える
+    is_log_view = True
+
+
+    # =========================
+    # 対象
+    # =========================
+    st.sidebar.markdown("### 対象")
+
+
+    selected_student = st.sidebar.selectbox(
+        "👤 生徒",
+        ["（全員）"] + student_names,
+        key="sidebar_student",
+    )
+
+
+    selected_grade = st.sidebar.selectbox(
+        "学年",
+        ["（全て）"] + grade_list,
+        key="sidebar_grade",
+        disabled=is_single_student,
+    )
+    if is_single_student:
+        st.sidebar.caption("※ 生徒を選択中のため、学年フィルタは無効です")
+
+
+    # =========================
+    # 表示
+    # =========================
+    st.sidebar.markdown("### 表示")
 
 
     show_today_only = st.sidebar.checkbox(
         "今日の生徒だけ表示",
         value=False,
-        key="today_only"
+        key="today_only",
     )
 
 
-    students_view = students.copy()
-    if not include_inactive:
-        students_view = students_view[students_view["is_active"] == "true"].copy()
-
-
-    if show_today_only and "student_id" in students_view.columns:
-        students_view = students_view[
-            students_view["student_id"].astype(str).str.strip().isin(today_student_ids)
-        ].copy()
-
-
-    students_view_sorted = students_view.copy()
-    if "student_id" in students_view_sorted.columns:
-        students_view_sorted["__priority"] = students_view_sorted["student_id"].astype(str).apply(
-            lambda x: 0 if str(x).strip() in today_ids else 1
-        )
-    else:
-        students_view_sorted["__priority"] = 1
-
-
-    students_view_sorted = students_view_sorted.sort_values(
-        by=["__priority", "join_date", "display_name"],
-        na_position="last"
+    include_inactive = st.sidebar.checkbox(
+        "退会した生徒も含める",
+        value=include_inactive,
+        key="include_inactive",
     )
 
 
-    student_names = students_view_sorted["display_name"].fillna("").astype(str).str.strip().tolist()
-    name_to_id = dict(
-        zip(
-            students_view_sorted["display_name"].astype(str),
-            students_view_sorted.get("student_id", pd.Series(dtype=str)).astype(str)
-        )
+    selected_curriculum = st.sidebar.selectbox(
+        "カリキュラム（ログ表示）",
+        ["（全て）"] + curriculum_list,
+        key="sidebar_curriculum",
+        disabled=not is_log_tab,
     )
 
 
-    def _student_label(opt):
-        if opt == "（全員）":
-            return opt
-        sid = str(name_to_id.get(opt, "")).strip()
-        return ("🔔 " if sid in today_ids else "") + opt
-
-
-    if "sidebar_student_pending" in st.session_state:
-        pending_name = st.session_state.pop("sidebar_student_pending")
-        st.session_state["sidebar_student"] = pending_name
-
-    selected_student = st.sidebar.selectbox(
-        "👤 生徒 ",
-        ["（全員）"] + [n for n in student_names if n],
-        format_func=_student_label,
-        key="sidebar_student",
+    selected_status = st.sidebar.selectbox(
+        "状態（詳細表示用）",
+        ["（全て）"] + status_list,
+        key="sidebar_status",
+        disabled=not is_log_tab,
     )
 
-    
-    selected_grade = st.sidebar.selectbox("学年", ["（全て）"] + grade_list, key="sidebar_grade")
+    # =========================
+    # 編集ロック解除
+    # =========================
+    st.sidebar.markdown("### 編集ロック解除")
 
-    # Course/genre ordering (optional)
-    course_order_map: dict[str, int] = {}
-    if not curr_courses.empty and "course_order" in curr_courses.columns:
-        tmp = curr_courses.copy()
-        tmp["course_order_num"] = pd.to_numeric(tmp["course_order"], errors="coerce").fillna(9999).astype(int)
-        for _, r in tmp.iterrows():
-            course_order_map[str(r["course_id"]).strip()] = int(r["course_order_num"])
 
-    # Curriculum list from logs (stable) + optional course genres (nice)
-    curriculum_list = sorted(
-        log_all["curriculum"].fillna("").astype(str).str.strip().replace("", pd.NA).dropna().unique().tolist()
+    override_passed_lock = st.sidebar.checkbox(
+        "⚠ 合格済み検定課題を編集する（通常はOFF）",
+        key="override_passed_lock"
     )
-    if "Scratch" not in curriculum_list:
-        curriculum_list = ["Scratch"] + curriculum_list
 
-    selected_curriculum = st.sidebar.selectbox("カリキュラム（ログ表示）", ["（全て）"] + curriculum_list)
-    selected_status = st.sidebar.selectbox("状態（詳細表示用）", ["（全て）", "done", "in_progress", "paused", "retry"])
 
-    st.sidebar.divider()
+    override_done_lock = st.sidebar.checkbox(
+        "⚠ 完了済み課題を編集する（通常はOFF）",
+        key="override_done_lock"
+    )
 
-    with st.sidebar.expander("⚠ ロック解除（誤操作防止のため普段は触らない）", expanded=False):
-        st.caption("⚠ 合格済み検定課題の編集ロックは、左サイドバーのスイッチで切替します。")
-        st.caption("⚠ 完了済み課題の編集ロックは、左サイドバーのスイッチで切替します。")
-
-    # Log side also respects active filter
-    if not include_inactive and "is_active" in log_all.columns:
-        log_all = log_all[log_all["is_active"] == "true"].copy()
-        log_done = log_done[log_done["is_active"] == "true"].copy()
+    st.sidebar.caption("※ 合格済み/完了済みの編集を一時的に許可したい時だけONにしてください")
 
     # =========================================================
     # Apply filters (logs)
@@ -1490,7 +1532,7 @@ if page == "閲覧":
         # add 適用
         add_rows = []
         if not ov_day.empty:
-            add_day = ov_day[ov_day["action"].str.lower() == "add"].copy()
+            add_day = ov_day[ov_day["action"].str.lower() == "追加"].copy()
             if not add_day.empty:
                 for _, r in add_day.iterrows():
                     sid = str(r.get("student_id", "")).strip()
@@ -1624,7 +1666,8 @@ if page == "閲覧":
                 "コマ": str(r.get("slot", "")).strip(),
                 "生徒": str(r.get("display_name", "")).strip(),
                 "種別": session_mark_text,
-                "状態": build_today_task_status(att_done, prog_done),
+                "未完了状態": build_today_task_status(att_done, prog_done),
+                "状態": build_today_status(att_done, prog_done),
                 "検定目安": colorize_kentei_hint(
                     kentei_hint_map.get(str(sid).strip(), "")
                 )
@@ -2382,7 +2425,7 @@ if page == "閲覧":
                     ),
                     axis=1
                 )
-                show_cols = ["コマ", "start", "end", "生徒", "種別", "現在コース", "現在項目", "未完了状態", "検定目安"]
+                show_cols = ["コマ", "start", "end", "生徒", "種別", "状態", "現在コース", "現在項目", "検定目安"]
                 show_cols = [c for c in show_cols if c in today_view.columns]
                 df_show = today_view[show_cols].copy()
 
@@ -2459,7 +2502,7 @@ if page == "閲覧":
                 show_cols = ["コマ", "start", "end", "予定（生徒ごと）"]
                 st.dataframe(grouped[show_cols], use_container_width=True, hide_index=True)
 
-
+        
         # =====================================================
         # ✅ 出席ログ（授業/自習）: 予定ではなく実績を記録
         #    → 作業完了管理寄り（未確認を先に表示）
@@ -2837,7 +2880,7 @@ if page == "閲覧":
                     )
 
                 with c3:
-                    picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
+                    picked_action = st.selectbox("種別", ["cancel", "追加"], index=0, key="ov_action")
 
 
                 # 選択中のslotに応じたデフォルト（start/end/session_type）
@@ -3676,6 +3719,7 @@ if page == "閲覧":
                             st.rerun()
 
     with tab2:
+        is_log_tab = True
         # コース別（件数）
         st.subheader("コース別：完了状況（ジャンル＋コース名）")
 
@@ -3799,6 +3843,7 @@ if page == "閲覧":
 
 
         # Scratch検定専用画面
+        is_log_tab = True
         st.subheader("Scratch検定一覧（生徒ごと）")
 
         # 級フィルタ
@@ -3922,6 +3967,7 @@ if page == "閲覧":
 
     with tab4:
 
+        is_log_tab = True
          #生徒ごと一覧
         st.subheader("生徒一覧：Scratch検定取得級＋月回数＋完了数（全コース合計）")
 
@@ -3977,6 +4023,7 @@ if page == "閲覧":
 
     with tab5:
 
+        is_log_tab = True
          #生徒別（done）
         st.subheader("生徒別：完了したもの（done）")
         cols = ["date", "grade", "display_name", "curriculum", "item", "note"]
@@ -3992,7 +4039,8 @@ if page == "閲覧":
 
 
     with tab6:
-         #詳細（最新状態）
+        is_log_tab = True
+        #詳細（最新状態）
         st.subheader("項目ごとの最新状態（フィルタ反映）")
         cols = ["date", "grade", "display_name", "curriculum", "item", "status", "note"]
         cols = [c for c in cols if c in latest_filtered.columns]
