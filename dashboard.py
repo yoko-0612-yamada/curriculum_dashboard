@@ -1053,13 +1053,12 @@ if page == "閲覧":
         value=include_inactive,
         key="include_inactive",
     )
-
-
+    
     selected_curriculum = st.sidebar.selectbox(
         "カリキュラム（ログ表示）",
         ["（全て）"] + curriculum_list,
         key="sidebar_curriculum",
-        disabled=not is_log_tab,
+        disabled=not is_log_view,
     )
 
 
@@ -1067,7 +1066,7 @@ if page == "閲覧":
         "状態（詳細表示用）",
         ["（全て）"] + status_list,
         key="sidebar_status",
-        disabled=not is_log_tab,
+        disabled=not is_log_view,
     )
 
     # =========================
@@ -2230,7 +2229,11 @@ if page == "閲覧":
 
 
             with c_p1:
-                st.write(f"対象生徒：{selected_student}")
+                prep_label = st.selectbox(
+                    "対象生徒",
+                    prep_labels,
+                    key="prep_target_student"
+                )
 
             with c_p2:
                 prep_text = st.text_input(
@@ -3099,17 +3102,45 @@ if page == "閲覧":
         latest_filtered = latest_filtered[latest_filtered["curriculum"] == selected_curriculum]
     if selected_status != "（全て）":
         latest_filtered = latest_filtered[norm_lower(latest_filtered["status"]) == selected_status]
+        
+        
+    # =========================================================
+    # 表示切替（試験）
+    # =========================================================
+    sidebar_view_mode = st.radio(
+        "表示切替（試験）",
+        [
+            "カリキュラム課題",
+            "検定課題",
+            "コース別（件数）",
+            "Scratch検定一覧",
+            "生徒ごと一覧",
+            "生徒別（done）",
+            "詳細（最新状態）",
+        ],
+        horizontal=True,
+        key="view_mode_trial"
+    )
+
+    is_log_view = sidebar_view_mode in [
+        "コース別（件数）",
+        "Scratch検定一覧",
+        "生徒ごと一覧",
+        "生徒別（done）",
+        "詳細（最新状態）",
+    ]
+
 
     # =========================================================
     # Tabs
     # =========================================================
-    tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    #tab0, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
        # ['生徒ごと一覧', '生徒別（done）', 'コース別（件数）', 'Scratch最高級', '詳細（最新状態）', 'カリキュラム課題', '検定課題']
-       ['カリキュラム課題', '検定課題','コース別（件数）',  'Scratch検定一覧','生徒ごと一覧', '生徒別（done）', '詳細（最新状態）', ]
-    )
-
-    with tab0:
-         #カリキュラム課題
+    #   ['カリキュラム課題', '検定課題','コース別（件数）',  'Scratch検定一覧','生徒ごと一覧', '生徒別（done）', '詳細（最新状態）', ]
+   # )
+    if sidebar_view_mode == "カリキュラム課題":
+        #with tab0:
+        #カリキュラム課題
         st.subheader("✅ カリキュラム課題（進捗チェック）")
 
         st.caption("※ ここは『進捗チェック』です。課題そのものの登録/編集/削除は 管理（入力） → 📘 カリキュラム管理 で行います。")
@@ -3125,15 +3156,15 @@ if page == "閲覧":
         #    st.info("左のフィルタから、生徒を1人選んでください。")
         #    st.stop()
         if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
-             st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
+            st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
         elif selected_student == "（全員）":
-             st.info("左のフィルタから、生徒を1人選んでください。")
+            st.info("左のフィルタから、生徒を1人選んでください。")
         else:
-             student_row = students[students["display_name"] == selected_student].head(1)
+            student_row = students[students["display_name"] == selected_student].head(1)
 
-             if student_row.empty:
+            if student_row.empty:
                 st.warning("生徒情報が見つかりません。")
-             else:
+            else:
                 student_id = str(student_row["student_id"].iloc[0]).strip()
                 st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
@@ -3153,7 +3184,7 @@ if page == "閲覧":
                         st.warning("生徒情報が見つかりません。")
                     else:
                         student_id = str(student_row["student_id"].iloc[0]).strip()
-                       # st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
+                    # st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
                         # ここから下の tab0 の残り処理をインデント1段下げて入れる
 
@@ -3162,7 +3193,7 @@ if page == "閲覧":
                         st.warning("生徒情報が見つかりません。")
                         st.stop()
                     student_id = str(student_row["student_id"].iloc[0]).strip()
-                  #  st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
+                #  st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
                     # Course selector with order
                     cc = curr_courses.copy()
@@ -3202,12 +3233,9 @@ if page == "閲覧":
                         )
                     ].copy()
 
-                   # if t.empty:
-                   #     st.info("このコースの課題が登録されていません。")
-                   #     st.stop()
 
                     if t.empty:
-                      st.info("このコースの課題が登録されていません。")
+                        st.info("このコースの課題が登録されていません。")
                     else:
 
 
@@ -3353,13 +3381,16 @@ if page == "閲覧":
 
                     if is_locked_done_tasks:
                         st.caption("※ 完了済みの課題は誤操作防止のためロックしています（右の⚠で解除できます）。")
-    with tab1:
+    
+    
+    if sidebar_view_mode == "検定課題":
+        #with tab1:
         #検定課題
 
         st.subheader("📝 検定課題の進捗（チェック入力）")
 
         if kentei_tasks.empty or kentei_prog.empty:
-             st.info("kentei_tasks / kentei_progress が揃っていないため、この機能はスキップします。")
+            st.info("kentei_tasks / kentei_progress が揃っていないため、この機能はスキップします。")
         elif selected_student == "（全員）":
             st.info("左のフィルタから、生徒を1人選んでください。")
         else:
@@ -3367,31 +3398,16 @@ if page == "閲覧":
 
 
             if student_row.empty:
-                 st.warning("生徒情報が見つかりません。")
+                st.warning("生徒情報が見つかりません。")
             else:
-                 student_id = str(student_row["student_id"].iloc[0]).strip()
-                 st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
+                student_id = str(student_row["student_id"].iloc[0]).strip()
+                st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
 
             # ↓↓↓ ここから下を全部インデント1段下げる ↓↓↓
             if kentei_tasks.empty:
                 st.info("この級の課題が登録されていません。")
 
-
-      #  if kentei_tasks.empty or kentei_prog.empty:
-      #      st.info("kentei_tasks / kentei_progress が揃っていないため、この機能はスキップします。")
-      #      st.stop()
-
-       # if selected_student == "（全員）":
-       #     st.info("左のフィルタから、生徒を1人選んでください。")
-       #     st.stop()
-
-       # student_row = students[students["display_name"] == selected_student].head(1)
-      #  if student_row.empty:
-       #     st.warning("生徒情報が見つかりません。")
-       #     st.stop()
-       # student_id = str(student_row["student_id"].iloc[0]).strip()
-       # st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
         # 生徒切替時：検定予定（kentei_exam_schedule.csv）から直近の級をデフォルトにする
             _default_k_grade = None
@@ -3718,7 +3734,9 @@ if page == "閲覧":
                             st.success(f"削除しました（{before-after}件）。")
                             st.rerun()
 
-    with tab2:
+
+    if sidebar_view_mode == "コース別（件数）":
+        #with tab2:
         is_log_tab = True
         # コース別（件数）
         st.subheader("コース別：完了状況（ジャンル＋コース名）")
@@ -3818,8 +3836,9 @@ if page == "閲覧":
                             mark = "⭕️" if (exact_done or fallback_done) else ""
                             st.write(f"- {course_name} {mark}")
 
-    with tab3:
-       # st.write("DUBUG before= ", len(scratch_best_filtered))
+
+    if sidebar_view_mode == "Scratch検定一覧":
+    #with tab3:
         # ---- 背景色：級ごと（行全体）
         def color_by_grade(row):
             grade_val = ""
@@ -3924,12 +3943,12 @@ if page == "閲覧":
                 scratch_view = scratch_view[scratch_view["display_name"] == selected_student]
 
             if show_today_only:
-                    scratch_view = scratch_view[
-                        scratch_view["student_id"].astype(str).isin(today_ids)
-                    ]
+                scratch_view = scratch_view[
+                    scratch_view["student_id"].astype(str).isin(today_ids)
+                ]
 
 
-           # 級フィルタ適用
+        # 級フィルタ適用
             if grade_filter != "（全て）":
 
                 # その級の点数が入っている生徒だけ残す
@@ -3965,10 +3984,12 @@ if page == "閲覧":
                     hide_index=True
                 )
 
-    with tab4:
+
+    if sidebar_view_mode == "生徒ごと一覧":
+        #with tab4:
 
         is_log_tab = True
-         #生徒ごと一覧
+        #生徒ごと一覧
         st.subheader("生徒一覧：Scratch検定取得級＋月回数＋完了数（全コース合計）")
 
         done_counts = log_done.groupby("student_id").size().reset_index(name="done_total")
@@ -4020,11 +4041,11 @@ if page == "閲覧":
                 ]
 
 
-
-    with tab5:
+    if sidebar_view_mode == "生徒別（done）":
+        #with tab5:
 
         is_log_tab = True
-         #生徒別（done）
+        #生徒別（done）
         st.subheader("生徒別：完了したもの（done）")
         cols = ["date", "grade", "display_name", "curriculum", "item", "note"]
         cols = [c for c in cols if c in filtered_done.columns]
@@ -4037,8 +4058,8 @@ if page == "閲覧":
         show = done_view[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"])
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-
-    with tab6:
+    if sidebar_view_mode == "詳細（最新状態）":
+        #with tab6:
         is_log_tab = True
         #詳細（最新状態）
         st.subheader("項目ごとの最新状態（フィルタ反映）")
