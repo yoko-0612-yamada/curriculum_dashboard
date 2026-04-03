@@ -2880,7 +2880,7 @@ if page == "閲覧":
                     )
 
                 with c3:
-                    picked_action = st.selectbox("種別", ["キャンセル", "追加"], index=0, key="ov_action")
+                    picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
 
 
                 # 選択中のslotに応じたデフォルト（start/end/session_type）
