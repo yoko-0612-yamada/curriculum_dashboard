@@ -97,7 +97,10 @@ def judge_next_step(score):
 
 
     if s >= 80:
-        return "🚀 次いける"
+        if status != "終了":
+            st.write(f"🚀 次いける / {grade}")
+        else:
+            st.write(f"{grade}")
     elif s >= 70:
         return "👍 ほぼOK"
     else:
@@ -963,13 +966,33 @@ if page == "閲覧":
         ].copy()
 
 
-    student_names = sorted(
+    base_student_names = sorted(
         [
             str(n).strip()
             for n in students_for_filter.get("display_name", pd.Series(dtype=str)).fillna("").astype(str)
             if str(n).strip()
         ]
     )
+
+
+    priority_student_names = st.session_state.get("sidebar_student_priority_order", [])
+
+
+    student_names = []
+    used_names = set()
+
+
+    for name in priority_student_names:
+        n = str(name).strip()
+        if n and n in base_student_names and n not in used_names:
+            student_names.append(n)
+            used_names.add(n)
+
+
+    for name in base_student_names:
+        if name not in used_names:
+            student_names.append(name)
+
 
 
     grade_list = sorted(
@@ -2169,6 +2192,37 @@ if page == "閲覧":
             na_position="last"
         )
 
+        # 左フィルタ用に「次に見る候補」優先順を保存
+        candidate_names = [
+            str(x).strip()
+            for x in next_candidates["display_name"].fillna("").astype(str).tolist()
+            if str(x).strip()
+        ]
+
+
+        today_names = []
+        if "display_name" in today_view.columns:
+            tmp_today = today_view.copy()
+            if "slot_num" in tmp_today.columns:
+                tmp_today = tmp_today.sort_values(by=["slot_num", "display_name"], na_position="last")
+            today_names = [
+                str(x).strip()
+                for x in tmp_today["display_name"].fillna("").astype(str).tolist()
+                if str(x).strip()
+            ]
+
+
+        priority_order = []
+        used_names = set()
+
+
+        for name in candidate_names + today_names:
+            if name and name not in used_names:
+                priority_order.append(name)
+                used_names.add(name)
+
+
+        st.session_state["sidebar_student_priority_order"] = priority_order
 
         st.subheader("👀 次に見る候補")
 
