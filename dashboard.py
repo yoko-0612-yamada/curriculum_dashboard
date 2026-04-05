@@ -808,6 +808,13 @@ def safe_read_csv(
 def norm_lower(s: pd.Series) -> pd.Series:
     return s.fillna("").astype(str).str.strip().str.lower()
 
+def format_override_action(action):
+    a = str(action).strip().lower()
+    if a == "add":
+        return "追加"
+    if a == "cancel":
+        return "キャンセル"
+    return str(action).strip()
 
 def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
     students = students.copy()
@@ -2223,6 +2230,9 @@ if page == "閲覧":
 
 
         st.session_state["sidebar_student_priority_order"] = priority_order
+        if st.session_state.get("_sidebar_priority_applied") != priority_order:
+            st.session_state["_sidebar_priority_applied"] = priority_order
+            st.rerun()
 
         st.subheader("👀 次に見る候補")
 
@@ -2937,7 +2947,16 @@ if page == "閲覧":
                     )
 
                 with c3:
-                    picked_action = st.selectbox("種別", ["cancel", "add"], index=0, key="ov_action")
+                    action_options = ["cancel", "add"]
+
+                    picked_action = st.selectbox(
+                        "種別",
+                        action_options,
+                        index=0,
+                        key="override_action",
+                        format_func=lambda x: "キャンセル" if x == "cancel" else "追加" if x == "add" else x,
+                    )
+
 
 
                 # 選択中のslotに応じたデフォルト（start/end/session_type）
@@ -3069,8 +3088,8 @@ if page == "閲覧":
                     lambda r: f'{r.get("student_id","")} | {r.get("name","")}'.strip(" |"),
                     axis=1,
                 )
-
-                show_cols = ["label", "slot", "action", "start", "end", "session_type", "note"]
+                ov_today_list["種別"] = ov_today_list["action"].apply(format_override_action)
+                show_cols = ["label", "slot", "種別", "start", "end", "session_type", "note"]
                 show_cols = [c for c in show_cols if c in ov_today_list.columns]
                 st.dataframe(ov_today_list[show_cols], use_container_width=True, hide_index=True)
 
@@ -3080,7 +3099,8 @@ if page == "閲覧":
                     slot = str(r.get("slot","")).strip()
                     action = str(r.get("action","")).strip()
                     label = str(r.get("label","")).strip()
-                    btn = f"🗑 削除：{label} / slot {slot} / {action}"
+                    action_label = format_override_action(action)
+                    btn = f"🗑 削除：{label} / slot {slot} / {action_label}"
                     if st.button(btn, key=f"ov_del_{dstr}_{sid}_{slot}_{action}_{i}"):
                         ov2 = ov_df.copy()
                         for c in ["student_id", "date", "slot", "action"]:
