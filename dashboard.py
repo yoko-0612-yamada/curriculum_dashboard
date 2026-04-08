@@ -685,8 +685,16 @@ def build_slot_options(timeslots_df, schedule_df, students_df):
             return (0, float(v))
         except Exception:
             return (1, v)
-    existing = sorted(list(dict.fromkeys(existing)), key=sort_key)
+    normalized = []
+    for v in existing:
+        nv = normalize_slot(v)
+        if nv != "":
+            normalized.append(nv)
+
+
+    existing = sorted(list(dict.fromkeys(normalized)), key=sort_key)
     return [""] + existing + ["その他（自由入力）"]
+
 
 # -----------------------------
 # Smart defaults / ordering (v6.2)
@@ -973,13 +981,30 @@ if page == "閲覧":
         ].copy()
 
 
-    base_student_names = sorted(
-        [
-            str(n).strip()
-            for n in students_for_filter.get("display_name", pd.Series(dtype=str)).fillna("").astype(str)
-            if str(n).strip()
-        ]
+    student_rows = students_for_filter.copy()
+    student_rows["display_name"] = student_rows["display_name"].fillna("").astype(str).str.strip()
+    student_rows["is_active_norm"] = (
+        student_rows.get("is_active", pd.Series(dtype=str))
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
     )
+
+
+    active_base_student_names = sorted(
+        [n for n in student_rows.loc[student_rows["is_active_norm"] == "true", "display_name"].tolist() if n]
+    )
+
+
+    inactive_base_student_names = sorted(
+        [n for n in student_rows.loc[student_rows["is_active_norm"] != "true", "display_name"].tolist() if n]
+    )
+
+
+    # 重複除去
+    active_base_student_names = list(dict.fromkeys(active_base_student_names))
+    inactive_base_student_names = list(dict.fromkeys(inactive_base_student_names))
 
 
     priority_student_names = st.session_state.get("sidebar_student_priority_order", [])
@@ -989,16 +1014,41 @@ if page == "閲覧":
     used_names = set()
 
 
+    # まず優先順（在籍中のみ）
     for name in priority_student_names:
         n = str(name).strip()
-        if n and n in base_student_names and n not in used_names:
+        if n and n in active_base_student_names and n not in used_names:
             student_names.append(n)
             used_names.add(n)
 
 
-    for name in base_student_names:
+    # 次に在籍中の残り
+    for name in active_base_student_names:
         if name not in used_names:
             student_names.append(name)
+            used_names.add(name)
+
+
+    # 最後に退会済み（表示だけ「（退会）」を付ける）
+    for name in inactive_base_student_names:
+        if name not in used_names:
+            label = f"{name}（退会）"
+            student_names.append(label)
+            used_names.add(name)
+
+    # 次に在籍中の残り
+    for name in active_base_student_names:
+        if name not in used_names:
+            student_names.append(name)
+            used_names.add(name)
+
+
+    # 最後に退会済み
+    for name in inactive_base_student_names:
+        if name not in used_names:
+            student_names.append(name)
+            used_names.add(name)
+
 
 
 
@@ -1053,7 +1103,8 @@ if page == "閲覧":
         ["（全員）"] + student_names,
         key="sidebar_student",
     )
-
+    
+    selected_student_raw = selected_student.replace("（退会）", "")
 
     selected_grade = st.sidebar.selectbox(
         "学年",
@@ -1072,14 +1123,14 @@ if page == "閲覧":
 
 
     show_today_only = st.sidebar.checkbox(
-        "今日の生徒だけ表示",
+        "表示を今日の生徒だけにする",
         value=False,
         key="today_only",
     )
 
 
     include_inactive = st.sidebar.checkbox(
-        "退会した生徒も含める",
+        "生徒候補に退会済みも含める",
         value=include_inactive,
         key="include_inactive",
     )
@@ -1117,7 +1168,6 @@ if page == "閲覧":
     )
 
     st.sidebar.caption("※ 合格済み/完了済みの編集を一時的に許可したい時だけONにしてください")
-
     # =========================================================
     # Apply filters (logs)
     # =========================================================
@@ -1125,25 +1175,33 @@ if page == "閲覧":
     if selected_grade != "（全て）":
         filtered_done = filtered_done[filtered_done["grade"] == selected_grade]
     if selected_student != "（全員）":
-        filtered_done = filtered_done[filtered_done["display_name"] == selected_student]
+        filtered_done = filtered_done[filtered_done["display_name"] == selected_student_raw]
     if selected_curriculum != "（全て）":
         filtered_done = filtered_done[filtered_done["curriculum"] == selected_curriculum]
+
 
     filtered_all = log_all.copy()
     if selected_grade != "（全て）":
         filtered_all = filtered_all[filtered_all["grade"] == selected_grade]
     if selected_student != "（全員）":
-        filtered_all = filtered_all[filtered_all["display_name"] == selected_student]
+        filtered_all = filtered_all[filtered_all["display_name"] == selected_student_raw]
     if selected_curriculum != "（全て）":
         filtered_all = filtered_all[filtered_all["curriculum"] == selected_curriculum]
     if selected_status != "（全て）":
         filtered_all = filtered_all[norm_lower(filtered_all["status"]) == selected_status]
 
+
     # =========================================================
     # Top metrics
     # =========================================================
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("生徒数", int(len(students)))
+    active_students_count = len(
+        students[
+            students["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])
+        ]
+    )
+    col1.metric("生徒数", int(active_students_count))
+
   #  col2.metric("ログ総数", int(len(log_all)))
   #  col3.metric("完了ログ（done）", int(len(log_done)))
   #  col4.metric("表示中（done）", int(len(filtered_done)))
@@ -1976,6 +2034,7 @@ if page == "閲覧":
     st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
+    st.caption("※ 記録後でも「取消」で元に戻せます")
     #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
     st.warning("授業が終わったら、出欠を記録してください。進捗がある場合は下のカリキュラム課題 / 検定課題で登録してください。進捗が無い場合だけ「進捗なしで完了」を押してください。")
 
@@ -2645,8 +2704,7 @@ if page == "閲覧":
                         done_ids.append(sid)
 
 
-                show_done = st.checkbox("確認済みも表示", value=False, key=f"att_show_done_{today}")
-
+                show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
 
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
@@ -4163,13 +4221,7 @@ else:
 
     # NOTE: 閲覧側の sidebar checkbox(key="override_done_lock") とは別keyで表示する。
     # widget key を後から直接書き換えると StreamlitAPIException になるため、
-    # 管理側ではローカル変数としてだけ使う。
-    override_done_lock_admin = st.sidebar.checkbox(
-        "⚠ 完了済み課題を編集する（通常はOFF）",
-        key="override_done_lock_admin",
-        value=st.session_state.get("override_done_lock_admin", False),
-    )
-    override_done_lock = override_done_lock_admin
+    # 管理画面内のみで使用（カリキュラム管理用）
     
     st.header("管理（入力）")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
@@ -4337,7 +4389,10 @@ else:
 
                 # 曜日・コマ
                 st.session_state["stu_edit_weekday"] = str(cur.get("weekday", "") or "")
-                st.session_state["stu_edit_slot"] = str(cur.get("slot", "") or "")
+                st.session_state["stu_edit_memo"] = ui_str(cur.get("memo", ""))
+                cur_slot_tmp = normalize_slot(cur.get("slot", ""))
+                st.session_state["stu_edit_slot_sel"] = cur_slot_tmp if cur_slot_tmp else ""
+                st.session_state["stu_edit_slot_free"] = cur_slot_tmp if cur_slot_tmp else ""
 
                 # 変更を反映した状態で描画し直す
                 st.rerun()
@@ -4376,7 +4431,7 @@ else:
             e_active = st.checkbox("在籍中（ON=在籍 / OFF=退会）", value=bool(cur.get("is_active", True)), key="stu_edit_active")
 
             e_weekday = st.text_input("曜日（任意）", value=str(cur.get("weekday", "")), key="stu_edit_weekday")
-
+            e_memo = st.text_area("メモ（補足）", value=ui_str(cur.get("memo", "")), key="stu_edit_memo")
 
             # コマ：リスト＋自由入力（追加時と同じ形式）
             cur_slot = normalize_slot(cur.get("slot", ""))
@@ -4422,8 +4477,8 @@ else:
                     students["weekday"] = ""
                 if "slot" not in students.columns:
                     students["slot"] = ""
-                    if "memo" not in students.columns:
-                        students["memo"] = ""
+                if "memo" not in students.columns:
+                    students["memo"] = ""
 
                 students.loc[mask, "display_name"] = str(e_name).strip()
                 students.loc[mask, "grade"] = str(e_grade).strip()
@@ -4624,6 +4679,13 @@ else:
     with sub_curr:
         st.subheader("📘 カリキュラム / 課題 管理")
         st.caption("カリキュラム（コース）と課題（タスク）を、CSVを直接触らずにUIから編集できます。保存時に自動バックアップも作ります。")
+        
+        override_done_lock = st.checkbox(
+            "⚠ 完了済み課題を編集する（通常はOFF）",
+            key="override_done_lock_admin",
+            value=st.session_state.get("override_done_lock_admin", False),
+        )
+        st.caption("※ 完了済み課題を一時的に編集したい時だけONにしてください")
 
         def backup_file(path: Path):
             if not path.exists():
