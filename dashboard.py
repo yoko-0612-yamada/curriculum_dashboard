@@ -2230,8 +2230,11 @@ if page == "閲覧":
 
 
         st.session_state["sidebar_student_priority_order"] = priority_order
-        if st.session_state.get("_sidebar_priority_applied") != priority_order:
-            st.session_state["_sidebar_priority_applied"] = priority_order
+        
+        prev = st.session_state.get("_sidebar_priority_applied", [])
+
+        if prev != priority_order:
+            st.session_state["_sidebar_priority_applied"] = priority_order.copy()
             st.rerun()
 
         st.subheader("👀 次に見る候補")
