@@ -1097,6 +1097,8 @@ if page == "閲覧":
     # =========================
     st.sidebar.markdown("### 対象")
 
+    if "pending_sidebar_student" in st.session_state:
+        st.session_state["sidebar_student"] = st.session_state.pop("pending_sidebar_student")
 
     selected_student = st.sidebar.selectbox(
         "👤 生徒",
@@ -2854,7 +2856,12 @@ if page == "閲覧":
                                         save_progress_skip_ok(prog_skip_df2)
 
                                     st.success("保存しました。")
+                                    
+                                    if nm:
+                                        st.session_state["pending_sidebar_student"] = nm
+
                                     st.rerun()
+
 
                                 if st.button("↩ 取消", key=f"att_del_{today}_{sid}"):
                                     att_df2 = delete_attendance(att_df, sid, today)
