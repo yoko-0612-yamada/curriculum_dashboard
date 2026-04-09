@@ -4224,6 +4224,19 @@ if page == "閲覧":
 else:
     # 管理画面中は、左サイドバーの閲覧フィルタを無効化
     st.sidebar.header("管理")
+    admin_include_inactive = st.sidebar.checkbox(
+        "生徒候補に退会済みも含める",
+        value=False,
+        key="admin_include_inactive",
+    )
+    admin_students_for_pick = students.copy()
+
+
+    if (not admin_include_inactive) and ("is_active" in admin_students_for_pick.columns):
+        admin_students_for_pick = admin_students_for_pick[
+            admin_students_for_pick["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])
+        ].copy()
+
     override_passed_lock = st.session_state.get("override_passed_lock", False)  # (v6.5.5) 2重生成防止
 
     # NOTE: 閲覧側の sidebar checkbox(key="override_done_lock") とは別keyで表示する。
@@ -4351,7 +4364,7 @@ else:
         with colB:
             st.subheader("編集 / 退会")
             # 表示名で選べるように
-            students_view = students.copy()
+            students_view = admin_students_for_pick.copy()
             students_view["label"] = students_view["student_id"].astype(str) + " | " + students_view["display_name"].astype(str)
             sel_label = st.selectbox("生徒を選択", students_view["label"].tolist(), key="stu_edit_sel")
             sel_id = sel_label.split("|")[0].strip()
@@ -4509,7 +4522,7 @@ else:
         st.subheader("固定スケジュール（週次）")
         st.caption("週1回/週2回（例：月8回）など、毎週ほぼ固定で来る子はここに登録します。月2回など月ごと調整の子は基本的に入れません。")
 
-        students_w = safe_read_csv(STUDENTS_CSV, required_cols=["student_id", "display_name"], stop_on_missing=True)
+        students_w = admin_students_for_pick.copy()
         students_w["label"] = students_w["student_id"].astype(str) + " | " + students_w["display_name"].astype(str)
 
         # 対象生徒
@@ -4615,21 +4628,21 @@ else:
                     st.success("追加しました。")
                     st.rerun()
 
-# ---------------------------
+    # ---------------------------
     # 🎫 検定予定登録（kentei_schedule.csv）
     # ---------------------------
     with sub_kentei:
         st.subheader("検定予定 登録")
-        students = safe_read_csv(STUDENTS_CSV, required_cols=["student_id", "display_name"], stop_on_missing=True)
-
-        students["label"] = students["student_id"].astype(str) + " | " + students["display_name"].astype(str)
+        
+        students_k = admin_students_for_pick.copy()
+        students_k["label"] = students_k["student_id"].astype(str) + " | " + students_k["display_name"].astype(str)
 
         ks = safe_read_csv(KENTEI_EXAM_SCHEDULE_CSV, required_cols=["date", "student_id", "kentei", "grade", "note"], stop_on_missing=False)  # noqa: F821
         if ks.empty:
             ks = pd.DataFrame(columns=["date", "student_id", "kentei", "grade", "note"])
 
         k_date = st.date_input("日付", value=date.today(), key="kentei_date")  # noqa: F821
-        k_student = st.selectbox("生徒", students["label"].tolist(), key="kentei_student")
+        k_student = st.selectbox("生徒", students_k["label"].tolist(), key="kentei_student")
         k_student_id = k_student.split("|")[0].strip()
         k_name = st.text_input("検定名（例: プログラミング検定）", value="プログラミング検定", key="kentei_name")
         k_grade = st.text_input("級（例: 4 / 3 / 2）", value="", key="kentei_grade_input")
