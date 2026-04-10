@@ -2642,6 +2642,13 @@ if page == "閲覧":
             st.caption("来たタイミングで『記録』を押すだけ。確認済みは下に分かれます。")
             att_df = load_attendance_log()
 
+            prog_df = safe_read_csv(
+                PROGRESS_LOG_CSV,
+                required_cols=["student_id", "date"],
+                stop_on_missing=False
+            )
+            
+            prog_df = sanitize_df(prog_df)
 
             # 今日の予定に出ている生徒（重複除去・表示順維持）
             ids_in_today = []
@@ -2696,6 +2703,18 @@ if page == "閲覧":
                 done_ids = []
                 rec_map = {}
 
+                prog_today_ids = set()
+
+
+                if not prog_df.empty and "student_id" in prog_df.columns and "date" in prog_df.columns:
+                    prog_today = prog_df[
+                        prog_df["date"].astype(str).str.strip() == str(today)
+                    ].copy()
+
+
+                    prog_today_ids = set(
+                        prog_today["student_id"].astype(str).str.strip().tolist()
+                    )
 
                 for sid in ids_in_today:
                     rec = get_attendance_today(att_df, sid, today)
@@ -2707,6 +2726,23 @@ if page == "閲覧":
 
 
                 show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
+                
+                missing_progress_ids = [
+                    sid for sid in done_ids
+                    if sid not in prog_today_ids
+                ]
+
+                if missing_progress_ids:
+                    st.warning(f"⚠ 進捗未登録の生徒が {len(missing_progress_ids)} 件あります")
+
+                    missing_names = []
+                    for sid in missing_progress_ids:
+                        nm = name_map.get(sid, "")
+                        label = f"{sid}｜{nm}" if nm else sid
+                        missing_names.append(label)
+
+                    for label in missing_names:
+                        st.write(f"・{label}")
 
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
