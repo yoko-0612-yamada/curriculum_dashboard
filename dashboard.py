@@ -2736,10 +2736,22 @@ if page == "閲覧":
                         pending_ids.append(sid)
                     else:
                         done_ids.append(sid)
-
-
-                show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
                 
+                
+                if pending_ids:
+                    st.error(f"🚨 最優先：出欠未登録の生徒が {len(pending_ids)} 件あります")
+
+
+                    for sid in pending_ids:
+                        nm = name_map.get(sid, "")
+                        label = f"{sid}｜{nm}" if nm else sid
+
+
+                        st.write(f"・{label}")
+
+
+                    st.caption("※ 下の『出席記録』で記録してください")
+
                 missing_progress_ids = [
                     sid for sid in done_ids
                     if (sid not in prog_today_ids) and (sid not in prog_skip_today_ids)
@@ -2748,22 +2760,17 @@ if page == "閲覧":
                 if missing_progress_ids:
                     st.warning(f"⚠ 最優先：進捗未登録の生徒が {len(missing_progress_ids)} 件あります")
 
-                    missing_names = []
                     for sid in missing_progress_ids:
                         nm = name_map.get(sid, "")
                         label = f"{sid}｜{nm}" if nm else sid
-                        missing_names.append(label)
-
-                    for sid in missing_progress_ids:
-                        nm = name_map.get(sid, "")
-                        label = f"{sid}｜{nm}" if nm else sid
-
 
                         if st.button(f"⚠ {label} を開く", key=f"jump_missing_{sid}"):
                             if nm:
                                 st.session_state["pending_sidebar_student"] = nm
                                 st.rerun()
-
+            
+                show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
+                                
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
 
