@@ -2647,7 +2647,8 @@ if page == "閲覧":
                 required_cols=["student_id", "date"],
                 stop_on_missing=False
             )
-            
+            prog_skip_df = load_progress_skip_ok().copy()
+
             prog_df = sanitize_df(prog_df)
 
             # 今日の予定に出ている生徒（重複除去・表示順維持）
@@ -2705,6 +2706,18 @@ if page == "閲覧":
 
                 prog_today_ids = set()
 
+                prog_skip_today_ids = set()
+
+
+                if not prog_skip_df.empty and "student_id" in prog_skip_df.columns and "date" in prog_skip_df.columns:
+                    prog_skip_today = prog_skip_df[
+                        prog_skip_df["date"].astype(str).str.strip() == str(today)
+                    ].copy()
+
+
+                    prog_skip_today_ids = set(
+                        prog_skip_today["student_id"].astype(str).str.strip().tolist()
+                    )
 
                 if not prog_df.empty and "student_id" in prog_df.columns and "date" in prog_df.columns:
                     prog_today = prog_df[
@@ -2729,11 +2742,11 @@ if page == "閲覧":
                 
                 missing_progress_ids = [
                     sid for sid in done_ids
-                    if sid not in prog_today_ids
+                    if (sid not in prog_today_ids) and (sid not in prog_skip_today_ids)
                 ]
 
                 if missing_progress_ids:
-                    st.warning(f"⚠ 進捗未登録の生徒が {len(missing_progress_ids)} 件あります")
+                    st.warning(f"⚠ 最優先：進捗未登録の生徒が {len(missing_progress_ids)} 件あります")
 
                     missing_names = []
                     for sid in missing_progress_ids:
@@ -2741,8 +2754,15 @@ if page == "閲覧":
                         label = f"{sid}｜{nm}" if nm else sid
                         missing_names.append(label)
 
-                    for label in missing_names:
-                        st.write(f"・{label}")
+                    for sid in missing_progress_ids:
+                        nm = name_map.get(sid, "")
+                        label = f"{sid}｜{nm}" if nm else sid
+
+
+                        if st.button(f"⚠ {label} を開く", key=f"jump_missing_{sid}"):
+                            if nm:
+                                st.session_state["pending_sidebar_student"] = nm
+                                st.rerun()
 
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
