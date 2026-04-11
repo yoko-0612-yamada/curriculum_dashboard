@@ -1141,7 +1141,6 @@ if page == "閲覧":
         "カリキュラム（ログ表示）",
         ["（全て）"] + curriculum_list,
         key="sidebar_curriculum",
-        disabled=not is_log_view,
     )
 
 
@@ -1149,7 +1148,6 @@ if page == "閲覧":
         "状態（詳細表示用）",
         ["（全て）"] + status_list,
         key="sidebar_status",
-        disabled=not is_log_view,
     )
 
     # =========================
@@ -2071,7 +2069,7 @@ if page == "閲覧":
         today_view = sched_today.merge(
             base_students[["student_id", "display_name", "grade", "number_of_times", "join_date"]],
             on="student_id",
-            how="left",
+            how="inner",
         )
 
         if not ts.empty:
@@ -2123,10 +2121,10 @@ if page == "閲覧":
                             add_view = add_view.drop(columns=[c])
 
                 # 生徒情報を結合
-                add_view = add_view.merge(
+                atoday_view = sched_today.merge(
                     base_students[["student_id", "display_name", "grade", "number_of_times", "join_date"]],
                     on="student_id",
-                    how="left",
+                    how="inner",
                 )
 
                 # session_type（空なら lesson）
@@ -2672,8 +2670,6 @@ if page == "閲覧":
                     prog_skip_today["student_id"].astype(str).str.strip().tolist()
                 )
 
-            #prog_df = sanitize_df(prog_df)
-
             # 今日の予定に出ている生徒（重複除去・表示順維持）
             ids_in_today = []
             if "student_id" in today_view.columns:
@@ -2791,8 +2787,11 @@ if page == "閲覧":
                             if nm:
                                 st.session_state["pending_sidebar_student"] = nm
                                 st.rerun()
-            
+                                
                 show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
+                
+                if (not pending_ids) and (not missing_progress_ids):
+                    st.success("🎉 未完了タスクはありません")
                                 
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
@@ -2994,6 +2993,15 @@ if page == "閲覧":
             stu_for_pick["display_name"] = stu_for_pick["display_name"].astype(str).str.strip()
 
             ids_in_today = []
+            
+            active_ids = set(
+                students[
+                    students["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])
+                ]["student_id"].astype(str).str.strip().tolist()
+            )
+
+            ids_in_today = [sid for sid in ids_in_today if sid in active_ids]
+
             if "student_id" in today_view.columns and not today_view.empty:
                 for _sid in today_view["student_id"].astype(str).tolist():
                     _sid = str(_sid).strip()
@@ -3326,7 +3334,7 @@ if page == "閲覧":
     if selected_grade != "（全て）":
         latest_filtered = latest_filtered[latest_filtered["grade"] == selected_grade]
     if selected_student != "（全員）":
-        latest_filtered = latest_filtered[latest_filtered["display_name"] == selected_student]
+        latest_filtered = latest_filtered[latest_filtered["display_name"] == selected_student_raw]
     if selected_curriculum != "（全て）":
         latest_filtered = latest_filtered[latest_filtered["curriculum"] == selected_curriculum]
     if selected_status != "（全て）":
@@ -3377,13 +3385,6 @@ if page == "閲覧":
             st.session_state["pending_page"] = "管理（入力）"
             st.rerun()
 
-        #if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
-        #    st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
-        #    st.stop()
-
-        #if selected_student == "（全員）":
-        #    st.info("左のフィルタから、生徒を1人選んでください。")
-        #    st.stop()
         if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
             st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
         elif selected_student == "（全員）":
@@ -4492,7 +4493,7 @@ else:
                     st.session_state["stu_edit_join"] = date.today()
 
                 # 在籍
-                st.session_state["stu_edit_active"] = bool(cur.get("is_active", True))
+                st.session_state["stu_edit_active"] = str(cur.get("is_active", "")).strip().lower() in ["true", "1", "yes"]
 
                 # 曜日・コマ
                 st.session_state["stu_edit_weekday"] = str(cur.get("weekday", "") or "")
@@ -4535,7 +4536,7 @@ else:
                 default_join = date.today()  # noqa: F821
 
             e_join = st.date_input("入会日", value=default_join, key="stu_edit_join")
-            e_active = st.checkbox("在籍中（ON=在籍 / OFF=退会）", value=bool(cur.get("is_active", True)), key="stu_edit_active")
+            e_active = st.checkbox("在籍中（ON=在籍 / OFF=退会）", value=str(cur.get("is_active", "")).strip().lower() in ["true", "1", "yes"], key="stu_edit_active")
 
             e_weekday = st.text_input("曜日（任意）", value=str(cur.get("weekday", "")), key="stu_edit_weekday")
             e_memo = st.text_area("メモ（補足）", value=ui_str(cur.get("memo", "")), key="stu_edit_memo")
