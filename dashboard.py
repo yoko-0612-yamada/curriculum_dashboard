@@ -2523,6 +2523,9 @@ if page == "閲覧":
 
 
         today_view["生徒"] = today_view.apply(add_month_count_prefix, axis=1)
+        
+        today_view["_pending_mark"] = ""
+        today_view["_missing_mark"] = ""
 
         # 今日が検定日の生徒には 🔴 印（文字色は変えない）
         if "student_id" in today_view.columns and isinstance(today_exam_ids, set) and len(today_exam_ids) > 0:
@@ -2774,6 +2777,27 @@ if page == "閲覧":
                     sid for sid in done_ids
                     if (sid not in prog_today_ids) and (sid not in prog_skip_today_ids)
                 ]
+                
+                pending_set = set(pending_ids)
+                missing_set = set(missing_progress_ids)
+
+
+                if "student_id" in today_view.columns:
+                    today_view["_pending_mark"] = today_view["student_id"].astype(str).apply(
+                        lambda sid: "⚠出欠未" if sid in pending_set else ""
+                    )
+                    today_view["_missing_mark"] = today_view["student_id"].astype(str).apply(
+                        lambda sid: "⚠進捗未" if sid in missing_set else ""
+                    )
+
+
+                    today_view["生徒"] = today_view.apply(
+                        lambda r: (
+                            f"{str(r['生徒']).strip()} "
+                            + " ".join([x for x in [r.get("_pending_mark", ""), r.get("_missing_mark", "")] if str(x).strip()])
+                        ).strip(),
+                        axis=1
+                    )
 
                 if missing_progress_ids:
                     st.markdown("### ⚠ 最優先：進捗未登録")
