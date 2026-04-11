@@ -2060,8 +2060,12 @@ if page == "閲覧":
         sched_today = sched[sched["weekday"] == today_wd].copy()
 
         base_students = students.copy()
-        if not include_inactive:
-            base_students = base_students[base_students["is_active"] == "true"].copy()
+
+        if "is_active" in base_students.columns:
+            base_students = base_students[
+                base_students["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])
+            ].copy()
+
 
         # ベース（固定）スケジュール
         today_view = sched_today.merge(
@@ -2642,14 +2646,33 @@ if page == "閲覧":
             st.caption("来たタイミングで『記録』を押すだけ。確認済みは下に分かれます。")
             att_df = load_attendance_log()
 
-            prog_df = safe_read_csv(
-                PROGRESS_LOG_CSV,
-                required_cols=["student_id", "date"],
+            curr_prog_df = safe_read_csv(
+                CURRICULUM_PROGRESS_CSV,
+                required_cols=["student_id", "done_date"],
                 stop_on_missing=False
             )
-            prog_skip_df = load_progress_skip_ok().copy()
+            curr_prog_df = sanitize_df(curr_prog_df)
+            kentei_prog_df = safe_read_csv(
+                KENTEI_PROGRESS_CSV,
+                required_cols=["student_id", "done_date"],
+                stop_on_missing=False
+            )
+            kentei_prog_df = sanitize_df(kentei_prog_df)
 
-            prog_df = sanitize_df(prog_df)
+            prog_skip_df = load_progress_skip_ok().copy()
+            
+            prog_skip_today_ids = set()
+
+            if not prog_skip_df.empty and {"student_id", "date"}.issubset(prog_skip_df.columns):
+                prog_skip_today = prog_skip_df[
+                    prog_skip_df["date"].astype(str).str.strip() == str(today)
+                ].copy()
+
+                prog_skip_today_ids = set(
+                    prog_skip_today["student_id"].astype(str).str.strip().tolist()
+                )
+
+            #prog_df = sanitize_df(prog_df)
 
             # 今日の予定に出ている生徒（重複除去・表示順維持）
             ids_in_today = []
@@ -2706,28 +2729,27 @@ if page == "閲覧":
 
                 prog_today_ids = set()
 
-                prog_skip_today_ids = set()
-
-
-                if not prog_skip_df.empty and "student_id" in prog_skip_df.columns and "date" in prog_skip_df.columns:
-                    prog_skip_today = prog_skip_df[
-                        prog_skip_df["date"].astype(str).str.strip() == str(today)
+                if not curr_prog_df.empty and {"student_id", "done_date"}.issubset(curr_prog_df.columns):
+                    curr_prog_today = curr_prog_df[
+                        curr_prog_df["done_date"].astype(str).str.strip() == str(today)
                     ].copy()
 
 
-                    prog_skip_today_ids = set(
-                        prog_skip_today["student_id"].astype(str).str.strip().tolist()
+                    prog_today_ids.update(
+                        curr_prog_today["student_id"].astype(str).str.strip().tolist()
                     )
 
-                if not prog_df.empty and "student_id" in prog_df.columns and "date" in prog_df.columns:
-                    prog_today = prog_df[
-                        prog_df["date"].astype(str).str.strip() == str(today)
+
+                if not kentei_prog_df.empty and {"student_id", "done_date"}.issubset(kentei_prog_df.columns):
+                    kentei_prog_today = kentei_prog_df[
+                        kentei_prog_df["done_date"].astype(str).str.strip() == str(today)
                     ].copy()
 
 
-                    prog_today_ids = set(
-                        prog_today["student_id"].astype(str).str.strip().tolist()
+                    prog_today_ids.update(
+                        kentei_prog_today["student_id"].astype(str).str.strip().tolist()
                     )
+
 
                 for sid in ids_in_today:
                     rec = get_attendance_today(att_df, sid, today)
@@ -2739,8 +2761,8 @@ if page == "閲覧":
                 
                 
                 if pending_ids:
-                    st.error(f"🚨 最優先：出欠未登録の生徒が {len(pending_ids)} 件あります")
-
+                    st.markdown("### 🚨 最優先：出欠未登録")
+                    st.error(f"{len(pending_ids)} 件あります")
 
                     for sid in pending_ids:
                         nm = name_map.get(sid, "")
@@ -2758,7 +2780,8 @@ if page == "閲覧":
                 ]
 
                 if missing_progress_ids:
-                    st.warning(f"⚠ 最優先：進捗未登録の生徒が {len(missing_progress_ids)} 件あります")
+                    st.markdown("### ⚠ 最優先：進捗未登録")
+                    st.warning(f"{len(missing_progress_ids)} 件あります")
 
                     for sid in missing_progress_ids:
                         nm = name_map.get(sid, "")
@@ -2982,7 +3005,8 @@ if page == "閲覧":
             rest_ids_sorted = sorted(rest_ids, key=lambda s: str(stu_for_pick.loc[stu_for_pick["student_id"] == s, "display_name"].iloc[0] if (stu_for_pick["student_id"] == s).any() else s))
 
             ordered_ids = ids_in_today + rest_ids_sorted
-            stu_for_pick = stu_for_pick.set_index("student_id").loc[ordered_ids].reset_index()
+            valid_ids = [sid for sid in ordered_ids if sid in stu_for_pick["student_id"].tolist()]
+            stu_for_pick = stu_for_pick.set_index("student_id").loc[valid_ids].reset_index()
 
             name_map = dict(zip(stu_for_pick["student_id"], stu_for_pick["display_name"]))
             labels = [f"{sid} | {name_map.get(sid,'')}".strip(" |") for sid in stu_for_pick["student_id"].tolist()]
