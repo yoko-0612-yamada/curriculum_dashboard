@@ -2563,7 +2563,11 @@ if page == "閲覧":
                 )
                 show_cols = ["コマ", "start", "end", "生徒", "種別", "状態", "現在コース", "現在項目", "検定目安"]
                 show_cols = [c for c in show_cols if c in today_view.columns]
-                df_show = today_view[show_cols].copy()
+                today_view["表示優先度"] = today_view.apply(calc_priority, axis=1)
+                df_show = today_view.sort_values(
+                    by=["表示優先度", "slot_num", "生徒"],
+                    na_position="last"
+                )[show_cols].copy()
 
                 def _pink_today_exam_student(row: pd.Series):
                     # 検定予定の生徒は「うすピンク」で強調（既存仕様）
@@ -2624,10 +2628,10 @@ if page == "閲覧":
 
                 gcols = ["slot_num", "コマ", "start", "end"]
                 base = today_view.copy()
+                base["表示優先度"] = base.apply(calc_priority, axis=1)
                 base["line"] = base.apply(fmt_line, axis=1)
-
                 grouped = (
-                    base.sort_values(by=["slot_num", "生徒"], na_position="last")
+                    base.sort_values(by=["表示優先度", "slot_num", "生徒"], na_position="last")
                         .groupby(gcols, dropna=False)["line"]
                         .apply(lambda s: "\n".join([x for x in s.tolist() if str(x).strip()]))
                         .reset_index()
@@ -2778,6 +2782,17 @@ if page == "閲覧":
                     if (sid not in prog_today_ids) and (sid not in prog_skip_today_ids)
                 ]
                 
+                pending_count = len(pending_ids)
+                missing_count = len(missing_progress_ids)
+                unfinished_count = pending_count + missing_count
+                
+                if (not pending_ids) and (not missing_progress_ids):
+                    st.success("🎉 未完了タスクはありません")
+                else:
+                    st.info(
+                        f"未完了：{unfinished_count}件（出欠未 {pending_count} / 進捗未 {missing_count}）"
+                    )
+
                 pending_set = set(pending_ids)
                 missing_set = set(missing_progress_ids)
 
@@ -2813,9 +2828,6 @@ if page == "閲覧":
                                 st.rerun()
                                 
                 show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
-                
-                if (not pending_ids) and (not missing_progress_ids):
-                    st.success("🎉 未完了タスクはありません")
                                 
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
                 target_ids = pending_ids if not show_done else ids_in_today
