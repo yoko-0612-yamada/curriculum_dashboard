@@ -559,8 +559,8 @@ def build_today_task_status(att_done: bool, prog_done: bool) -> str:
     if (not att_done) and (not prog_done):
         return "🚨 出欠未 / 進捗未"
     if not att_done:
-        return "⚠ 出欠未"
-    return "⚠ 進捗未"
+        return "❗出欠"
+    return "❗進捗"
 
 
 def build_overdue_urgency_mark(d_str: str, today_date: date) -> str:
@@ -1785,8 +1785,8 @@ if page == "閲覧":
 
         priority_map = {
             "🚨 出欠未 / 進捗未": 0,
-            "⚠ 出欠未": 1,
-            "⚠ 進捗未": 2,
+            "❗出欠": 1,
+            "❗進捗": 2,
         }
 
         if "状態" in show_df.columns:
@@ -1978,9 +1978,9 @@ if page == "閲覧":
                     merged_status = "🚨 出欠未 / 進捗未あり"
                 else:
                     parts = []
-                    if "⚠ 出欠未" in states:
+                    if "❗出欠" in states:
                         parts.append("出欠未")
-                    if "⚠ 進捗未" in states:
+                    if "❗進捗" in states:
                         parts.append("進捗未")
 
                     if parts:
@@ -1999,9 +1999,9 @@ if page == "閲覧":
 
             priority_map = {
                 "🚨 出欠未 / 進捗未あり": 0,
-                "⚠ 出欠未・進捗未": 0,
-                "⚠ 出欠未": 1,
-                "⚠ 進捗未": 2,
+                "❗出欠・進捗": 0,
+                "❗出欠": 1,
+                "❗進捗": 2,
             }
 
 
@@ -2790,7 +2790,7 @@ if page == "閲覧":
                     st.success("🎉 未完了タスクはありません")
                 else:
                     st.info(
-                        f"未完了：{unfinished_count}件（出欠未 {pending_count} / 進捗未 {missing_count}）"
+                        f"未完了：{unfinished_count}件（出欠 {pending_count} / 要対応 {missing_count}）"
                     )
 
                 pending_set = set(pending_ids)
@@ -2799,10 +2799,10 @@ if page == "閲覧":
 
                 if "student_id" in today_view.columns:
                     today_view["_pending_mark"] = today_view["student_id"].astype(str).apply(
-                        lambda sid: "⚠出欠未" if sid in pending_set else ""
+                        lambda sid: "❗出欠" if sid in pending_set else ""
                     )
                     today_view["_missing_mark"] = today_view["student_id"].astype(str).apply(
-                        lambda sid: "⚠進捗未" if sid in missing_set else ""
+                        lambda sid: "❗要対応" if sid in missing_set else ""
                     )
 
 
