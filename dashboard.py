@@ -2813,6 +2813,8 @@ if page == "閲覧":
                         ).strip(),
                         axis=1
                     )
+                    
+                    today_view.drop(columns=["_pending_mark", "_missing_mark"], errors="ignore", inplace=True)
 
                 if missing_progress_ids:
                     st.markdown("### ⚠ 最優先：進捗未登録")
@@ -4764,7 +4766,23 @@ else:
         ks = safe_read_csv(KENTEI_EXAM_SCHEDULE_CSV, required_cols=["date", "student_id", "kentei", "grade", "note"], stop_on_missing=False)  # noqa: F821
         if ks.empty:
             ks = pd.DataFrame(columns=["date", "student_id", "kentei", "grade", "note"])
+        if "pending_kentei_student" in st.session_state:
+            st.session_state["kentei_student"] = st.session_state.pop("pending_kentei_student")
+            
+        if "pending_kentei_date" in st.session_state:
+            st.session_state["kentei_date"] = st.session_state.pop("pending_kentei_date")
 
+
+        if "pending_kentei_name" in st.session_state:
+            st.session_state["kentei_name"] = st.session_state.pop("pending_kentei_name")
+
+
+        if "pending_kentei_grade_input" in st.session_state:
+            st.session_state["kentei_grade_input"] = st.session_state.pop("pending_kentei_grade_input")
+
+
+        if "pending_kentei_note" in st.session_state:
+            st.session_state["kentei_note"] = st.session_state.pop("pending_kentei_note")
         k_date = st.date_input("日付", value=date.today(), key="kentei_date")  # noqa: F821
         k_student = st.selectbox("生徒", students_k["label"].tolist(), key="kentei_student")
         k_student_id = k_student.split("|")[0].strip()
@@ -4772,31 +4790,105 @@ else:
         k_grade = st.text_input("級（例: 4 / 3 / 2）", value="", key="kentei_grade_input")
         k_note = st.text_input("メモ（任意）", value="", key="kentei_note")
 
-        #if st.button("保存（kentei_schedule.csv に追記）", key="kentei_save"):
-        #    new_row = {
-        #        "date": str(k_date),
-        #        "student_id": k_student_id,
-        #        "kentei": str(k_name).strip(),
-        #        "grade": str(k_grade).strip(),
-        #        "note": str(k_note).strip(),
-        #    }
-        #    ks = pd.concat([ks, pd.DataFrame([new_row])], ignore_index=True)
-        #    write_csv(ks, KENTEI_EXAM_SCHEDULE_CSV)  # noqa: F821
-        #    st.success("保存しました。")
+        st.markdown("#### 編集 / 削除する予定を選ぶ")
+        show_past_kentei = st.checkbox("過去のデータも表示", value=False, key="show_past_kentei")
+        ks_edit_base = ks.copy()
+
+        if "exam_date" in ks_edit_base.columns:
+            ks_edit_base["exam_date"] = pd.to_datetime(ks_edit_base["exam_date"], errors="coerce")
+        if "date" in ks_edit_base.columns:
+            ks_edit_base["date"] = pd.to_datetime(ks_edit_base["date"], errors="coerce")
+
+        today_ts = pd.Timestamp(date.today())
+
+        if not show_past_kentei and "exam_date" in ks_edit_base.columns:
+            ks_edit_base = ks_edit_base[
+                ks_edit_base["exam_date"].notna() & (ks_edit_base["exam_date"] >= today_ts)
+            ].copy()
+
+        sort_col = "exam_date" if "exam_date" in ks_edit_base.columns else "date"
+        ks_edit_base = ks_edit_base.sort_values(sort_col, na_position="last").tail(20).copy()
 
 
-        if st.button("保存（kentei_exam_schedule.csv に追記）", key="kentei_save_btn"):
+        name_map_k = dict(
+            zip(
+                students_k["student_id"].astype(str).str.strip(),
+                students_k["display_name"].astype(str).str.strip()
+            )
+        )
+        ks_edit_base["display_name"] = ks_edit_base["student_id"].astype(str).str.strip().map(name_map_k).fillna("")
+
+
+        ks_edit_base["edit_label"] = ks_edit_base.apply(
+            lambda r: (
+                f"{str(r.get('exam_date', '')).split(' ')[0]} | "
+                f"{str(r.get('student_id', '')).strip()} | "
+                f"{str(r.get('display_name', '')).strip()} | "
+                f"{str(r.get('exam_type', r.get('kentei', ''))).strip()} | "
+                f"{str(r.get('grade', '')).strip()}"
+            ),
+            axis=1
+        )
+
+
+        edit_options = ["（新規のまま）"] + ks_edit_base["edit_label"].tolist()
+        selected_edit_label = st.selectbox("編集対象", edit_options, key="kentei_edit_target")
+        
+        last_edit_label = st.session_state.get("kentei_edit_last_label")
+
+        selected_edit_row = None
+
+
+        if selected_edit_label != "（新規のまま）":
+            selected_edit_row = ks_edit_base.loc[ks_edit_base["edit_label"] == selected_edit_label].iloc[0]
+
+
+        if selected_edit_label != "（新規のまま）" and selected_edit_label != last_edit_label:
+            st.session_state["kentei_edit_last_label"] = selected_edit_label
+
+
+            try:
+                selected_date = pd.to_datetime(selected_edit_row.get("exam_date", ""), errors="coerce")
+                if pd.notna(selected_date):
+                    st.session_state["pending_kentei_date"] = selected_date.date()
+            except Exception:
+                pass
+
+
+            selected_sid = str(selected_edit_row.get("student_id", "")).strip()
+            selected_name = name_map_k.get(selected_sid, "")
+            selected_label = f"{selected_sid} | {selected_name}" if selected_name else selected_sid
+            if selected_label in students_k["label"].tolist():
+                st.session_state["pending_kentei_student"] = selected_label
+
+
+            st.session_state["pending_kentei_name"] = str(
+                selected_edit_row.get("exam_type", selected_edit_row.get("kentei", ""))
+            ).strip()
+            st.session_state["pending_kentei_grade_input"] = str(selected_edit_row.get("grade", "")).strip()
+            st.session_state["pending_kentei_note"] = ui_str(selected_edit_row.get("note", ""))
+
+            st.rerun()
+
+
+        save_label = "保存（新規追加）" if selected_edit_label == "（新規のまま）" else "保存（上書き）"
+        if st.button(save_label, key="kentei_save_btn"):
             new_row = {
                 "student_id": k_student_id,
-                "exam_type": str(k_name).strip(),      # 例：プログラミング検定
-                "grade": str(k_grade).strip(),         # 例：2
-                "exam_date": str(k_date),              # 受験日（画面の日付）
-                "note": str(k_note).strip(),           # メモ
-                "date": str(date.today()),            # 登録日（空でもいいけど入れた方が整う）
-                "kentei": str(k_name).strip(),         # 互換用（空でもいいが、入れると後で楽）
+                "exam_type": str(k_name).strip(),
+                "grade": str(k_grade).strip(),
+                "exam_date": str(k_date),
+                "note": str(k_note).strip(),
+                "date": str(date.today()),
+                "kentei": str(k_name).strip(),
             }
 
-            ks = pd.concat([ks, pd.DataFrame([new_row])], ignore_index=True)
+            if selected_edit_label == "（新規のまま）":
+                ks = pd.concat([ks, pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                edit_idx = int(selected_edit_row.name)
+                for col, val in new_row.items():
+                    ks.loc[edit_idx, col] = val
 
             # 列順を固定（崩れ防止）
             cols = ["student_id","exam_type","grade","exam_date","note","date","kentei"]
@@ -4805,14 +4897,75 @@ else:
             write_csv(ks, KENTEI_EXAM_SCHEDULE_CSV)
             st.success("保存しました。")
 
+        st.divider()
+        st.caption("登録済み（直近）")
 
-            st.divider()
-            st.caption("登録済み（直近）")
-            if not ks.empty:
-                ks_view = ks.copy()
+        if not ks.empty:
+            ks_view = ks.copy()
+
+
+            # 表示用の日付列をそろえる
+            if "exam_date" in ks_view.columns:
+                ks_view["exam_date"] = pd.to_datetime(ks_view["exam_date"], errors="coerce")
+            if "date" in ks_view.columns:
                 ks_view["date"] = pd.to_datetime(ks_view["date"], errors="coerce")
-                ks_view = ks_view.sort_values("date").tail(20)
-                st.dataframe(ks_view, use_container_width=True)
+
+
+            # 直近20件だけ表示
+            sort_col = "exam_date" if "exam_date" in ks_view.columns else "date"
+            ks_view = ks_view.sort_values(sort_col, na_position="last").tail(20).copy()
+
+
+            # 表示名を作る
+            name_map_k = dict(
+                zip(
+                    students_k["student_id"].astype(str).str.strip(),
+                    students_k["display_name"].astype(str).str.strip()
+                )
+            )
+            ks_view["display_name"] = ks_view["student_id"].astype(str).str.strip().map(name_map_k).fillna("")
+
+
+            # 一覧表示
+            show_cols = [c for c in ["exam_date", "student_id", "display_name", "exam_type", "grade", "note"] if c in ks_view.columns]
+            st.dataframe(ks_view[show_cols], use_container_width=True, hide_index=True)
+
+
+            st.caption("削除したい予定のボタンを押してください（即反映）")
+
+
+            for i, r in ks_view.reset_index().iterrows():
+                row_index = int(r["index"])
+
+
+                sid = str(r.get("student_id", "")).strip()
+                nm = str(r.get("display_name", "")).strip()
+                exam_type = str(r.get("exam_type", r.get("kentei", ""))).strip()
+                grade = str(r.get("grade", "")).strip()
+                exam_date = str(r.get("exam_date", "")).strip()
+
+
+                c1, c2, c3, c4, c5 = st.columns([2, 2, 2, 2, 2])
+                with c1:
+                    st.write(exam_date or "-")
+                with c2:
+                    st.write(f"{sid} | {nm}" if nm else sid)
+                with c3:
+                    st.write(exam_type or "-")
+                with c4:
+                    st.write(grade or "-")
+                with c5:
+                    if st.button("この予定を削除", key=f"kentei_del_{row_index}"):
+                        ks2 = ks.drop(index=row_index).reset_index(drop=True)
+
+
+                        cols = ["student_id", "exam_type", "grade", "exam_date", "note", "date", "kentei"]
+                        ks2 = ks2.reindex(columns=cols)
+
+
+                        write_csv(ks2, KENTEI_EXAM_SCHEDULE_CSV)
+                        st.success("削除しました。")
+                        st.rerun()
 
 
         # ---------------------------
