@@ -97,14 +97,12 @@ def judge_next_step(score):
 
 
     if s >= 80:
-        if status != "終了":
-            st.write(f"🚀 次いける / {grade}")
-        else:
-            st.write(f"{grade}")
+        return "🚀 次いける"
     elif s >= 70:
         return "👍 ほぼOK"
     else:
         return "⚠ 少しフォロー"
+
 
 
 def get_next_grade(grade):
@@ -2104,10 +2102,20 @@ if page == "閲覧":
             if not add_df.empty:
                 # 置き換え（同じ student_id×slot はベースを消す）
                 add_keys = set(zip(add_df["student_id"], add_df["slot"]))
-                today_view = today_view[~today_view.apply(lambda r: (str(r.get("student_id","")).strip(), str(r.get("slot","")).strip()) in add_keys, axis=1)].copy()
+                today_view = today_view[
+                    ~today_view.apply(
+                        lambda r: (
+                            str(r.get("student_id", "")).strip(),
+                            str(r.get("slot", "")).strip()
+                        ) in add_keys,
+                        axis=1,
+                    )
+                ].copy()
+
 
                 add_view = add_df.copy()
                 add_view["weekday"] = today_wd
+
 
                 # start/end が空なら timeslots から補完
                 if not ts.empty:
@@ -2120,24 +2128,38 @@ if page == "閲覧":
                         if c in add_view.columns:
                             add_view = add_view.drop(columns=[c])
 
-                # 生徒情報を結合
-                atoday_view = sched_today.merge(
+
+                # 生徒情報を結合 ← ここが重要
+                add_view = add_view.merge(
                     base_students[["student_id", "display_name", "grade", "number_of_times", "join_date"]],
                     on="student_id",
-                    how="inner",
+                    how="left",
                 )
 
-                # session_type（空なら lesson）
-                add_view["session_type"] = add_view["session_type"].replace("", "lesson")
 
-                # ベースと列合わせ
+                # session_type（空なら lesson）
+                if "session_type" not in add_view.columns:
+                    add_view["session_type"] = "lesson"
+                add_view["session_type"] = add_view["session_type"].replace("", "lesson").fillna("lesson")
+
+
+                # 表示に必要な列を安全に補う
+                for c in ["display_name", "grade", "number_of_times", "join_date", "note", "start", "end"]:
+                    if c not in add_view.columns:
+                        add_view[c] = ""
+
+
                 for c in ["note"]:
                     if c not in today_view.columns:
                         today_view[c] = ""
-                # add_view の note は上書き表示用
+
+
+                add_view["display_name"] = add_view["display_name"].fillna("").astype(str).str.strip()
                 add_view["note"] = add_view["note"].fillna("").astype(str)
 
+
                 today_view = pd.concat([today_view, add_view], ignore_index=True)
+
 
         # current merge（最新ログの「done以外」を優先）
         today_view = today_view.merge(
@@ -2151,7 +2173,11 @@ if page == "閲覧":
         today_view["slot_num"] = pd.to_numeric(today_view["slot"], errors="coerce")
 
         today_view["コマ"] = today_view["slot"]
-        today_view["生徒"] = today_view["display_name"].fillna("").astype(str)
+        if "display_name" not in today_view.columns:
+            today_view["display_name"] = ""
+        today_view["display_name"] = today_view["display_name"].fillna("").astype(str).str.strip()
+        today_view["生徒"] = today_view["display_name"]
+
         
         today_view["検定目安"] = today_view["student_id"].astype(str).str.strip().map(
             lambda sid: colorize_kentei_hint(kentei_hint_map.get(sid, ""))
@@ -2643,6 +2669,122 @@ if page == "閲覧":
                 st.dataframe(grouped[show_cols], use_container_width=True, hide_index=True)
 
         
+
+        # =====================================================
+        # 🚫 今日の予定からワンクリックでキャンセル
+        # =====================================================
+        with st.expander("🚫 今日の予定をキャンセル", expanded=False):
+            st.caption("月2回の子など、今日は来ない予定をここからすぐキャンセルできます。")
+
+
+            if today_view.empty:
+                st.info("今日の予定がないため、キャンセル対象はありません。")
+            else:
+                cancel_src = today_view.copy()
+
+
+                # 表示用に重複を抑える（同じ生徒×同じコマ）
+                cancel_src["student_id"] = cancel_src["student_id"].astype(str).str.strip()
+                cancel_src["slot"] = cancel_src["slot"].astype(str).str.strip()
+                cancel_src["display_name"] = cancel_src["display_name"].fillna("").astype(str).str.strip()
+                cancel_src = cancel_src.drop_duplicates(subset=["student_id", "slot"], keep="first").copy()
+
+
+                # すでに今日 cancel 済みのものは除外
+                ov_cancel_today = schedule_overrides.copy()
+                if not ov_cancel_today.empty:
+                    for c in ["student_id", "date", "slot", "action"]:
+                        if c in ov_cancel_today.columns:
+                            ov_cancel_today[c] = ov_cancel_today[c].fillna("").astype(str).str.strip()
+
+
+                    ov_cancel_today = ov_cancel_today[
+                        (ov_cancel_today["date"] == today.strftime("%Y-%m-%d"))
+                        & (ov_cancel_today["action"].str.lower() == "cancel")
+                    ].copy()
+
+
+                    canceled_keys = set(zip(
+                        ov_cancel_today["student_id"].astype(str).str.strip(),
+                        ov_cancel_today["slot"].astype(str).str.strip(),
+                    ))
+                else:
+                    canceled_keys = set()
+
+
+                cancel_src = cancel_src[
+                    ~cancel_src.apply(
+                        lambda r: (str(r.get("student_id", "")).strip(), str(r.get("slot", "")).strip()) in canceled_keys,
+                        axis=1
+                    )
+                ].copy()
+
+
+                if cancel_src.empty:
+                    st.success("キャンセルできる予定はありません。")
+                else:
+                    for i, r in cancel_src.reset_index(drop=True).iterrows():
+                        sid = str(r.get("student_id", "")).strip()
+                        name = str(r.get("display_name", "")).strip()
+                        slot = str(r.get("slot", "")).strip()
+                        start = str(r.get("start", "")).strip()
+                        end = str(r.get("end", "")).strip()
+
+
+                        c1, c2, c3 = st.columns([4, 2, 2])
+
+
+                        with c1:
+                            label = f"{sid}｜{name}" if name else sid
+                            time_label = f"{slot}コマ"
+                            if start or end:
+                                time_label += f"（{start}〜{end}）".strip("〜")
+                            st.write(f"{label} / {time_label}")
+
+
+                        with c2:
+                            st.write(str(r.get("session_type", "")).strip() or "-")
+
+
+                        with c3:
+                            if st.button("キャンセル", key=f"quick_cancel_{today}_{sid}_{slot}_{i}"):
+                                ov2 = schedule_overrides.copy()
+                                if ov2.empty:
+                                    ov2 = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
+                                else:
+                                    for c in ["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]:
+                                        if c not in ov2.columns:
+                                            ov2[c] = ""
+                                        ov2[c] = ov2[c].fillna("").astype(str).str.strip()
+
+
+                                new_row = {
+                                    "student_id": sid,
+                                    "date": today.strftime("%Y-%m-%d"),
+                                    "slot": slot,
+                                    "action": "cancel",
+                                    "start": "",
+                                    "end": "",
+                                    "session_type": "",
+                                    "note": "今日の予定からワンクリックでキャンセル",
+                                }
+
+
+                                # 同じ student_id × date × slot × action は重複させない
+                                keymask = (
+                                    (ov2["student_id"] == new_row["student_id"])
+                                    & (ov2["date"] == new_row["date"])
+                                    & (ov2["slot"] == new_row["slot"])
+                                    & (ov2["action"] == new_row["action"])
+                                )
+                                ov2 = ov2[~keymask].copy()
+                                ov2 = pd.concat([ov2, pd.DataFrame([new_row])], ignore_index=True)
+
+
+                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                                st.success("キャンセルしました。今日の予定に反映されます。")
+                                st.rerun()
+
         # =====================================================
         # ✅ 出席ログ（授業/自習）: 予定ではなく実績を記録
         #    → 作業完了管理寄り（未確認を先に表示）
