@@ -1634,7 +1634,7 @@ if page == "閲覧":
         add_day_df = pd.DataFrame(add_rows)
 
 
-        # その日の予定を統合
+       # その日の予定を統合
         plan_day = pd.concat([base_day, add_day_df], ignore_index=True) if not add_day_df.empty else base_day.copy()
 
 
@@ -1651,7 +1651,44 @@ if page == "閲覧":
 
 
         # 名前付与
-        plan_day["display_name"] = plan_day["student_id"].astype(str).map(student_name_map).fillna(plan_day["student_id"].astype(str))
+        plan_day["display_name"] = (
+            plan_day["student_id"].astype(str).map(student_name_map).fillna(plan_day["student_id"].astype(str))
+        )
+
+
+        # -------------------------------------------------
+        # 未完了判定用に「1日1生徒1件」にまとめる
+        # 判定単位：date × student_id
+        # -------------------------------------------------
+        def pick_session_label(series):
+            vals = [str(v).strip().lower() for v in series if str(v).strip() != ""]
+            if any(v in ["self", "selfstudy", "自習"] for v in vals):
+                return "自習"
+            return "授業"
+
+
+        def join_slots(series):
+            vals = []
+            for v in series:
+                s = str(v).strip()
+                if s and s not in vals:
+                    vals.append(s)
+            return " / ".join(vals)
+
+
+        plan_day_unit = (
+            plan_day.groupby("student_id", as_index=False)
+            .agg({
+                "display_name": "first",
+                "slot": join_slots,
+                "session_type": pick_session_label,
+            })
+            .rename(columns={
+                "display_name": "display_name",
+                "slot": "slot_label",
+                "session_type": "session_label",
+            })
+        )
 
 
         # attendance の date × student_id があるか
@@ -1661,10 +1698,8 @@ if page == "閲覧":
                 att_df_check["student_id"].astype(str).str.strip()
             )
         )
-        
-        show_progress_warning = False
 
-        for _, r in plan_day.iterrows():
+        for _, r in plan_day_unit.iterrows():
             sid = str(r.get("student_id", "")).strip()
             if sid == "":
                 continue
@@ -1686,7 +1721,7 @@ if page == "閲覧":
             skip_done = is_progress_skip_ok_today(prog_skip_df, sid, d_date)
 
             # まず予定の種別
-            session_type = str(r.get("session_type", "")).strip()
+            session_type = str(r.get("session_label", "")).strip()
 
             # その日の出欠実績があれば、実績の kind を優先する
             actual_kind = ""
@@ -1748,11 +1783,11 @@ if page == "閲覧":
             row_data = {
                 "日付": d_str,
                 "student_id": sid,
-                "コマ": str(r.get("slot", "")).strip(),
                 "生徒": str(r.get("display_name", "")).strip(),
+                "コマ": str(r.get("slot_label", "")).strip(),
                 "種別": session_mark_text,
+                "状態": build_today_task_status(att_done, prog_done),
                 "未完了状態": build_today_task_status(att_done, prog_done),
-                "状態": build_today_status(att_done, prog_done),
                 "検定目安": colorize_kentei_hint(
                     kentei_hint_map.get(str(sid).strip(), "")
                 )
