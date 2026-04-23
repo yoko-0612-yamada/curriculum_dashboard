@@ -12,6 +12,7 @@ import re
 import streamlit as st
 
 # --- slot ユーティリティ（統一用） ------------------------------
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def normalize_slot(v):
     """1, '1', 1.0 → '1' に統一（文字列）"""
     if v is None:
@@ -28,6 +29,7 @@ def normalize_slot(v):
         except Exception:
             return s
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_slot_label_map(timeslots_df):
     """
     timeslots から
@@ -55,6 +57,7 @@ def build_slot_label_map(timeslots_df):
 
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def format_slot_label(x, slot_label_map):
     """selectbox の format_func 用"""
     try:
@@ -64,6 +67,7 @@ def format_slot_label(x, slot_label_map):
         return str(x)
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def ui_str(x) -> str:
     if x is None:
         return ""
@@ -76,6 +80,7 @@ def ui_str(x) -> str:
     return "" if s.lower() in ["nan", "none"] else s
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize NaN/None/'nan' strings to empty strings for safe UI display."""
     if df is None or len(df) == 0:
@@ -89,6 +94,7 @@ def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def judge_next_step(score):
     try:
         s = int(score)
@@ -105,6 +111,7 @@ def judge_next_step(score):
 
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def get_next_grade(grade):
     g_str = str(grade).strip()
     if not g_str or g_str.lower() == "nan":
@@ -124,6 +131,7 @@ def get_next_grade(grade):
     return f"{g-1}級"
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_kentei_hint(judge, grade):
     judge_str = str(judge).strip()
     grade_str = str(grade).strip()
@@ -135,6 +143,7 @@ def build_kentei_hint(judge, grade):
     return f"{judge_str} / {grade_str}"
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def colorize_kentei_hint(text):
     s = str(text).strip()
     if not s or s.lower() == "nan":
@@ -149,6 +158,7 @@ def colorize_kentei_hint(text):
     return s
 
 
+# [CHECK 2026-04-23] このファイル内では定義のみを確認。参照未検出のため、削除候補として要確認。
 def build_today_status(att_done, prog_done):
     if att_done and prog_done:
         return "🟢 完了"
@@ -207,6 +217,7 @@ admin_mode = (page == "管理（入力）")
 #   2) Environment variable DASHBOARD_PASSWORD
 # If neither exists -> allow access but show warning.
 # =========================================================
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def _get_password() -> str | None:
     try:
         pw = st.secrets.get("DASHBOARD_PASSWORD")  # type: ignore[attr-defined]
@@ -218,6 +229,7 @@ def _get_password() -> str | None:
     return str(pw2) if pw2 else None
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def require_login() -> None:
     pw = _get_password()
     if not pw:
@@ -255,6 +267,7 @@ DATA_DIR = BASE_DIR / "data"
 # =========================================================
 KENTEI_RESULTS_CSV = os.path.join(DATA_DIR, "kentei_results.csv")
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def load_kentei_results() -> pd.DataFrame:
     """Load (or create) kentei_results.csv."""
     if os.path.exists(KENTEI_RESULTS_CSV):
@@ -277,9 +290,11 @@ def load_kentei_results() -> pd.DataFrame:
     write_csv_atomic(df, KENTEI_RESULTS_CSV)
     return df
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def save_kentei_results(df: pd.DataFrame) -> None:
     write_csv_atomic(df, KENTEI_RESULTS_CSV)
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def is_kentei_passed(student_id: str, grade: str) -> bool:
     df = load_kentei_results()
     if df.empty:
@@ -301,6 +316,7 @@ ATTENDANCE_LOG_CSV = DATA_DIR / "attendance_log.csv"
 PROGRESS_SKIP_OK_CSV = DATA_DIR / "progress_skip_ok.csv"
 PREP_MEMO_CSV = DATA_DIR / "prep_memo.csv"
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def load_attendance_log() -> pd.DataFrame:
     if ATTENDANCE_LOG_CSV.exists():
         df = pd.read_csv(ATTENDANCE_LOG_CSV, dtype=str).fillna("")
@@ -316,6 +332,7 @@ def load_attendance_log() -> pd.DataFrame:
         df[c] = df[c].astype(str).fillna("").str.strip()
     return df[["date", "student_id", "kind", "memo"]]
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def save_attendance_log(df: pd.DataFrame) -> None:
     # keep columns
     for c in ["date", "student_id", "kind", "memo"]:
@@ -324,6 +341,7 @@ def save_attendance_log(df: pd.DataFrame) -> None:
     df = df[["date", "student_id", "kind", "memo"]].copy()
     write_csv_atomic(df, ATTENDANCE_LOG_CSV)
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def load_progress_skip_ok() -> pd.DataFrame:
     if PROGRESS_SKIP_OK_CSV.exists():
         df = pd.read_csv(PROGRESS_SKIP_OK_CSV, dtype=str).fillna("")
@@ -341,6 +359,7 @@ def load_progress_skip_ok() -> pd.DataFrame:
 
     return df[["date", "student_id", "note"]]
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def save_progress_skip_ok(df: pd.DataFrame) -> None:
     for c in ["date", "student_id", "note"]:
         if c not in df.columns:
@@ -348,6 +367,7 @@ def save_progress_skip_ok(df: pd.DataFrame) -> None:
     df = df[["date", "student_id", "note"]].copy()
     write_csv_atomic(df, PROGRESS_SKIP_OK_CSV)
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def is_progress_skip_ok_today(df: pd.DataFrame, student_id: str, d: date) -> bool:
     if df is None or df.empty:
         return False
@@ -365,6 +385,7 @@ def is_progress_skip_ok_today(df: pd.DataFrame, student_id: str, d: date) -> boo
     )
     return bool(m.any())
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def upsert_progress_skip_ok(df: pd.DataFrame, student_id: str, d: date, note: str = "") -> pd.DataFrame:
     sid = str(student_id).strip()
     ds = str(d)
@@ -385,6 +406,7 @@ def upsert_progress_skip_ok(df: pd.DataFrame, student_id: str, d: date, note: st
 
     return pd.concat([df, new_row], ignore_index=True)
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def load_prep_memo() -> pd.DataFrame:
     if PREP_MEMO_CSV.exists():
         df = pd.read_csv(PREP_MEMO_CSV, dtype=str).fillna("")
@@ -405,6 +427,7 @@ def load_prep_memo() -> pd.DataFrame:
 
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def save_prep_memo(df: pd.DataFrame) -> None:
     for c in ["student_id", "memo"]:
         if c not in df.columns:
@@ -415,6 +438,7 @@ def save_prep_memo(df: pd.DataFrame) -> None:
 
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def upsert_prep_memo(df: pd.DataFrame, student_id: str, memo: str) -> pd.DataFrame:
     sid = str(student_id).strip()
     memo = str(memo).strip()
@@ -438,6 +462,7 @@ def upsert_prep_memo(df: pd.DataFrame, student_id: str, memo: str) -> pd.DataFra
     return pd.concat([df, new_row], ignore_index=True)
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def get_attendance_today(df: pd.DataFrame, student_id: str, d: date) -> dict | None:
     if df.empty:
         return None
@@ -449,6 +474,7 @@ def get_attendance_today(df: pd.DataFrame, student_id: str, d: date) -> dict | N
     r = hit.iloc[-1].to_dict()
     return r
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def upsert_attendance(df: pd.DataFrame, student_id: str, d: date, kind: str, memo: str = "", count: int = 1) -> pd.DataFrame:
     sid = str(student_id).strip()
     ds = str(d)
@@ -472,6 +498,7 @@ def upsert_attendance(df: pd.DataFrame, student_id: str, d: date, kind: str, mem
     new_rows = pd.DataFrame([{"date": ds, "student_id": sid, "kind": kind, "memo": memo}] * count_n)
     df = pd.concat([df, new_rows], ignore_index=True)
     return df
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def delete_attendance(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFrame:
     if df.empty:
         return df
@@ -480,6 +507,7 @@ def delete_attendance(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFram
     mask = (df["student_id"].astype(str).str.strip() == sid) & (df["date"].astype(str).str.strip() == ds)
     return df.loc[~mask].copy()
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def count_month_lessons(df: pd.DataFrame, student_id: str, d: date) -> int:
     if df.empty:
         return 0
@@ -491,6 +519,7 @@ def count_month_lessons(df: pd.DataFrame, student_id: str, d: date) -> int:
     tmp = tmp[tmp["kind"].astype(str).str.strip().isin(["lesson", "授業"])]
     return int(len(tmp))
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def is_attendance_done_today(att_df: pd.DataFrame, student_id: str, d: date) -> bool:
     if att_df is None or att_df.empty:
         return False
@@ -502,9 +531,13 @@ def is_attendance_done_today(att_df: pd.DataFrame, student_id: str, d: date) -> 
     )
     return bool(m.any())
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
+def is_progress_task_completed(row) -> bool:
+    is_done = str(row.get("is_done", "")).strip().lower() in ["true", "1", "yes"]
+    return bool(is_done)
 
 
-
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def is_progress_done_today(progress_df: pd.DataFrame, student_id: str, d: date) -> bool:
     if progress_df is None or progress_df.empty:
         return False
@@ -549,8 +582,7 @@ def is_progress_done_today(progress_df: pd.DataFrame, student_id: str, d: date) 
     return False
 
 
-
-
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_today_task_status(att_done: bool, prog_done: bool) -> str:
     if att_done and prog_done:
         return "✅ 出欠済 / 進捗済"
@@ -561,6 +593,7 @@ def build_today_task_status(att_done: bool, prog_done: bool) -> str:
     return "❗進捗"
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_overdue_urgency_mark(d_str: str, today_date: date) -> str:
     d_obj = pd.to_datetime(d_str, errors="coerce")
     if pd.isna(d_obj):
@@ -599,6 +632,7 @@ KENTEI_EXAM_SCHEDULE_CSV = DATA_DIR / "kentei_exam_schedule.csv"
 # Helpers
 # =========================================================
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def ensure_student_scoped_defaults(student_id: str, key: str, value):
     """Reset widget state when student changes. Must be called BEFORE the widget is created."""
     sid = str(student_id or "")
@@ -631,6 +665,7 @@ GRADE_PRESETS = [
 
 WEEKDAY_PRESETS = ["", "月", "火", "水", "木", "金", "土", "日", "その他（自由入力）"]
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def _unique_str_list(series):
     try:
         vals = [str(x).strip() for x in series.dropna().tolist()]
@@ -645,6 +680,7 @@ def _unique_str_list(series):
     except Exception:
         return []
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_grade_options(students_df):
     existing = _unique_str_list(students_df.get("grade", pd.Series(dtype=str))) if students_df is not None else []
     base = [g for g in GRADE_PRESETS if g not in ("", "その他（自由入力）")]
@@ -654,6 +690,7 @@ def build_grade_options(students_df):
             merged.append(g)
     return [""] + merged + ["その他（自由入力）"]
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_weekday_options(students_df, schedule_df):
     existing = []
     if students_df is not None and "weekday" in students_df.columns:
@@ -669,6 +706,7 @@ def build_weekday_options(students_df, schedule_df):
         merged.append("その他（自由入力）")
     return merged
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_slot_options(timeslots_df, schedule_df, students_df):
     existing = []
     if timeslots_df is not None and "slot" in timeslots_df.columns:
@@ -697,10 +735,12 @@ def build_slot_options(timeslots_df, schedule_df, students_df):
 # -----------------------------
 # Smart defaults / ordering (v6.2)
 # -----------------------------
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def today_weekday_jp() -> str:
     jp = ["月", "火", "水", "木", "金", "土", "日"]
     return jp[date.today().weekday()]
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def parse_date_like(x):
     if pd.isna(x):
         return None
@@ -717,6 +757,7 @@ def parse_date_like(x):
     except Exception:
         return None
 
+# [CHECK 2026-04-23] このファイル内では定義のみを確認。参照未検出のため、削除候補として要確認。
 def get_today_student_ids(schedule_df: pd.DataFrame, overrides_df: pd.DataFrame):
     """今日予定がある生徒IDの集合（ベース時間割＋例外を反映）"""
     counts = {}
@@ -746,6 +787,7 @@ def get_today_student_ids(schedule_df: pd.DataFrame, overrides_df: pd.DataFrame)
 
     return {sid for sid, c in counts.items() if c > 0}
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def latest_course_for_student(student_id: str, progress_df: pd.DataFrame):
     """進捗CSVからその生徒の直近コースを推定（方法A: 最新更新）"""
     if progress_df is None or progress_df.empty:
@@ -765,12 +807,13 @@ def latest_course_for_student(student_id: str, progress_df: pd.DataFrame):
     return str(df.iloc[-1]["course_id"])
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def safe_read_csv(
     path,
     required_cols=None,
     *,
     stop_on_missing: bool = False,
-   #show_message: bool = True,
+    show_message: bool = True,
     encoding: str = "utf-8",
 ) -> pd.DataFrame:
     """CSVを安全に読み込むヘルパー。
@@ -811,9 +854,11 @@ def safe_read_csv(
     return df
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def norm_lower(s: pd.Series) -> pd.Series:
     return s.fillna("").astype(str).str.strip().str.lower()
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def format_override_action(action):
     a = str(action).strip().lower()
     if a == "add":
@@ -822,6 +867,7 @@ def format_override_action(action):
         return "キャンセル"
     return str(action).strip()
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
     students = students.copy()
     students.columns = students.columns.astype(str).str.strip()
@@ -846,12 +892,14 @@ def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
     return students
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def session_mark(v: str) -> str:
     if str(v).strip().lower() == "self":
         return "(自)"
     return ""
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     # path は str で渡されることもあるので Path に正規化
     path = Path(path)
@@ -860,10 +908,12 @@ def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     tmp.replace(path)
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def write_csv(df, path):
     df.to_csv(path, index=False, encoding="utf-8-sig")
 
 
+# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def show_saved(message: str = "保存しました。") -> None:
     """Show a consistent save message after user actions."""
     st.success(message)
@@ -911,19 +961,30 @@ curr_tasks = safe_read_csv(
 
 curr_prog = safe_read_csv(
     CURRICULUM_PROGRESS_CSV,
-    ["student_id", "course_id", "task_id", "is_done", "done_date", "note"],
+    ["student_id", "course_id", "task_id", "is_done", "is_skip", "done_date", "note"],
     stop_on_missing=False,
 )
+
+
+kentei_prog = safe_read_csv(
+    KENTEI_PROGRESS_CSV,
+    ["student_id", "grade", "task_id", "is_done", "is_skip", "done_date", "note"],
+    stop_on_missing=False,
+)
+
+# done_date の表記ゆれ対策（Excel編集後でも YYYY-MM-DD にそろえる）
+if "done_date" in curr_prog.columns:
+    curr_prog["done_date"] = pd.to_datetime(curr_prog["done_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    curr_prog["done_date"] = curr_prog["done_date"].fillna("")
+
+
+if "done_date" in kentei_prog.columns:
+    kentei_prog["done_date"] = pd.to_datetime(kentei_prog["done_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    kentei_prog["done_date"] = kentei_prog["done_date"].fillna("")
 
 kentei_tasks = safe_read_csv(
     KENTEI_TASKS_CSV,
     ["grade", "task_id", "task_name", "order", "student_id"],
-    stop_on_missing=False,
-)
-
-kentei_prog = safe_read_csv(
-    KENTEI_PROGRESS_CSV,
-    ["student_id", "grade", "task_id", "is_done", "done_date", "note"],
     stop_on_missing=False,
 )
 
@@ -1228,8 +1289,8 @@ if page == "閲覧":
                 max_n = max(max_n, int(m.group(1)))
         return f"S{max_n+1:03d}"
 
-
-    def safe_read_csv(path: Path, required_cols=None,stop_on_missing=False) -> pd.DataFrame:
+    # 不要なメソッド？
+    def safe_read_csv_local(path: Path, required_cols=None,stop_on_missing=False) -> pd.DataFrame:
         required_cols = required_cols or []
         if not path.exists():
             return pd.DataFrame(columns=required_cols)
@@ -1707,13 +1768,14 @@ if page == "閲覧":
             att_done = (d_str, sid) in done_keys
 
             curr_done = is_progress_done_today(
-                curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                curr_prog[curr_prog.apply(is_progress_task_completed, axis=1)].copy(),
                 sid,
                 d_date
             )
 
+
             kentei_done = is_progress_done_today(
-                kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
+                kentei_prog[kentei_prog.apply(is_progress_task_completed, axis=1)].copy(),
                 sid,
                 d_date
             )
@@ -1758,20 +1820,8 @@ if page == "閲覧":
             if effective_kind != "lesson":
                 prog_done = True
             else:
-                prog_done = (
-                    is_progress_done_today(
-                        curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
-                        sid,
-                        d_date
-                    )
-                    or is_progress_done_today(
-                        kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy(),
-                        sid,
-                        d_date
-                    )
-                    or is_progress_skip_ok_today(prog_skip_df, sid, d_date)
-                )
-                
+                prog_done = bool(curr_done or kentei_done or skip_done)
+
             # 出欠済みだけど進捗未なら警告
             if att_done and (not prog_done):
                 show_progress_warning = True
@@ -1800,7 +1850,7 @@ if page == "閲覧":
                     today_rows.append(row_data)
 
             else:
-                # 昨日以前は未完了だけ
+                # 昨日以前は出欠未だけを未完了として残す
                 if (not att_done) or (not prog_done):
                     overdue_rows.append(row_data)
                     
@@ -2055,6 +2105,13 @@ if page == "閲覧":
 
 
     overdue_df = pd.DataFrame(overdue_rows)
+    
+    if overdue_rows:
+        debug_overdue = pd.DataFrame(overdue_rows)
+        st.write("昨日以前の未完了 確認用")
+        show_cols = [c for c in ["日付", "student_id", "生徒", "コマ", "種別", "状態"] if c in debug_overdue.columns]
+        st.dataframe(debug_overdue[show_cols], use_container_width=True)
+
 
     overdue_count = len(overdue_df)
     if overdue_count > 0:
@@ -2222,9 +2279,8 @@ if page == "閲覧":
         prog_skip_df_for_status = load_progress_skip_ok().copy()
 
 
-        curr_done_df = curr_prog[curr_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy()
-        kentei_done_df = kentei_prog[kentei_prog["is_done"].astype(str).str.lower().isin(["true", "1", "yes"])].copy()
-
+        curr_done_df = curr_prog[curr_prog.apply(is_progress_task_completed, axis=1)].copy()
+        kentei_done_df = kentei_prog[kentei_prog.apply(is_progress_task_completed, axis=1)].copy()
 
         def get_today_attendance_kind(att_df: pd.DataFrame, student_id: str, d: date) -> str:
             if att_df is None or att_df.empty:
@@ -3638,7 +3694,7 @@ if page == "閲覧":
                         st.warning("生徒情報が見つかりません。")
                         st.stop()
                     student_id = str(student_row["student_id"].iloc[0]).strip()
-                #  st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
+                  #  st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
 
                     # Course selector with order
                     cc = curr_courses.copy()
@@ -3767,8 +3823,20 @@ if page == "閲覧":
                                 st.rerun()
 
                     p = curr_prog.copy()
-                    p = p[(p["student_id"].astype(str).str.strip() == student_id) & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())].copy()
-                    done_map = {str(r["task_id"]).strip(): (str(r["is_done"]).strip().lower() == "true") for _, r in p.iterrows()}
+                    p = p[
+                        (p["student_id"].astype(str).str.strip() == student_id)
+                        & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                    ].copy()
+
+
+                    done_map = {
+                        str(r["task_id"]).strip(): (str(r.get("is_done", "")).strip().lower() == "true")
+                        for _, r in p.iterrows()
+                    }
+                    skip_map = {
+                        str(r["task_id"]).strip(): (str(r.get("is_skip", "")).strip().lower() == "true")
+                        for _, r in p.iterrows()
+                    }
                     done_date_map = {
                         str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
                         for _, r in p.iterrows()
@@ -3776,21 +3844,38 @@ if page == "閲覧":
                         and str(r["course_id"]).strip() == str(selected_course_id).strip()
                     }
 
+
                     st.markdown("### 課題一覧")
                     updated_rows = []
+
+
+                    state_options = ["未実施", "完了", "スキップ"]
+
 
                     for _, row in t.iterrows():
                         task_id = str(row["task_id"]).strip()
                         task_name = str(row["task_name"]).strip()
                         was_done = bool(done_map.get(task_id, False))
+                        was_skip = bool(skip_map.get(task_id, False))
                         prev_done_date = str(done_date_map.get(task_id, "")).strip()
+
+
+                        if was_done:
+                            default_state = "完了"
+                        elif was_skip:
+                            default_state = "スキップ"
+                        else:
+                            default_state = "未実施"
+
+
                         disabled = (was_done and is_locked_done_tasks)
 
 
-                        checked = st.checkbox(
+                        selected_state = st.selectbox(
                             task_name,
-                            value=was_done,
-                            key=f"curr_{student_id}_{selected_course_id}_{task_id}",
+                            state_options,
+                            index=state_options.index(default_state),
+                            key=f"curr_state_{student_id}_{selected_course_id}_{task_id}",
                             disabled=disabled
                         )
 
@@ -3799,18 +3884,21 @@ if page == "閲覧":
                             "student_id": student_id,
                             "course_id": str(selected_course_id).strip(),
                             "task_id": task_id,
-                            "is_done": "true" if checked else "false",
+                            "is_done": "true" if selected_state == "完了" else "false",
+                            "is_skip": "true" if selected_state == "スキップ" else "false",
                             "done_date": (
                                 dt.date.today().isoformat()
-                                if checked and not was_done
+                                if selected_state in ["完了", "スキップ"] and default_state == "未実施"
                                 else prev_done_date
-                            ) if checked else "",
+                            ) if selected_state in ["完了", "スキップ"] else "",
                             "note": ""
                         })
 
 
+
                     if st.button("💾 保存（カリキュラム課題）"):
                         new_df = pd.DataFrame(updated_rows)
+
 
                         others = curr_prog[
                             ~(
@@ -3819,8 +3907,14 @@ if page == "閲覧":
                             )
                         ].copy()
 
+
+                        if "is_skip" not in others.columns:
+                            others["is_skip"] = "false"
+
+
                         save_df = pd.concat([others, new_df], ignore_index=True)
                         write_csv_atomic(save_df, CURRICULUM_PROGRESS_CSV)
+
                         st.success("保存しました。")
                         st.rerun()
 
@@ -3908,41 +4002,70 @@ if page == "閲覧":
                 & (kentei_prog["grade"].astype(str).str.strip() == grade_sel)
             ].copy()
 
-            done_map = {str(r["task_id"]).strip(): (str(r["is_done"]).strip().lower() == "true") for _, r in prog.iterrows()}
+            done_map = {
+                str(r["task_id"]).strip(): (str(r.get("is_done", "")).strip().lower() == "true")
+                for _, r in prog.iterrows()
+            }
+            skip_map = {
+                str(r["task_id"]).strip(): (str(r.get("is_skip", "")).strip().lower() == "true")
+                for _, r in prog.iterrows()
+            }
             done_date_map = {
                 str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
                 for _, r in prog.iterrows()
             }
 
+
             st.markdown("### 課題一覧")
             updated = []
 
+
+            state_options = ["未実施", "完了", "スキップ"]
+
+
             for _, row in tasks.iterrows():
                 task_id = str(row["task_id"]).strip()
+                task_name = str(row["task_name"]).strip()
                 was_done = bool(done_map.get(task_id, False))
+                was_skip = bool(skip_map.get(task_id, False))
                 prev_done_date = str(done_date_map.get(task_id, "")).strip()
-                checked = st.checkbox(
-                    str(row["task_name"]).strip(),
-                    value=bool(done_map.get(task_id, False)),
-                    key=f"kentei_{student_id}_{grade_sel}_{task_id}",
+
+
+                if was_done:
+                    default_state = "完了"
+                elif was_skip:
+                    default_state = "スキップ"
+                else:
+                    default_state = "未実施"
+
+
+                selected_state = st.selectbox(
+                    task_name,
+                    state_options,
+                    index=state_options.index(default_state),
+                    key=f"kentei_state_{student_id}_{grade_sel}_{task_id}",
                     disabled=is_locked
                 )
+
 
                 updated.append({
                     "student_id": student_id,
                     "grade": grade_sel,
                     "task_id": task_id,
-                    "is_done": "true" if checked else "false",
+                    "is_done": "true" if selected_state == "完了" else "false",
+                    "is_skip": "true" if selected_state == "スキップ" else "false",
                     "done_date": (
                         dt.date.today().isoformat()
-                        if checked and not was_done
+                        if selected_state in ["完了", "スキップ"] and default_state == "未実施"
                         else prev_done_date
-                    ),
+                    ) if selected_state in ["完了", "スキップ"] else "",
                     "note": ""
                 })
 
+
             if st.button("💾 保存（検定課題）", disabled=is_locked):
                 new_df = pd.DataFrame(updated)
+
 
                 others = kentei_prog[
                     ~(
@@ -3951,8 +4074,14 @@ if page == "閲覧":
                     )
                 ].copy()
 
+
+                if "is_skip" not in others.columns:
+                    others["is_skip"] = "false"
+
+
                 save_df = pd.concat([others, new_df], ignore_index=True)
                 write_csv_atomic(save_df, KENTEI_PROGRESS_CSV)
+
                 st.success("保存しました。")
                 st.rerun()
 
