@@ -80,6 +80,81 @@ def ui_str(x) -> str:
     return "" if s.lower() in ["nan", "none"] else s
 
 
+def status_label(status: str) -> str:
+    s = ui_str(status)
+    if s == "完了":
+        return "🟢 完了"
+    if s == "未実施":
+        return "🔴 未実施"
+    if s == "スキップ":
+        return "⚪ スキップ"
+    return s
+
+
+def status_badge_html(status: str) -> str:
+    s = ui_str(status)
+    if s == "完了":
+        bg = "#d4edda"
+        fg = "#155724"
+        label = "🟢 完了"
+    elif s == "未実施":
+        bg = "#f8d7da"
+        fg = "#721c24"
+        label = "🔴 未実施"
+    elif s == "スキップ":
+        bg = "#e2e3e5"
+        fg = "#383d41"
+        label = "⚪ スキップ"
+    else:
+        bg = "#f8f9fa"
+        fg = "#333333"
+        label = s
+
+
+    return f"""
+    <div style="
+        display:inline-block;
+        padding:4px 10px;
+        border-radius:8px;
+        background:{bg};
+        color:{fg};
+        font-weight:700;
+        font-size:0.95rem;
+        margin:4px 0 10px 0;
+    ">{label}</div>
+    """
+
+def unfinished_status_badge_html(status: str) -> str:
+    s = ui_str(status)
+
+
+    if "出欠未" in s and "進捗未" in s:
+        bg = "#f8d7da"
+        fg = "#721c24"
+    elif "出欠未" in s:
+        bg = "#fff3cd"
+        fg = "#856404"
+    elif "進捗未" in s:
+        bg = "#ffe5d0"
+        fg = "#8a3b12"
+    else:
+        bg = "#f8f9fa"
+        fg = "#333333"
+
+
+    return f"""
+    <div style="
+        display:inline-block;
+        padding:4px 10px;
+        border-radius:8px;
+        background:{bg};
+        color:{fg};
+        font-weight:700;
+        font-size:0.95rem;
+        margin-top:4px;
+    ">{s}</div>
+    """
+
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def sanitize_df(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize NaN/None/'nan' strings to empty strings for safe UI display."""
@@ -1914,8 +1989,10 @@ if page == "閲覧":
             c1, c2, c3, c4, c5, c6, c7 = st.columns([3.0, 1.0, 1.0, 1.0, 1.2, 1.6, 1.2])
 
             with c1:
-                st.write(f"**{d_str} / {slot}限 / {name} / {kind_label}**  \n{display_status}")
-
+                st.markdown(
+                    f"**{d_str} / {slot}限 / {name} / {kind_label}**<br>{unfinished_status_badge_html(display_status)}",
+                    unsafe_allow_html=True
+                )
 
             with c2:
                 if st.button(
@@ -2116,8 +2193,7 @@ if page == "閲覧":
     overdue_count = len(overdue_df)
     if overdue_count > 0:
         st.error(f"🚨 未完了タスク（昨日以前）：{overdue_count}件あります（優先的に対応してください）")
-        st.markdown(f"### 🚨 昨日以前の未完了：**{overdue_count}件**")
-        render_unfinished_section(f"🚨 未完了タスク（昨日以前）({overdue_count}件)", overdue_df, "overdue")
+        render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
     else:
         st.success("✅ 未完了タスク（昨日以前）はありません")
 
@@ -3848,9 +3924,7 @@ if page == "閲覧":
                     st.markdown("### 課題一覧")
                     updated_rows = []
 
-
                     state_options = ["未実施", "完了", "スキップ"]
-
 
                     for _, row in t.iterrows():
                         task_id = str(row["task_id"]).strip()
@@ -3876,9 +3950,9 @@ if page == "閲覧":
                             state_options,
                             index=state_options.index(default_state),
                             key=f"curr_state_{student_id}_{selected_course_id}_{task_id}",
-                            disabled=disabled
+                            disabled=disabled,
+                            format_func=status_label
                         )
-
 
                         updated_rows.append({
                             "student_id": student_id,
@@ -3893,6 +3967,7 @@ if page == "閲覧":
                             ) if selected_state in ["完了", "スキップ"] else "",
                             "note": ""
                         })
+
 
 
 
@@ -4044,9 +4119,9 @@ if page == "閲覧":
                     state_options,
                     index=state_options.index(default_state),
                     key=f"kentei_state_{student_id}_{grade_sel}_{task_id}",
-                    disabled=is_locked
+                    disabled=is_locked,
+                    format_func=status_label
                 )
-
 
                 updated.append({
                     "student_id": student_id,
