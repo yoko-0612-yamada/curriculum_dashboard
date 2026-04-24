@@ -2747,6 +2747,48 @@ if page == "閲覧":
 
 
         today_view["生徒"] = today_view.apply(add_month_count_prefix, axis=1)
+        # 今日の予定に座席番号を表示する
+        seat_today_map = {}
+
+
+        if not seat_assignments.empty:
+            seat_today = seat_assignments.copy()
+
+
+            for c in ["date", "slot", "seat_no", "student_id"]:
+                if c not in seat_today.columns:
+                    seat_today[c] = ""
+
+
+            seat_today = seat_today[
+                seat_today["date"].astype(str).str.strip() == today.strftime("%Y-%m-%d")
+            ].copy()
+
+
+            if not seat_today.empty:
+                seat_today["slot_norm"] = seat_today["slot"].astype(str).str.strip().map(normalize_slot)
+                seat_today["student_id"] = seat_today["student_id"].astype(str).str.strip()
+                seat_today["seat_no"] = seat_today["seat_no"].astype(str).str.strip()
+
+
+                for _, r in seat_today.iterrows():
+                    key = (
+                        str(r.get("student_id", "")).strip(),
+                        str(r.get("slot_norm", "")).strip(),
+                    )
+                    seat_today_map[key] = str(r.get("seat_no", "")).strip()
+
+
+        def get_today_seat_no(r: pd.Series) -> str:
+            sid = str(r.get("student_id", "")).strip()
+            slot_norm = normalize_slot(r.get("slot", ""))
+            seat_no = seat_today_map.get((sid, slot_norm), "")
+            return f"席{seat_no}" if seat_no else ""
+
+
+        today_view["席"] = today_view.apply(get_today_seat_no, axis=1)
+
+
         
         today_view["_pending_mark"] = ""
         today_view["_missing_mark"] = ""
@@ -2774,7 +2816,7 @@ if page == "閲覧":
                 "表示形式",
                 ["B：コマごとにまとめる（おすすめ）", "A：1行=1件（詳細）"],
                 horizontal=True,
-                index=0,
+                index=1,
             )
 
             if view_mode.startswith("A"):
@@ -2785,7 +2827,7 @@ if page == "閲覧":
                     ),
                     axis=1
                 )
-                show_cols = ["コマ", "start", "end", "生徒", "種別", "状態", "現在コース", "現在項目", "検定目安"]
+                show_cols = ["コマ", "start", "end", "席", "生徒", "種別", "状態", "現在コース", "現在項目", "検定目安"]
                 show_cols = [c for c in show_cols if c in today_view.columns]
                 today_view["表示優先度"] = today_view.apply(calc_priority, axis=1)
                 df_show = today_view.sort_values(
@@ -2838,7 +2880,11 @@ if page == "閲覧":
                     hint = str(r.get("検定目安", "")).strip()
 
 
-                    parts = [name]
+                    parts = []
+                    if seat:
+                        parts.append(seat)
+                    parts.append(name)
+
                     if mark:
                         parts.append(mark)
                     if status:
@@ -2848,6 +2894,9 @@ if page == "閲覧":
 
 
                     return " / ".join([p for p in parts if p])
+                
+                seat = str(r.get("席", "")).strip()
+
 
 
                 gcols = ["slot_num", "コマ", "start", "end"]
