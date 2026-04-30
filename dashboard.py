@@ -14,20 +14,27 @@ import streamlit as st
 # --- slot ユーティリティ（統一用） ------------------------------
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def normalize_slot(v):
-    """1, '1', 1.0 → '1' に統一（文字列）"""
+    """1, '1', 1.0, '6 | 17:10〜18:10' → '1'/'6' に統一（文字列）"""
     if v is None:
         return ""
+
+
+    s = str(v).strip()
+    if s == "" or s.lower() in ["nan", "none"]:
+        return ""
+
+
+    # 先頭の数字だけ取り出す：例 '6 | 17:10〜18:10' → '6'
+    m = re.match(r"^\s*(\d+)", s)
+    if m:
+        return str(int(m.group(1)))
+
+
     try:
-        n = int(float(v))
-        return str(n)
+        return str(int(float(s)))
     except Exception:
-        s = str(v).strip()
-        # もし '1.0' みたいなのが来たら '1' に寄せる
-        try:
-            n = int(float(s))
-            return str(n)
-        except Exception:
-            return s
+        return s
+
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def build_slot_label_map(timeslots_df):
@@ -1770,21 +1777,36 @@ if page == "閲覧":
 
         # cancel 適用
         if not ov_day.empty:
-            cancel_day = ov_day[ov_day["action"].str.lower() == "cancel"].copy()
+            cancel_day = ov_day[
+                ov_day["action"].astype(str).str.strip().str.lower().isin(["cancel", "キャンセル"])
+            ].copy()
+
             if not cancel_day.empty and not base_day.empty:
-                cancel_keys = set(zip(cancel_day["student_id"], cancel_day["slot"]))
+                cancel_day["student_id_key"] = cancel_day["student_id"].astype(str).str.strip()
+                cancel_day["slot_key"] = cancel_day["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                cancel_keys = set(zip(cancel_day["student_id_key"], cancel_day["slot_key"]))
+
+
                 base_day = base_day[
                     ~base_day.apply(
-                        lambda r: (str(r.get("student_id", "")).strip(), str(r.get("slot", "")).strip()) in cancel_keys,
+                        lambda r: (
+                            str(r.get("student_id", "")).strip(),
+                            normalize_slot(r.get("slot", ""))
+                        ) in cancel_keys,
                         axis=1
                     )
                 ].copy()
 
 
+
         # add 適用
         add_rows = []
         if not ov_day.empty:
-            add_day = ov_day[ov_day["action"].str.lower() == "add"].copy()
+            add_day = ov_day[
+                ov_day["action"].astype(str).str.strip().str.lower().isin(["add", "追加", "振替"])
+            ].copy()
             if not add_day.empty:
                 for _, r in add_day.iterrows():
                     sid = str(r.get("student_id", "")).strip()
@@ -2291,13 +2313,31 @@ if page == "閲覧":
 
         # cancel: ベースから消す（同じ生徒×同じコマ）
         if not ov_today.empty:
-            cancel_df = ov_today[norm_lower(ov_today["action"]) == "cancel"].copy()
+            cancel_df = ov_today[
+                norm_lower(ov_today["action"]).isin(["cancel", "キャンセル"])
+            ].copy()
             if not cancel_df.empty:
-                cancel_keys = set(zip(cancel_df["student_id"], cancel_df["slot"]))
-                today_view = today_view[~today_view.apply(lambda r: (str(r.get("student_id","")).strip(), str(r.get("slot","")).strip()) in cancel_keys, axis=1)].copy()
+                cancel_day["student_id_key"] = cancel_day["student_id"].astype(str).str.strip()
+                cancel_day["slot_key"] = cancel_day["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                cancel_keys = set(zip(cancel_day["student_id_key"], cancel_day["slot_key"]))
+
+
+                base_day = base_day[
+                    ~base_day.apply(
+                        lambda r: (
+                            str(r.get("student_id", "")).strip(),
+                            normalize_slot(r.get("slot", ""))
+                        ) in cancel_keys,
+                        axis=1
+                    )
+                ].copy()
 
             # add: 追加（必要ならベースを置き換え）
-            add_df = ov_today[norm_lower(ov_today["action"]) == "add"].copy()
+            add_df = ov_today[
+                norm_lower(ov_today["action"]).isin(["add", "追加", "振替"])
+            ].copy()
             if not add_df.empty:
                 # 置き換え（同じ student_id×slot はベースを消す）
                 add_keys = set(zip(add_df["student_id"], add_df["slot"]))
@@ -2359,6 +2399,40 @@ if page == "閲覧":
 
                 today_view = pd.concat([today_view, add_view], ignore_index=True)
 
+        # =====================================================
+        # 今日キャンセル済みの予定を today_view から完全に除外する
+        # ※ 未完了・次に見る候補・A/B表示の元データをここで整える
+        # =====================================================
+        if not ov_today.empty and not today_view.empty:
+            cancel_df = ov_today[
+                norm_lower(ov_today["action"]).isin(["cancel", "キャンセル"])
+            ].copy()
+
+
+            if not cancel_df.empty:
+                cancel_df["student_id_key"] = cancel_df["student_id"].astype(str).str.strip()
+                cancel_df["slot_key"] = cancel_df["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                cancel_keys = set(zip(cancel_df["student_id_key"], cancel_df["slot_key"]))
+
+
+                today_view["student_id_key"] = today_view["student_id"].astype(str).str.strip()
+                today_view["slot_key"] = today_view["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                today_view = today_view[
+                    ~today_view.apply(
+                        lambda r: (
+                            str(r.get("student_id_key", "")).strip(),
+                            str(r.get("slot_key", "")).strip(),
+                        ) in cancel_keys,
+                        axis=1,
+                    )
+                ].copy()
+
+
+                today_view = today_view.drop(columns=["student_id_key", "slot_key"], errors="ignore")
 
         # current merge（最新ログの「done以外」を優先）
         today_view = today_view.merge(
@@ -2970,7 +3044,13 @@ if page == "閲覧":
                     # キャンセル済みの予定は、座席未登録に出さない
                     if (_sid, _slot) in seat_cancel_keys:
                         continue
-
+                    
+                    if (_sid, _slot) not in seat_assigned_keys:
+                        missing_seat_rows.append({
+                            "コマ": _slot,
+                            "生徒": str(_r.get("生徒", "")).strip(),
+                            "状態": str(_r.get("状態", "")).strip(),
+                        })
 
         if missing_seat_rows:
             missing_seat_df = pd.DataFrame(missing_seat_rows)
@@ -2984,9 +3064,6 @@ if page == "閲覧":
                 hide_index=True,
             )
 
-
-
-        
         today_view["_pending_mark"] = ""
         today_view["_missing_mark"] = ""
 
@@ -3008,166 +3085,7 @@ if page == "閲覧":
 
         if len(today_view) == 0:
             st.info("今日の予定はありません。（weekday/slot / overrides を確認してね）")
-        else:
-            # =====================================================
-            # 今日キャンセル済みの予定を A/B 表示から除外する
-            # =====================================================
-            view_cancel_keys = set()
 
-
-            if not schedule_overrides.empty:
-                _ov_cancel_view = schedule_overrides.copy()
-
-
-                for c in ["date", "slot", "student_id", "action"]:
-                    if c not in _ov_cancel_view.columns:
-                        _ov_cancel_view[c] = ""
-
-
-                _ov_cancel_view["date"] = _ov_cancel_view["date"].astype(str).str.strip()
-                _ov_cancel_view["slot_norm"] = _ov_cancel_view["slot"].astype(str).str.strip().map(normalize_slot)
-                _ov_cancel_view["student_id"] = _ov_cancel_view["student_id"].astype(str).str.strip()
-                _ov_cancel_view["action_norm"] = _ov_cancel_view["action"].astype(str).str.strip().str.lower()
-
-
-                _ov_cancel_view = _ov_cancel_view[
-                    (_ov_cancel_view["date"] == today.strftime("%Y-%m-%d"))
-                    & (_ov_cancel_view["action_norm"].isin(["cancel", "キャンセル"]))
-                ].copy()
-
-
-                view_cancel_keys = set(
-                    zip(
-                        _ov_cancel_view["student_id"],
-                        _ov_cancel_view["slot_norm"],
-                    )
-                )
-
-
-            if view_cancel_keys and not today_view.empty:
-                _tv = today_view.copy()
-
-
-                if "student_id" in _tv.columns and "slot" in _tv.columns:
-                    _tv["student_id_key"] = _tv["student_id"].astype(str).str.strip()
-                    _tv["slot_key"] = _tv["slot"].astype(str).str.strip().map(normalize_slot)
-
-
-                    _tv = _tv[
-                        ~_tv.apply(
-                            lambda r: (
-                                str(r.get("student_id_key", "")).strip(),
-                                str(r.get("slot_key", "")).strip(),
-                            ) in view_cancel_keys,
-                            axis=1,
-                        )
-                    ].copy()
-
-
-                    today_view = _tv.drop(columns=["student_id_key", "slot_key"], errors="ignore")
-
-            view_mode = st.radio(
-                "表示形式",
-                ["B：コマごとにまとめる（おすすめ）", "A：1行=1件（詳細）"],
-                horizontal=True,
-                index=1,
-            )
-
-            if view_mode.startswith("A"):
-                today_view["未完了状態"] = today_view.apply(
-                    lambda r: build_today_task_status(
-                        bool(r.get("出欠完了", False)),
-                        bool(r.get("進捗完了", False))
-                    ),
-                    axis=1
-                )
-                show_cols = ["コマ", "start", "end", "席", "生徒", "種別", "状態", "現在コース", "現在項目", "検定目安"]
-                show_cols = [c for c in show_cols if c in today_view.columns]
-                today_view["表示優先度"] = today_view.apply(calc_priority, axis=1)
-                df_show = today_view.sort_values(
-                    by=["表示優先度", "slot_num", "生徒"],
-                    na_position="last"
-                )[show_cols].copy()
-
-                def _pink_today_exam_student(row: pd.Series):
-                    # 検定予定の生徒は「うすピンク」で強調（既存仕様）
-                    sid = ""
-                    if "student_id" in today_view.columns:
-                        try:
-                            sid = str(today_view.loc[row.name, "student_id"])
-                        except Exception:
-                            sid = ""
-
-                    if sid in today_exam_ids:
-                        return ["background-color: #fff0f5"] * len(row)  # うすピンク
-
-                    # A表示は「コマ」ごとに背景色（見やすさ優先）
-                    slot_num = None
-                    try:
-                        if "slot_num" in today_view.columns:
-                            slot_num = int(today_view.loc[row.name, "slot_num"])
-                        else:
-                            s = str(row.get("コマ", "")).strip()
-                            if s.isdigit():
-                                slot_num = int(s)
-                    except Exception:
-                        slot_num = None
-
-                    palette = ["#f7f7ff", "#f3fbff", "#f4fff6", "#fff9f0", "#fff3f7", "#f6fffd", "#fffdf6", "#f5f0ff"]
-                    if slot_num is None or slot_num <= 0:
-                        return [""] * len(row)
-                    color = palette[(slot_num - 1) % len(palette)]
-                    return [f"background-color: {color}"] * len(row)
-
-                st.dataframe(
-                    df_show.style.apply(_pink_today_exam_student, axis=1),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-            else:
-                # --- B案：コマ（時間）ごとにまとめて、同じコマの生徒を縦に並べる ---
-                def fmt_line(r: pd.Series) -> str:
-                    seat = str(r.get("席", "")).strip()
-                    name = str(r.get("生徒", "")).strip()
-                    mark = str(r.get("種別", "")).strip()
-                    status = str(r.get("未完了状態", "")).strip()
-                    hint = str(r.get("検定目安", "")).strip()
-
-
-                    parts = []
-                    if seat:
-                        parts.append(seat)
-                    if name:
-                        parts.append(name)
-                    if mark:
-                        parts.append(mark)
-                    if status:
-                        parts.append(status)
-                    if hint:
-                        parts.append(hint)
-
-
-                    return " / ".join([p for p in parts if p])
-
-
-                gcols = ["slot_num", "コマ", "start", "end"]
-                base = today_view.copy()
-                base["表示優先度"] = base.apply(calc_priority, axis=1)
-                base["line"] = base.apply(fmt_line, axis=1)
-                grouped = (
-                    base.sort_values(by=["表示優先度", "slot_num", "生徒"], na_position="last")
-                        .groupby(gcols, dropna=False)["line"]
-                        .apply(lambda s: "\n".join([x for x in s.tolist() if str(x).strip()]))
-                        .reset_index()
-                )
-                grouped = grouped.sort_values(by=["slot_num"], na_position="last")
-
-                grouped = grouped.rename(columns={"line": "予定（生徒ごと）"})
-                show_cols = ["コマ", "start", "end", "予定（生徒ごと）"]
-                st.dataframe(grouped[show_cols], use_container_width=True, hide_index=True)
-
-        
 
         # =====================================================
         # 🚫 今日の予定からワンクリックでキャンセル
