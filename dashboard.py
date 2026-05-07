@@ -2968,6 +2968,7 @@ if page == "閲覧":
                             students["display_name"].astype(str).str.strip(),
                         )
                     )
+                
                 else:
                     _seat_name_map = {}
 
@@ -3091,10 +3092,8 @@ if page == "閲覧":
                     _sid = str(_r.get("student_id", "")).strip()
                     _slot = str(_r.get("slot_norm", "")).strip()
 
-
                     if not _sid:
                         continue
-
 
                     # キャンセル済みの予定は、座席未登録に出さない
                     if (_sid, _slot) in seat_cancel_keys:
@@ -6699,7 +6698,6 @@ elif page == "座席":
             current_sid = current_by_seat.get(seat_no, "")
             default_index = seat_student_ids.index(current_sid) if current_sid in seat_student_ids else 0
 
-
             selected_sid = st.selectbox(
                 f"席{seat_no}",
                 seat_student_ids,
@@ -6795,6 +6793,30 @@ elif page == "座席":
                 students["display_name"].astype(str).str.strip()
             )
         )
+    # 在籍中の生徒IDだけを座席確認に出す
+    active_student_ids_for_seat = set()
+
+
+    if not students.empty and "student_id" in students.columns:
+        students_active_for_seat = students.copy()
+
+
+        if "is_active" in students_active_for_seat.columns:
+            students_active_for_seat = students_active_for_seat[
+                students_active_for_seat["is_active"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .replace("", "true")
+                .isin(["true", "1", "yes"])
+            ].copy()
+
+
+        active_student_ids_for_seat = set(
+            students_active_for_seat["student_id"].astype(str).str.strip()
+        )
+
 
     # コマ時間マップ
     slot_time_map = {}
@@ -6839,6 +6861,8 @@ elif page == "座席":
             if not sid or not slot:
                 continue
 
+            if active_student_ids_for_seat and sid not in active_student_ids_for_seat:
+                continue
 
             start, end = slot_time_map.get(slot, ("", ""))
 
@@ -6879,6 +6903,8 @@ elif page == "座席":
             if not sid or not slot:
                 continue
 
+            if active_student_ids_for_seat and sid not in active_student_ids_for_seat:
+                continue
 
             start_raw = r.get("start", "")
             end_raw = r.get("end", "")
@@ -7295,13 +7321,9 @@ elif page == "座席":
 
         if conflict_messages:
             st.session_state["seat_auto_conflict_messages"] = conflict_messages
-            st.error("⚠ 基本席の重複があります。自動配置できなかった席があります。")
-            for msg in conflict_messages:
-                st.write(f"- {msg}")
         else:
             st.session_state["seat_auto_conflict_messages"] = []
-
-                
+            
         if auto_rows:
             applied = 0
 
@@ -7329,6 +7351,17 @@ elif page == "座席":
         for msg in conflict_messages_saved:
             st.write(f"- {msg}")
 
+    conflict_messages_saved = st.session_state.get(
+        "seat_auto_conflict_messages", []
+    )
+
+
+    if conflict_messages_saved:
+        st.error("⚠ 基本席の重複があります")
+
+
+        for msg in conflict_messages_saved:
+            st.write(f"・{msg}")
 
     st.markdown("### 🪑 今日の配置表")
     st.caption("縦＝コマ、横＝席1〜5で、今日1日の座席をまとめて登録します。")
@@ -7498,7 +7531,6 @@ elif page == "座席":
         "5": "#e9f8ee",
     }
 
-
     for i, seat_no in enumerate(seat_cols, start=1):
         with header_cols[i]:
             seat_bg = seat_colors.get(str(seat_no), "#ffffff")
@@ -7514,10 +7546,8 @@ elif page == "座席":
                     席{seat_no}
                 </div>
                 """,
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
-
-
 
     slot_bg = {
         "1": "#f4f0ff",
@@ -7600,13 +7630,23 @@ elif page == "座席":
 
 
         for i, seat_no in enumerate(seat_cols, start=1):
-            current_sid = existing_grid.get((slot, seat_no), "")
+            widget_key = f"seat_grid_{today}_{slot}_{seat_no}"
+
+
+            current_sid = str(
+                st.session_state.get(
+                    widget_key,
+                    existing_grid.get((slot, seat_no), "")
+                )
+            ).strip()
+
+
             default_index = grid_student_ids.index(current_sid) if current_sid in grid_student_ids else 0
 
 
             with cols[i]:
-                
                 seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+
 
                 st.markdown(
                     f"""
@@ -7619,16 +7659,36 @@ elif page == "座席":
                     unsafe_allow_html=True
                 )
 
+
+                current_label = grid_student_labels.get(current_sid, current_sid)
+
+
+                if current_sid == "":
+                    st.caption("△ 空席")
+                elif current_sid == "__RESERVED__":
+                    st.markdown(
+                        "<span style='color:#f0a000; font-weight:700;'>● 使用予定</span>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<span style='color:#00a6d6; font-weight:700;'>● {current_label}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+
                 selected_sid = st.selectbox(
                     f"{slot}コマ 席{seat_no}",
                     grid_student_ids,
                     index=default_index,
-                    key=f"seat_grid_{today}_{slot}_{seat_no}",
+                    key=widget_key,
                     format_func=lambda sid: grid_student_labels.get(sid, sid),
                     label_visibility="collapsed",
                 )
 
+
                 st.markdown("</div>", unsafe_allow_html=True)
+
 
             if selected_sid:
                 selected_in_slot.append(selected_sid)
