@@ -7275,47 +7275,35 @@ elif page == "座席":
         auto_rows = []
         conflict_messages = []
 
-
-        # コマごとにまとめる
-        slot_groups = {}
-
-
+        # 重複している席だけスキップし、重複していない席は自動配置する
         for (slot, seat_no), sids in candidates.items():
-            slot_groups.setdefault(slot, []).append((seat_no, sids))
+            if len(sids) >= 2:
+                names = [student_name_map.get(sid, sid) for sid in sids]
+                conflict_messages.append(
+                    f"{slot}コマ 席{seat_no} が重複：{', '.join(names)}"
+                )
+                continue
 
 
-        for slot, items in slot_groups.items():
-            conflict_in_slot = False
+            sid = sids[0]
 
 
-            for seat_no, sids in items:
-                if len(sids) >= 2:
-                    names = [student_name_map.get(sid, sid) for sid in sids]
-                    conflict_messages.append(
-                        f"{slot}コマ 席{seat_no} が重複：{', '.join(names)}"
-                    )
-                    conflict_in_slot = True
+            # すでに誰かが座っている席には自動配置しない
+            if (slot, seat_no) in existing_keys:
+                conflict_messages.append(
+                    f"{slot}コマ 席{seat_no} はすでに使用中：{student_name_map.get(sid, sid)} は自動配置しません"
+                )
+                continue
 
 
-            if conflict_in_slot:
-                continue  # ← このコマは全部スキップ
+            auto_rows.append({
+                "date": str(today),
+                "slot": slot,
+                "seat_no": seat_no,
+                "student_id": sid,
+                "note": "基本席から自動配置",
+            })
 
-
-            for seat_no, sids in items:
-                sid = sids[0]
-
-
-                if (slot, seat_no) in existing_keys:
-                    continue
-
-
-                auto_rows.append({
-                    "date": str(today),
-                    "slot": slot,
-                    "seat_no": seat_no,
-                    "student_id": sid,
-                    "note": "基本席から自動配置",
-                })
 
 
 
@@ -7350,18 +7338,6 @@ elif page == "座席":
         st.error("⚠ 基本席の重複があります。手動で配置してください。")
         for msg in conflict_messages_saved:
             st.write(f"- {msg}")
-
-    conflict_messages_saved = st.session_state.get(
-        "seat_auto_conflict_messages", []
-    )
-
-
-    if conflict_messages_saved:
-        st.error("⚠ 基本席の重複があります")
-
-
-        for msg in conflict_messages_saved:
-            st.write(f"・{msg}")
 
     st.markdown("### 🪑 今日の配置表")
     st.caption("縦＝コマ、横＝席1〜5で、今日1日の座席をまとめて登録します。")
