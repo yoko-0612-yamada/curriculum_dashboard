@@ -1876,8 +1876,48 @@ if page == "閲覧":
         add_day_df = pd.DataFrame(add_rows)
 
 
-       # その日の予定を統合
+        # その日の予定を統合
         plan_day = pd.concat([base_day, add_day_df], ignore_index=True) if not add_day_df.empty else base_day.copy()
+
+
+        # 例外追加分も含めて、キャンセル済み予定を除外する
+        if not plan_day.empty and not ov_day.empty:
+            cancel_day_for_plan = ov_day[
+                ov_day["action"].astype(str).str.strip().str.lower().isin(["cancel", "キャンセル"])
+            ].copy()
+
+
+            if not cancel_day_for_plan.empty:
+                cancel_day_for_plan["student_id_key"] = cancel_day_for_plan["student_id"].astype(str).str.strip()
+                cancel_day_for_plan["slot_key"] = cancel_day_for_plan["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                cancel_keys_for_plan = set(
+                    zip(
+                        cancel_day_for_plan["student_id_key"],
+                        cancel_day_for_plan["slot_key"],
+                    )
+                )
+
+
+                plan_day["student_id_key"] = plan_day["student_id"].astype(str).str.strip()
+                plan_day["slot_key"] = plan_day["slot"].astype(str).str.strip().map(normalize_slot)
+
+
+                plan_day = plan_day[
+                    ~plan_day.apply(
+                        lambda r: (
+                            str(r.get("student_id_key", "")).strip(),
+                            str(r.get("slot_key", "")).strip(),
+                        ) in cancel_keys_for_plan,
+                        axis=1,
+                    )
+                ].copy()
+
+
+                plan_day = plan_day.drop(columns=["student_id_key", "slot_key"], errors="ignore")
+
+
 
 
         if plan_day.empty:
@@ -6992,6 +7032,7 @@ elif page == "座席":
         
     # 未配置があるコマを記録
     missing_slots = set()
+    missing_students = []
     
     # =========================================
     # 🪑 重複席チェック
@@ -7030,7 +7071,16 @@ elif page == "座席":
 
     for r in seat_today_rows:
         if str(r.get("席", "")).strip() == "⚠ 未配置":
-            missing_slots.add(normalize_slot(r.get("コマ", "")))
+            slot = normalize_slot(r.get("コマ", ""))
+            missing_slots.add(slot)
+
+            student_name = str(r.get("生徒", "")).strip()
+
+            if student_name:
+                missing_students.append(
+                    f"{student_name}（{slot}コマ）"
+                )
+
 
     # 未配置件数カウント
     missing_count = 0
@@ -7338,6 +7388,13 @@ elif page == "座席":
         st.error("⚠ 基本席の重複があります。手動で配置してください。")
         for msg in conflict_messages_saved:
             st.write(f"- {msg}")
+            
+    if missing_students:
+        st.warning("⚠ 未配置の生徒がいます")
+
+
+    for msg in missing_students:
+        st.write(f"・{msg}")
 
     st.markdown("### 🪑 今日の配置表")
     st.caption("縦＝コマ、横＝席1〜5で、今日1日の座席をまとめて登録します。")
@@ -7487,6 +7544,34 @@ elif page == "座席":
 
     slot_rows = ["1", "2", "3", "4", "5", "6", "7"]
     seat_cols = ["1", "2", "3", "4", "5"]
+    
+    unsaved_changes = False
+
+    for slot in slot_rows:
+        for seat_no in seat_cols:
+            widget_key = f"seat_grid_{today}_{slot}_{seat_no}"
+
+
+            current_sid = str(
+                st.session_state.get(
+                    widget_key,
+                    existing_grid.get((slot, seat_no), "")
+                )
+            ).strip()
+
+            saved_sid = str(existing_grid.get((slot, seat_no), "")).strip()
+
+            if current_sid != saved_sid:
+                unsaved_changes = True
+                break
+
+        if unsaved_changes:
+            break
+
+
+    if unsaved_changes:
+        st.warning("⚠ 保存されていない変更があります")
+
 
 
     grid_rows_to_save = []
@@ -7636,23 +7721,6 @@ elif page == "座席":
                 )
 
 
-                current_label = grid_student_labels.get(current_sid, current_sid)
-
-
-                if current_sid == "":
-                    st.caption("△ 空席")
-                elif current_sid == "__RESERVED__":
-                    st.markdown(
-                        "<span style='color:#f0a000; font-weight:700;'>● 使用予定</span>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f"<span style='color:#00a6d6; font-weight:700;'>● {current_label}</span>",
-                        unsafe_allow_html=True,
-                    )
-
-
                 selected_sid = st.selectbox(
                     f"{slot}コマ 席{seat_no}",
                     grid_student_ids,
@@ -7663,7 +7731,26 @@ elif page == "座席":
                 )
 
 
+                # selectboxで選ばれている値を、その場で表示する
+                selected_label = grid_student_labels.get(selected_sid, selected_sid)
+
+
+                if selected_sid == "":
+                    st.caption("△ 空席")
+                elif selected_sid == "__RESERVED__":
+                    st.markdown(
+                        "<span style='color:#f0a000; font-weight:700;'>● 使用予定</span>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f"<span style='color:#00a6d6; font-weight:700;'>● {selected_label}</span>",
+                        unsafe_allow_html=True,
+                    )
+
+
                 st.markdown("</div>", unsafe_allow_html=True)
+
 
 
             if selected_sid:
