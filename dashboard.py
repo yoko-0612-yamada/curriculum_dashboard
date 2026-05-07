@@ -2031,9 +2031,11 @@ if page == "閲覧":
                     today_rows.append(row_data)
 
             else:
-                # 昨日以前は出欠未だけを未完了として残す
-                if (not att_done) or (not prog_done):
-                    overdue_rows.append(row_data)
+                # 一時停止：
+                # 昨日以前の未完了は、現在の固定スケジュールで過去を再計算してしまうため、
+                # 日別予定スナップショット方式に直すまで表示しない。
+                pass
+
                     
     if show_progress_warning:
         st.warning("⚠ 進捗登録がまだです")
