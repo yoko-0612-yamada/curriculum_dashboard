@@ -944,6 +944,29 @@ def safe_read_csv(
 def norm_lower(s: pd.Series) -> pd.Series:
     return s.fillna("").astype(str).str.strip().str.lower()
 
+def normalize_action_value(v):
+    """schedule_overrides.csv の action 表記を内部判定用に統一する"""
+    a = str(v).strip().lower()
+
+
+    if a in ["add", "追加"]:
+        return "追加"
+
+
+    if a in ["cancel", "キャンセル"]:
+        return "キャンセル"
+
+
+    if a in ["move", "time_change", "時間変更"]:
+        return "時間変更"
+
+
+    if a in ["振替"]:
+        return "追加"
+
+
+    return str(v).strip()
+
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def format_override_action(action):
     a = str(action).strip().lower()
@@ -3273,7 +3296,7 @@ if page == "閲覧":
                                     "student_id": sid,
                                     "date": today.strftime("%Y-%m-%d"),
                                     "slot": slot,
-                                    "action": "cancel",
+                                    "action": "キャンセル",
                                     "start": "",
                                     "end": "",
                                     "session_type": "",
@@ -3832,14 +3855,13 @@ if page == "閲覧":
                     )
 
                 with c3:
-                    action_options = ["cancel", "add"]
+                    action_options = ["キャンセル", "追加"]
 
                     picked_action = st.selectbox(
                         "種別",
                         action_options,
                         index=1,
                         key="override_action",
-                        format_func=lambda x: "キャンセル" if x == "cancel" else "追加" if x == "add" else x,
                     )
 
                 # 選択中のslotに応じたデフォルト（start/end/session_type）
@@ -6647,7 +6669,7 @@ elif page == "座席":
 
             add_for_seat = ov_for_seat[
                 (ov_for_seat["date"] == today)
-                & (ov_for_seat["action_norm"].isin(["add", "追加", "振替"]))
+                & (ov_for_seat["action_norm"]== "追加")
             ].copy()
 
 
@@ -6659,7 +6681,7 @@ elif page == "座席":
             # 今日の例外：キャンセルは候補から外す
             cancel_for_seat = ov_for_seat[
                 (ov_for_seat["date"] == today)
-                & (ov_for_seat["action_norm"].isin(["cancel", "キャンセル"]))
+                & (ov_for_seat["action_norm"]==  "キャンセル")
             ].copy()
 
 
@@ -6928,12 +6950,11 @@ elif page == "座席":
 
 
         ov_for_today["date"] = ov_for_today["date"].astype(str).str.strip()
-        ov_for_today["action_norm"] = ov_for_today["action"].astype(str).str.strip().str.lower()
-
+        ov_for_today["action_norm"] = ov_for_today["action"].map(normalize_action_value)
 
         add_rows = ov_for_today[
             (ov_for_today["date"] == today_str)
-            & (ov_for_today["action_norm"].isin(["add", "追加", "振替"]))
+            & (ov_for_today["action_norm"] == "追加")
         ].copy()
 
 
@@ -7441,7 +7462,7 @@ elif page == "座席":
 
         grid_add = grid_ov[
             (grid_ov["date"] == today)
-            & (grid_ov["action_norm"].isin(["add", "追加", "振替"]))
+            & (grid_ov["action_norm"]=="追加")
         ].copy()
 
 
@@ -7452,7 +7473,7 @@ elif page == "座席":
 
         grid_cancel = grid_ov[
             (grid_ov["date"] == today)
-            & (grid_ov["action_norm"].isin(["cancel", "キャンセル"]))
+            & (grid_ov["action_norm"]=="キャンセル")
         ].copy()
 
 
