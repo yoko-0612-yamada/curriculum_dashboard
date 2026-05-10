@@ -865,10 +865,10 @@ def get_today_student_ids(schedule_df: pd.DataFrame, overrides_df: pd.DataFrame)
                 sid = str(r.get("student_id", "")).strip()
                 if not sid:
                     continue
-                action = str(r.get("action", "")).strip().lower()
-                if action in ("add", "move"):
+                action = normalize_action_value(r.get("action", ""))
+                if action in ("追加", "時間変更"):
                     counts[sid] = counts.get(sid, 0) + 1
-                elif action == "cancel":
+                elif action == "キャンセル":
                     counts[sid] = counts.get(sid, 0) - 1
 
     return {sid for sid, c in counts.items() if c > 0}
@@ -969,12 +969,7 @@ def normalize_action_value(v):
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def format_override_action(action):
-    a = str(action).strip().lower()
-    if a == "add":
-        return "追加"
-    if a == "cancel":
-        return "キャンセル"
-    return str(action).strip()
+    return normalize_action_value(action)
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
@@ -1831,7 +1826,7 @@ if page == "閲覧":
         # cancel 適用
         if not ov_day.empty:
             cancel_day = ov_day[
-                ov_day["action"].astype(str).str.strip().str.lower().isin(["cancel", "キャンセル"])
+                ov_day["action"].map(normalize_action_value) == "キャンセル"
             ].copy()
 
             if not cancel_day.empty:
@@ -1881,7 +1876,7 @@ if page == "閲覧":
         add_rows = []
         if not ov_day.empty:
             add_day = ov_day[
-                ov_day["action"].astype(str).str.strip().str.lower().isin(["add", "追加", "振替"])
+                ov_day["action"].map(normalize_action_value) == "追加"
             ].copy()
             if not add_day.empty:
                 for _, r in add_day.iterrows():
@@ -1906,7 +1901,7 @@ if page == "閲覧":
         # 例外追加分も含めて、キャンセル済み予定を除外する
         if not plan_day.empty and not ov_day.empty:
             cancel_day_for_plan = ov_day[
-                ov_day["action"].astype(str).str.strip().str.lower().isin(["cancel", "キャンセル"])
+                ov_day["action"].map(normalize_action_value) == "キャンセル"
             ].copy()
 
 
@@ -2432,18 +2427,18 @@ if page == "閲覧":
         # cancel: ベースから消す（同じ生徒×同じコマ）
         if not ov_today.empty:
             cancel_df = ov_today[
-                norm_lower(ov_today["action"]).isin(["cancel", "キャンセル"])
+                ov_today["action"].map(normalize_action_value) == "キャンセル"
             ].copy()
             if not cancel_df.empty:
-                cancel_day["student_id_key"] = cancel_day["student_id"].astype(str).str.strip()
-                cancel_day["slot_key"] = cancel_day["slot"].astype(str).str.strip().map(normalize_slot)
+                cancel_df["student_id_key"] = cancel_df["student_id"].astype(str).str.strip()
+                cancel_df["slot_key"] = cancel_df["slot"].astype(str).str.strip().map(normalize_slot)
 
 
-                cancel_keys = set(zip(cancel_day["student_id_key"], cancel_day["slot_key"]))
+                cancel_keys = set(zip(cancel_df["student_id_key"], cancel_df["slot_key"]))
 
 
-                base_day = base_day[
-                    ~base_day.apply(
+                today_view = today_view[
+                    ~today_view.apply(
                         lambda r: (
                             str(r.get("student_id", "")).strip(),
                             normalize_slot(r.get("slot", ""))
@@ -2454,16 +2449,19 @@ if page == "閲覧":
 
             # add: 追加（必要ならベースを置き換え）
             add_df = ov_today[
-                norm_lower(ov_today["action"]).isin(["add", "追加", "振替"])
+                ov_today["action"].map(normalize_action_value) == "追加"
             ].copy()
             if not add_df.empty:
                 # 置き換え（同じ student_id×slot はベースを消す）
-                add_keys = set(zip(add_df["student_id"], add_df["slot"]))
+                add_keys = set(zip(
+                    add_df["student_id"].astype(str).str.strip(),
+                    add_df["slot"].astype(str).str.strip().map(normalize_slot),
+                ))
                 today_view = today_view[
                     ~today_view.apply(
                         lambda r: (
                             str(r.get("student_id", "")).strip(),
-                            str(r.get("slot", "")).strip()
+                            normalize_slot(r.get("slot", ""))
                         ) in add_keys,
                         axis=1,
                     )
@@ -2523,7 +2521,7 @@ if page == "閲覧":
         # =====================================================
         if not ov_today.empty and not today_view.empty:
             cancel_df = ov_today[
-                norm_lower(ov_today["action"]).isin(["cancel", "キャンセル"])
+                ov_today["action"].map(normalize_action_value) == "キャンセル"
             ].copy()
 
 
@@ -2717,6 +2715,92 @@ if page == "閲覧":
             st.rerun()
 
 
+
+        # =====================================================
+        # 📅 今月回数一覧
+        # =====================================================
+        with st.expander("📅 今月回数一覧", expanded=False):
+
+
+
+            attendance_count_map = {}
+
+
+            att_df = load_attendance_log().copy()
+
+            if not att_df.empty:
+                if "date" in att_df.columns:
+                    att_df["date_dt"] = pd.to_datetime(att_df["date"], errors="coerce")
+
+
+                    today_dt = pd.Timestamp(dt.date.today())
+                    att_df = att_df[
+                        (att_df["date_dt"].dt.year == today_dt.year)
+                        & (att_df["date_dt"].dt.month == today_dt.month)
+                    ].copy()
+
+
+                    if "status" in att_df.columns:
+                        att_df = att_df[
+                            att_df["status"].astype(str).str.strip() == "出席"
+                        ].copy()
+
+
+                    if "student_id" in att_df.columns:
+                        attendance_count_map = (
+                            att_df["student_id"].astype(str).str.strip()
+                            .value_counts()
+                            .to_dict()
+                        )
+
+
+            month_rows = []
+
+
+            if not students.empty:
+                students_for_month = students.copy()
+
+
+                if "is_active" in students_for_month.columns:
+                    students_for_month = students_for_month[
+                        students_for_month["is_active"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .replace("", "true")
+                        .isin(["true", "1", "yes"])
+                    ].copy()
+
+
+                for _, r in students_for_month.iterrows():
+                    sid = str(r.get("student_id", "")).strip()
+                    name = str(r.get("display_name", "")).strip()
+                    target = str(r.get("number_of_times", "")).strip()
+
+
+                    current_count = attendance_count_map.get(sid, 0)
+
+
+                    month_rows.append({
+                        "生徒": name,
+                        "今月回数": f"{current_count} / {target}" if target else str(current_count),
+                    })
+
+
+            if month_rows:
+                month_df = pd.DataFrame(month_rows)
+                month_df = month_df.sort_values("生徒")
+
+
+                st.dataframe(
+                    month_df,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.info("表示できる生徒がいません。")
+
         st.subheader("👀 次に見る候補")
 
 
@@ -2748,7 +2832,7 @@ if page == "閲覧":
                     st.caption(f"📝 {memo}")
 
 
-        st.divider()
+            st.divider()
 
         # =====================================================
         # 次の準備メモ（簡易版）
@@ -3123,12 +3207,12 @@ if page == "閲覧":
             _ov_cancel["date"] = _ov_cancel["date"].astype(str).str.strip()
             _ov_cancel["slot_norm"] = _ov_cancel["slot"].astype(str).str.strip().map(normalize_slot)
             _ov_cancel["student_id"] = _ov_cancel["student_id"].astype(str).str.strip()
-            _ov_cancel["action_norm"] = _ov_cancel["action"].astype(str).str.strip().str.lower()
+            _ov_cancel["action_norm"] = _ov_cancel["action"].map(normalize_action_value)
 
 
             _ov_cancel = _ov_cancel[
                 (_ov_cancel["date"] == today.strftime("%Y-%m-%d"))
-                & (_ov_cancel["action_norm"].isin(["cancel", "キャンセル"]))
+                & (_ov_cancel["action_norm"] == "キャンセル")
             ].copy()
 
 
@@ -3234,13 +3318,13 @@ if page == "閲覧":
 
                     ov_cancel_today = ov_cancel_today[
                         (ov_cancel_today["date"] == today.strftime("%Y-%m-%d"))
-                        & (ov_cancel_today["action"].str.lower() == "cancel")
+                        & (ov_cancel_today["action"].map(normalize_action_value) == "キャンセル")
                     ].copy()
 
 
                     canceled_keys = set(zip(
                         ov_cancel_today["student_id"].astype(str).str.strip(),
-                        ov_cancel_today["slot"].astype(str).str.strip(),
+                        ov_cancel_today["slot"].astype(str).str.strip().map(normalize_slot),
                     ))
                 else:
                     canceled_keys = set()
@@ -3248,7 +3332,7 @@ if page == "閲覧":
 
                 cancel_src = cancel_src[
                     ~cancel_src.apply(
-                        lambda r: (str(r.get("student_id", "")).strip(), str(r.get("slot", "")).strip()) in canceled_keys,
+                        lambda r: (str(r.get("student_id", "")).strip(), normalize_slot(r.get("slot", ""))) in canceled_keys,
                         axis=1
                     )
                 ].copy()
@@ -6441,7 +6525,7 @@ elif page == "管理（入力）":
                             else:
                                 _backup(TIMESLOTS_CSV)
                                 slots.loc[sel_idx, "weekday"] = str(e_wd).strip()
-                                sslots.loc[sel_idx, "slot"] = normalize_slot(e_slot)
+                                slots.loc[sel_idx, "slot"] = normalize_slot(e_slot)
                                 slots.loc[sel_idx, "start"] = str(e_start).strip()
                                 slots.loc[sel_idx, "end"] = str(e_end).strip()
                                 write_csv_atomic(slots, TIMESLOTS_CSV)
@@ -6664,7 +6748,7 @@ elif page == "座席":
 
 
             ov_for_seat["date"] = ov_for_seat["date"].astype(str).str.strip()
-            ov_for_seat["action_norm"] = ov_for_seat["action"].astype(str).str.strip().str.lower()
+            ov_for_seat["action_norm"] = ov_for_seat["action"].map(normalize_action_value)
 
 
             add_for_seat = ov_for_seat[
@@ -6998,12 +7082,12 @@ elif page == "座席":
 
 
         ov_cancel["date"] = ov_cancel["date"].astype(str).str.strip()
-        ov_cancel["action_norm"] = ov_cancel["action"].astype(str).str.strip().str.lower()
+        ov_cancel["action_norm"] = ov_cancel["action"].map(normalize_action_value)
 
 
         cancel_rows = ov_cancel[
             (ov_cancel["date"] == today_str)
-            & (ov_cancel["action_norm"].isin(["cancel", "キャンセル"]))
+            & (ov_cancel["action_norm"] == "キャンセル")
         ].copy()
 
 
@@ -7457,7 +7541,7 @@ elif page == "座席":
 
 
         grid_ov["date"] = grid_ov["date"].astype(str).str.strip()
-        grid_ov["action_norm"] = grid_ov["action"].astype(str).str.strip().str.lower()
+        grid_ov["action_norm"] = grid_ov["action"].map(normalize_action_value)
 
 
         grid_add = grid_ov[
