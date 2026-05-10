@@ -3311,156 +3311,10 @@ if page == "閲覧":
 
 
         # =====================================================
-        # 🚫 今日の予定からワンクリックでキャンセル
-        # =====================================================
-        with st.expander("🚫 今日の予定をキャンセル", expanded=False):
-            st.caption("月2回の子など、今日は来ない予定をここからすぐキャンセルできます。")
-
-
-            if today_view.empty:
-                st.info("今日の予定がないため、キャンセル対象はありません。")
-            else:
-                cancel_src = today_view.copy()
-
-
-                # 表示用に重複を抑える（同じ生徒×同じコマ）
-                cancel_src["student_id"] = cancel_src["student_id"].astype(str).str.strip()
-                cancel_src["slot"] = cancel_src["slot"].astype(str).str.strip()
-                cancel_src["display_name"] = cancel_src["display_name"].fillna("").astype(str).str.strip()
-                cancel_src = cancel_src.drop_duplicates(subset=["student_id", "slot"], keep="first").copy()
-
-
-                # すでに今日 cancel 済みのものは除外
-                ov_cancel_today = schedule_overrides.copy()
-                if not ov_cancel_today.empty:
-                    for c in ["student_id", "date", "slot", "action"]:
-                        if c in ov_cancel_today.columns:
-                            ov_cancel_today[c] = ov_cancel_today[c].fillna("").astype(str).str.strip()
-
-
-                    ov_cancel_today = ov_cancel_today[
-                        (ov_cancel_today["date"] == today.strftime("%Y-%m-%d"))
-                        & (ov_cancel_today["action"].map(normalize_action_value) == "キャンセル")
-                    ].copy()
-
-
-                    canceled_keys = set(zip(
-                        ov_cancel_today["student_id"].astype(str).str.strip(),
-                        ov_cancel_today["slot"].astype(str).str.strip().map(normalize_slot),
-                    ))
-                else:
-                    canceled_keys = set()
-
-
-                cancel_src = cancel_src[
-                    ~cancel_src.apply(
-                        lambda r: (str(r.get("student_id", "")).strip(), normalize_slot(r.get("slot", ""))) in canceled_keys,
-                        axis=1
-                    )
-                ].copy()
-
-
-                if cancel_src.empty:
-                    st.success("キャンセルできる予定はありません。")
-                else:
-                    for i, r in cancel_src.reset_index(drop=True).iterrows():
-                        sid = str(r.get("student_id", "")).strip()
-                        name = str(r.get("display_name", "")).strip()
-                        slot = str(r.get("slot", "")).strip()
-                        start = str(r.get("start", "")).strip()
-                        end = str(r.get("end", "")).strip()
-
-
-                        c1, c2, c3 = st.columns([4, 2, 2])
-
-
-                        with c1:
-                            label = f"{sid}｜{name}" if name else sid
-                            time_label = f"{slot}コマ"
-                            if start or end:
-                                time_label += f"（{start}〜{end}）".strip("〜")
-                            st.write(f"{label} / {time_label}")
-
-
-                        with c2:
-                            st.write(str(r.get("session_type", "")).strip() or "-")
-
-
-                        with c3:
-                            if st.button("キャンセル", key=f"quick_cancel_{today}_{sid}_{slot}_{i}"):
-                                ov2 = schedule_overrides.copy()
-                                if ov2.empty:
-                                    ov2 = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
-                                else:
-                                    for c in ["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]:
-                                        if c not in ov2.columns:
-                                            ov2[c] = ""
-                                        ov2[c] = ov2[c].fillna("").astype(str).str.strip()
-
-
-                                new_row = {
-                                    "student_id": sid,
-                                    "date": today.strftime("%Y-%m-%d"),
-                                    "slot": slot,
-                                    "action": "キャンセル",
-                                    "start": "",
-                                    "end": "",
-                                    "session_type": "",
-                                    "note": "今日の予定からワンクリックでキャンセル",
-                                }
-
-
-                                # 同じ student_id × date × slot × action は重複させない
-                                keymask = (
-                                    (ov2["student_id"] == new_row["student_id"])
-                                    & (ov2["date"] == new_row["date"])
-                                    & (ov2["slot"] == new_row["slot"])
-                                    & (ov2["action"] == new_row["action"])
-                                )
-                                ov2 = ov2[~keymask].copy()
-                                ov2 = pd.concat([ov2, pd.DataFrame([new_row])], ignore_index=True)
-                                
-                                # schedule_overrides.csv にキャンセルを保存
-                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-
-
-                                # キャンセルした生徒の「今日・そのコマ」の座席を空席にする
-                                cancel_date = today.strftime("%Y-%m-%d")
-                                cancel_student_id = str(sid).strip()
-                                cancel_slot = str(slot).strip()
-
-
-                                seat_assignments2 = seat_assignments.copy()
-
-
-                                for c in ["date", "slot", "student_id"]:
-                                    if c not in seat_assignments2.columns:
-                                        seat_assignments2[c] = ""
-                                    seat_assignments2[c] = seat_assignments2[c].fillna("").astype(str).str.strip()
-
-
-                                seat_assignments2 = seat_assignments2[
-                                    ~(
-                                        (seat_assignments2["date"] == cancel_date)
-                                        & (seat_assignments2["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(cancel_slot))
-                                        & (seat_assignments2["student_id"] == cancel_student_id)
-                                    )
-                                ].copy()
-
-
-                                seat_assignments2 = seat_assignments2[SEAT_ASSIGNMENT_COLS].fillna("")
-                                write_csv_atomic(seat_assignments2, SEAT_ASSIGNMENTS_CSV)
-
-
-                                st.success("キャンセルしました。座席も空席にしました。")
-                                st.rerun()
-
-
-        # =====================================================
         # ✅ 出席ログ（授業/自習）: 予定ではなく実績を記録
         #    → 作業完了管理寄り（未確認を先に表示）
         # =====================================================
-        with st.expander("✅ 出席記録（授業/自習）", expanded=False):
+        with st.expander("✅ 出席記録（授業/自習）", expanded=True):
             st.caption("来たタイミングで『記録』を押すだけ。確認済みは下に分かれます。")
             att_df = load_attendance_log()
 
@@ -3824,6 +3678,152 @@ if page == "閲覧":
                             st.markdown(f"- **{label}** ／ {kind_label}" + (f" ／ {rec_memo}" if rec_memo else ""))
 
         # =====================================================
+        # =====================================================
+        # 🚫 今日の予定からワンクリックでキャンセル
+        # =====================================================
+        with st.expander("🚫 今日の予定をキャンセル", expanded=False):
+            st.caption("月2回の子など、今日は来ない予定をここからすぐキャンセルできます。")
+
+
+            if today_view.empty:
+                st.info("今日の予定がないため、キャンセル対象はありません。")
+            else:
+                cancel_src = today_view.copy()
+
+
+                # 表示用に重複を抑える（同じ生徒×同じコマ）
+                cancel_src["student_id"] = cancel_src["student_id"].astype(str).str.strip()
+                cancel_src["slot"] = cancel_src["slot"].astype(str).str.strip()
+                cancel_src["display_name"] = cancel_src["display_name"].fillna("").astype(str).str.strip()
+                cancel_src = cancel_src.drop_duplicates(subset=["student_id", "slot"], keep="first").copy()
+
+
+                # すでに今日 cancel 済みのものは除外
+                ov_cancel_today = schedule_overrides.copy()
+                if not ov_cancel_today.empty:
+                    for c in ["student_id", "date", "slot", "action"]:
+                        if c in ov_cancel_today.columns:
+                            ov_cancel_today[c] = ov_cancel_today[c].fillna("").astype(str).str.strip()
+
+
+                    ov_cancel_today = ov_cancel_today[
+                        (ov_cancel_today["date"] == today.strftime("%Y-%m-%d"))
+                        & (ov_cancel_today["action"].map(normalize_action_value) == "キャンセル")
+                    ].copy()
+
+
+                    canceled_keys = set(zip(
+                        ov_cancel_today["student_id"].astype(str).str.strip(),
+                        ov_cancel_today["slot"].astype(str).str.strip().map(normalize_slot),
+                    ))
+                else:
+                    canceled_keys = set()
+
+
+                cancel_src = cancel_src[
+                    ~cancel_src.apply(
+                        lambda r: (str(r.get("student_id", "")).strip(), normalize_slot(r.get("slot", ""))) in canceled_keys,
+                        axis=1
+                    )
+                ].copy()
+
+
+                if cancel_src.empty:
+                    st.success("キャンセルできる予定はありません。")
+                else:
+                    for i, r in cancel_src.reset_index(drop=True).iterrows():
+                        sid = str(r.get("student_id", "")).strip()
+                        name = str(r.get("display_name", "")).strip()
+                        slot = str(r.get("slot", "")).strip()
+                        start = str(r.get("start", "")).strip()
+                        end = str(r.get("end", "")).strip()
+
+
+                        c1, c2, c3 = st.columns([4, 2, 2])
+
+
+                        with c1:
+                            label = f"{sid}｜{name}" if name else sid
+                            time_label = f"{slot}コマ"
+                            if start or end:
+                                time_label += f"（{start}〜{end}）".strip("〜")
+                            st.write(f"{label} / {time_label}")
+
+
+                        with c2:
+                            st.write(str(r.get("session_type", "")).strip() or "-")
+
+
+                        with c3:
+                            if st.button("キャンセル", key=f"quick_cancel_{today}_{sid}_{slot}_{i}"):
+                                ov2 = schedule_overrides.copy()
+                                if ov2.empty:
+                                    ov2 = pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"])
+                                else:
+                                    for c in ["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]:
+                                        if c not in ov2.columns:
+                                            ov2[c] = ""
+                                        ov2[c] = ov2[c].fillna("").astype(str).str.strip()
+
+
+                                new_row = {
+                                    "student_id": sid,
+                                    "date": today.strftime("%Y-%m-%d"),
+                                    "slot": slot,
+                                    "action": "キャンセル",
+                                    "start": "",
+                                    "end": "",
+                                    "session_type": "",
+                                    "note": "今日の予定からワンクリックでキャンセル",
+                                }
+
+
+                                # 同じ student_id × date × slot × action は重複させない
+                                keymask = (
+                                    (ov2["student_id"] == new_row["student_id"])
+                                    & (ov2["date"] == new_row["date"])
+                                    & (ov2["slot"] == new_row["slot"])
+                                    & (ov2["action"] == new_row["action"])
+                                )
+                                ov2 = ov2[~keymask].copy()
+                                ov2 = pd.concat([ov2, pd.DataFrame([new_row])], ignore_index=True)
+                                
+                                # schedule_overrides.csv にキャンセルを保存
+                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+
+
+                                # キャンセルした生徒の「今日・そのコマ」の座席を空席にする
+                                cancel_date = today.strftime("%Y-%m-%d")
+                                cancel_student_id = str(sid).strip()
+                                cancel_slot = str(slot).strip()
+
+
+                                seat_assignments2 = seat_assignments.copy()
+
+
+                                for c in ["date", "slot", "student_id"]:
+                                    if c not in seat_assignments2.columns:
+                                        seat_assignments2[c] = ""
+                                    seat_assignments2[c] = seat_assignments2[c].fillna("").astype(str).str.strip()
+
+
+                                seat_assignments2 = seat_assignments2[
+                                    ~(
+                                        (seat_assignments2["date"] == cancel_date)
+                                        & (seat_assignments2["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(cancel_slot))
+                                        & (seat_assignments2["student_id"] == cancel_student_id)
+                                    )
+                                ].copy()
+
+
+                                seat_assignments2 = seat_assignments2[SEAT_ASSIGNMENT_COLS].fillna("")
+                                write_csv_atomic(seat_assignments2, SEAT_ASSIGNMENTS_CSV)
+
+
+                                st.success("キャンセルしました。座席も空席にしました。")
+                                st.rerun()
+
+
         # 今日の例外入力UI（schedule_overrides.csv） ※ここだけ
         # - 「今日の予定の下」専用
         # - 管理画面の例外入力は将来的に削除予定（重複事故防止）
