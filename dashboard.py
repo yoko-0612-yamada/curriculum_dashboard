@@ -2778,20 +2778,42 @@ if page == "閲覧":
                     name = str(r.get("display_name", "")).strip()
                     target = str(r.get("number_of_times", "")).strip()
 
-
                     current_count = attendance_count_map.get(sid, 0)
 
+                    try:
+                        target_num = int(float(target)) if target else 0
+                    except Exception:
+                        target_num = 0
+
+                    if target_num <= 0:
+                        diff_label = ""
+                    elif current_count < target_num:
+                        diff_label = f"あと{target_num - current_count}回"
+                    elif current_count == target_num:
+                        diff_label = "OK"
+                    else:
+                        diff_label = f"+{current_count - target_num}回"
 
                     month_rows.append({
                         "生徒": name,
                         "今月回数": f"{current_count} / {target}" if target else str(current_count),
+                        "不足": diff_label,
                     })
-
 
             if month_rows:
                 month_df = pd.DataFrame(month_rows)
-                month_df = month_df.sort_values("生徒")
+                show_only_shortage = st.checkbox(
+                    "不足がある生徒だけ表示",
+                    value=False,
+                    key="show_only_shortage_month_count",
+                )
 
+                if show_only_shortage:
+                    month_df = month_df[
+                        month_df["不足"].astype(str).str.startswith("あと")
+                    ].copy()
+
+                month_df = month_df.sort_values("生徒")
 
                 st.dataframe(
                     month_df,
@@ -6575,8 +6597,63 @@ elif page == "座席":
     st.markdown("### 今日の座席配置")
 
     today = dt.date.today().isoformat()
-    
-    seat_slot_sel = st.session_state.get("seat_register_slot", "1")
+
+    seat_slot_label_map = build_slot_label_map(timeslots)
+    seat_display_slot_options = ["1", "2", "3", "4", "5", "6", "7"]
+
+
+    # 現在時刻に合うコマを初期選択する
+    default_seat_slot = "1"
+
+
+    now_time = dt.datetime.now().time()
+
+
+    if not timeslots.empty:
+        ts_for_now = timeslots.copy()
+
+
+        for _, r in ts_for_now.iterrows():
+            slot_val = normalize_slot(r.get("slot", ""))
+            start_s = str(r.get("start", "")).strip()
+            end_s = str(r.get("end", "")).strip()
+
+
+            if not slot_val or not start_s or not end_s:
+                continue
+
+
+            try:
+                start_t = dt.datetime.strptime(start_s, "%H:%M").time()
+                end_t = dt.datetime.strptime(end_s, "%H:%M").time()
+            except Exception:
+                continue
+
+
+            if start_t <= now_time <= end_t:
+                default_seat_slot = slot_val
+                break
+
+
+    if "seat_display_slot" in st.session_state:
+        default_seat_slot = str(st.session_state.get("seat_display_slot", default_seat_slot))
+
+
+    default_index = (
+        seat_display_slot_options.index(default_seat_slot)
+        if default_seat_slot in seat_display_slot_options
+        else 0
+    )
+
+
+    seat_slot_sel = st.selectbox(
+        "座席図に表示するコマ",
+        seat_display_slot_options,
+        index=default_index,
+        key="seat_display_slot",
+        format_func=lambda x: format_slot_label(x, seat_slot_label_map),
+    )
+
 
     today_seats = seat_assignments[
         (seat_assignments["date"].astype(str).str.strip() == today)
@@ -7597,9 +7674,8 @@ elif page == "座席":
             .isin(["true", "1", "yes"])
         ].copy()
 
-
-    grid_options = [("", "空席")]
-
+  
+    grid_options = [("", "空席"), ("__RESERVED__", "使用予定")]
 
     if not grid_students.empty:
         grid_students = grid_students.sort_values("display_name")
@@ -7608,19 +7684,13 @@ elif page == "座席":
         for _, r in grid_students.iterrows():
             sid = str(r.get("student_id", "")).strip()
             name = str(r.get("display_name", "")).strip()
-            
-            if "__RESERVED__" not in [x[0] for x in grid_options]:
-                grid_options = grid_options + [("__RESERVED__", "使用予定")]
-                
+                            
             if sid:
                 grid_options.append((sid, name if name else sid))
                              
-            grid_student_ids = [x[0] for x in grid_options]
-            grid_student_labels = {sid: label for sid, label in grid_options}
+        grid_student_ids = [x[0] for x in grid_options]
+        grid_student_labels = {sid: label for sid, label in grid_options}
             
-            
-       
-
     # 既存の座席登録を初期値として読む
     existing_grid = {}
 
@@ -7700,6 +7770,7 @@ elif page == "座席":
     for i, seat_no in enumerate(seat_cols, start=1):
         with header_cols[i]:
             seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+            
             st.markdown(
                 f"""
                 <div style="
@@ -7812,14 +7883,27 @@ elif page == "座席":
 
             with cols[i]:
                 seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+                
+                saved_sid = str(
+                    existing_grid.get((slot, seat_no), "")
+                ).strip()
+
+                is_changed = current_sid != saved_sid
+
+                if is_changed:
+                    seat_bg = "#fff4cc"
+                    border_style = "3px solid #f0a000"
+                else:
+                    border_style = "1px solid transparent"
 
 
                 st.markdown(
                     f"""
                     <div style="
                         background:{seat_bg};
-                        padding:6px;
+                        padding:8px;
                         border-radius:8px;
+                        border:{border_style};
                     ">
                     """,
                     unsafe_allow_html=True
