@@ -4930,7 +4930,7 @@ if page == "閲覧":
             # 🎓 検定 合格登録（B方式）
             #   ※ 合格判定は kentei_results.csv のみ（Single Source of Truth）
             # =========================================================
-            with st.expander("🎓 検定 合格登録（B方式）", expanded=False):
+            with st.expander("🎓 検定 合格登録（B方式）", expanded=True):
                 # kentei_results.csv を合格判定の唯一の正にする
                 results_df = load_kentei_results().copy()
 
@@ -4943,7 +4943,127 @@ if page == "閲覧":
                 student_for_pass = str(student_id).strip()
                 st.info(f"対象生徒: {student_for_pass}｜{selected_student}")
 
-                st.markdown("### ✅ 新規登録")
+                # =====================================================
+                # 🎫 検定予定から結果登録
+                # -----------------------------------------------------
+                # 予定のある子は、予定日・級を先に選んでから結果登録できるようにする。
+                # ボタンを押すと、下の新規登録フォームへ級・受験日・メモを自動入力する。
+                # =====================================================
+                st.markdown("### 🎫 検定予定から結果登録")
+
+                _exam_for_pass = kentei_exam.copy() if 'kentei_exam' in globals() else pd.DataFrame()
+                if _exam_for_pass.empty:
+                    st.caption("この生徒の検定予定はまだありません。下の手動登録を使えます。")
+                else:
+                    for _c in ["student_id", "exam_date", "date", "exam_type", "kentei", "grade", "note"]:
+                        if _c not in _exam_for_pass.columns:
+                            _exam_for_pass[_c] = ""
+                        _exam_for_pass[_c] = _exam_for_pass[_c].fillna("").astype(str).str.strip()
+
+                    _exam_for_pass = _exam_for_pass[
+                        _exam_for_pass["student_id"].astype(str).str.strip() == student_for_pass
+                    ].copy()
+
+                    if _exam_for_pass.empty:
+                        st.caption("この生徒の検定予定はまだありません。下の手動登録を使えます。")
+                    else:
+                        _exam_for_pass["_exam_date_raw"] = _exam_for_pass["exam_date"].where(
+                            _exam_for_pass["exam_date"].astype(str).str.strip() != "",
+                            _exam_for_pass["date"],
+                        )
+                        _exam_for_pass["_exam_dt"] = pd.to_datetime(_exam_for_pass["_exam_date_raw"], errors="coerce")
+                        _exam_for_pass["_exam_date_str"] = _exam_for_pass["_exam_dt"].dt.strftime("%Y-%m-%d")
+                        _exam_for_pass["_exam_date_str"] = _exam_for_pass["_exam_date_str"].fillna(_exam_for_pass["_exam_date_raw"])
+                        _exam_for_pass["_exam_name"] = _exam_for_pass["exam_type"].where(
+                            _exam_for_pass["exam_type"].astype(str).str.strip() != "",
+                            _exam_for_pass["kentei"],
+                        )
+
+                        _results_chk = results_df.copy()
+                        for _c in ["student_id", "grade", "pass_date"]:
+                            if _c not in _results_chk.columns:
+                                _results_chk[_c] = ""
+                            _results_chk[_c] = _results_chk[_c].fillna("").astype(str).str.strip()
+
+                        def _kentei_result_status(_r):
+                            _g = str(_r.get("grade", "")).strip()
+                            _d = str(_r.get("_exam_date_str", "")).strip()
+                            if not _g:
+                                return "級未設定"
+                            if _results_chk.empty:
+                                return "未登録"
+                            _same_grade = _results_chk[
+                                (_results_chk["student_id"].astype(str).str.strip() == student_for_pass)
+                                & (_results_chk["grade"].astype(str).str.strip() == _g)
+                            ].copy()
+                            if _same_grade.empty:
+                                return "未登録"
+                            if _d and (_same_grade["pass_date"].astype(str).str.strip() == _d).any():
+                                return "登録済み"
+                            return "同じ級の登録あり"
+
+                        _exam_for_pass["状態"] = _exam_for_pass.apply(_kentei_result_status, axis=1)
+
+                        _today_ts = pd.Timestamp(date.today())
+                        def _priority(_r):
+                            _dt = _r.get("_exam_dt", pd.NaT)
+                            _status = str(_r.get("状態", "")).strip()
+                            if pd.isna(_dt):
+                                return 9
+                            if _status in ["未登録", "同じ級の登録あり"]:
+                                if _dt.date() == date.today():
+                                    return 0
+                                if _dt < _today_ts:
+                                    # 過去分の未登録は上に出す
+                                    return 1
+                                return 2
+                            return 5
+
+                        _exam_for_pass["_priority"] = _exam_for_pass.apply(_priority, axis=1)
+                        _exam_for_pass = _exam_for_pass.sort_values(["_priority", "_exam_dt"], na_position="last").head(10).copy()
+
+                        st.caption("予定を選ぶと、下の新規登録フォームに級・受験日・メモが入ります。点数を入力して保存してください。")
+
+                        for _i, _r in _exam_for_pass.reset_index(drop=True).iterrows():
+                            _date_str = str(_r.get("_exam_date_str", "")).strip()
+                            _grade_str = str(_r.get("grade", "")).strip()
+                            _exam_name = str(_r.get("_exam_name", "")).strip() or "検定"
+                            _note_str = str(_r.get("note", "")).strip()
+                            _status_str = str(_r.get("状態", "")).strip()
+
+                            _c1, _c2, _c3, _c4, _c5 = st.columns([1.3, 1, 1.8, 1.3, 1.4])
+                            with _c1:
+                                st.write(_date_str or "日付未設定")
+                            with _c2:
+                                st.write(f"{_grade_str}級" if _grade_str else "級未設定")
+                            with _c3:
+                                st.write(_exam_name)
+                                if _note_str:
+                                    st.caption(_note_str)
+                            with _c4:
+                                if _status_str == "未登録":
+                                    st.warning(_status_str)
+                                elif _status_str == "同じ級の登録あり":
+                                    st.info(_status_str)
+                                elif _status_str == "登録済み":
+                                    st.success(_status_str)
+                                else:
+                                    st.caption(_status_str)
+                            with _c5:
+                                if st.button("この予定で入力", key=f"pass_from_exam_{student_for_pass}_{_i}_{_date_str}_{_grade_str}"):
+                                    st.session_state["pass_new_grade"] = _grade_str
+                                    try:
+                                        _date_obj = pd.to_datetime(_date_str, errors="coerce")
+                                        st.session_state["pass_new_date"] = _date_obj.date() if pd.notna(_date_obj) else date.today()
+                                    except Exception:
+                                        st.session_state["pass_new_date"] = date.today()
+                                    st.session_state["pass_new_memo"] = _note_str
+                                    st.session_state["pass_new_score"] = ""
+                                    st.success("下の新規登録フォームに反映しました。点数を入力して保存してください。")
+                                    st.rerun()
+
+                st.divider()
+                st.markdown("### ✅ 新規登録・手動登録")
                 grade_for_pass = st.text_input("合格した級", value="", key="pass_new_grade")
                 score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
                 pass_date = st.date_input("受験日", value=date.today(), key="pass_new_date")
@@ -6476,7 +6596,7 @@ elif page == "管理（入力）":
     # ---------------------------
     with sub_month:
         st.subheader("🗓️ 月スケジュール（試験版）")
-        st.caption("固定スケジュール（週次）から1か月分の予定を生成し、月の確定予定として保存します。今日の予定への接続は次STEPで行います。")
+        st.caption("固定スケジュール（週次）から1か月分の予定を生成し、月の確定予定として保存します。保存済み予定の回数チェックもできます。")
 
         today_for_month = dt.date.today()
         col_m1, col_m2 = st.columns(2)
@@ -6507,7 +6627,7 @@ elif page == "管理（入力）":
         else:
             month_end = dt.date(target_year, target_month + 1, 1) - dt.timedelta(days=1)
 
-        st.info("STEP1では、月予定を作成・保存するところまでです。日々の『今日の予定』への反映は、次のSTEPで安全に接続します。")
+        st.info("固定スケジュールから月予定を生成し、保存済み月スケジュールの授業回数をチェックできます。")
 
         # 在籍中の生徒だけ対象にする
         active_student_ids_for_month = set()
@@ -6897,6 +7017,114 @@ elif page == "管理（入力）":
                 calendar_month[_c] = calendar_month[_c].fillna("").astype(str).str.strip()
             calendar_month["slot"] = calendar_month["slot"].map(normalize_slot)
             calendar_month["date_dt"] = pd.to_datetime(calendar_month["date"], errors="coerce")
+
+        # =====================================================
+        # 📊 保存済み月スケジュールの回数チェック
+        # -----------------------------------------------------
+        # 生成前プレビューではなく、実際に保存済みの月スケジュールに
+        # 追加・時間変更・キャンセルを反映した最終予定でチェックする。
+        # 授業回数だけを number_of_times（月回数）と比較する。
+        # =====================================================
+        with st.expander("📊 保存済み月スケジュールの回数チェック", expanded=False):
+            if calendar_month.empty:
+                st.info("この年月の保存済み月スケジュールがないため、回数チェックはできません。")
+            else:
+                _count_src = calendar_month.copy()
+                for _c in ["student_id", "session_type", "override_status", "slot", "date"]:
+                    if _c not in _count_src.columns:
+                        _count_src[_c] = ""
+                    _count_src[_c] = _count_src[_c].fillna("").astype(str).str.strip()
+
+                # キャンセル表示用のグレー行は、実際の予定数には含めない
+                _count_src = _count_src[_count_src["override_status"] != "キャンセル"].copy()
+
+                _lesson_src = _count_src[_count_src["session_type"] == "授業"].copy()
+                _self_src = _count_src[_count_src["session_type"] == "自習"].copy()
+
+                _lesson_count_map = (
+                    _lesson_src["student_id"].astype(str).str.strip().value_counts().to_dict()
+                    if not _lesson_src.empty else {}
+                )
+                _self_count_map = (
+                    _self_src["student_id"].astype(str).str.strip().value_counts().to_dict()
+                    if not _self_src.empty else {}
+                )
+
+                # 月回数が設定されている生徒、または予定が入っている生徒を対象にする
+                _all_count_sids = set(active_student_ids_for_month)
+                _all_count_sids |= set(_lesson_count_map.keys())
+                _all_count_sids |= set(_self_count_map.keys())
+
+                _count_rows = []
+                for _sid in sorted(_all_count_sids, key=lambda x: monthly_student_label_map.get(str(x).strip(), str(x).strip())):
+                    _sid = str(_sid).strip()
+                    if not _sid:
+                        continue
+
+                    _lesson_count = int(_lesson_count_map.get(_sid, 0))
+                    _self_count = int(_self_count_map.get(_sid, 0))
+
+                    _target_raw = str(student_target_count_map.get(_sid, "")).strip()
+                    try:
+                        _target_num = int(float(_target_raw)) if _target_raw else 0
+                    except Exception:
+                        _target_num = 0
+
+                    # 月回数未設定かつ予定なしの生徒は一覧を重くしないため非表示
+                    if _target_num <= 0 and _lesson_count <= 0 and _self_count <= 0:
+                        continue
+
+                    if _target_num <= 0:
+                        _judge = "月回数未設定"
+                        _diff = ""
+                    elif _lesson_count < _target_num:
+                        _judge = "不足"
+                        _diff = f"あと{_target_num - _lesson_count}回"
+                    elif _lesson_count == _target_num:
+                        _judge = "OK"
+                        _diff = ""
+                    else:
+                        _judge = "超過"
+                        _diff = f"+{_lesson_count - _target_num}回"
+
+                    _count_rows.append({
+                        "生徒": monthly_student_label_map.get(_sid, _sid),
+                        "授業予定": _lesson_count,
+                        "自習予定": _self_count,
+                        "月回数": _target_raw,
+                        "判定": _judge,
+                        "差分": _diff,
+                    })
+
+                if not _count_rows:
+                    st.info("回数チェック対象の予定がありません。")
+                else:
+                    _count_df = pd.DataFrame(_count_rows)
+                    _judge_order = {"不足": 0, "超過": 1, "月回数未設定": 2, "OK": 3}
+                    _count_df["_order"] = _count_df["判定"].map(_judge_order).fillna(9)
+                    _count_df = _count_df.sort_values(["_order", "生徒"]).drop(columns=["_order"])
+
+                    _ng_count = int((_count_df["判定"].isin(["不足", "超過", "月回数未設定"])).sum())
+                    if _ng_count:
+                        st.warning(f"確認が必要な生徒が {_ng_count} 人います。")
+                    else:
+                        st.success("保存済み月スケジュールの授業回数は、全員月回数と一致しています。")
+
+                    def _style_monthly_count(row):
+                        _j = str(row.get("判定", "")).strip()
+                        if _j == "不足":
+                            return ["background-color: #fff3cd; color: #7a4b00; font-weight: 700"] * len(row)
+                        if _j == "超過":
+                            return ["background-color: #ffe5e5; color: #8a1f1f; font-weight: 700"] * len(row)
+                        if _j == "月回数未設定":
+                            return ["background-color: #eef2ff; color: #26337a; font-weight: 700"] * len(row)
+                        return [""] * len(row)
+
+                    st.dataframe(
+                        _count_df.style.apply(_style_monthly_count, axis=1),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
         # d206: 出席済みの予定は、月カレンダー上で誤操作しにくいように軽くロックする。
         # 完全ロックではなく、各所の「修正モード」で解除できる。
