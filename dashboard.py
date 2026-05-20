@@ -8351,6 +8351,175 @@ elif page == "座席":
         )
         
     st.divider()
+
+    # d208: 上の「今日の座席配置」でも、表示中コマの予定生徒を確認できるようにする。
+    # 補助登録の候補だけでなく、今日の予定 / 月スケジュール / 例外追加を同じ共通ロジックで表示する。
+    seat_plan_today_for_display = build_daily_plan_for_date(
+        dt.date.today(),
+        students,
+        student_schedule,
+        monthly_schedule,
+        schedule_overrides,
+        timeslots,
+        include_inactive=False,
+    )
+
+    display_slot_norm = normalize_slot(seat_slot_sel)
+    display_rows = []
+
+    if not seat_plan_today_for_display.empty:
+        _display_plan = seat_plan_today_for_display.copy()
+        for _c in ["student_id", "slot", "session_type"]:
+            if _c not in _display_plan.columns:
+                _display_plan[_c] = ""
+            _display_plan[_c] = _display_plan[_c].fillna("").astype(str).str.strip()
+        _display_plan["slot"] = _display_plan["slot"].map(normalize_slot)
+        _display_plan = _display_plan[_display_plan["slot"] == display_slot_norm].copy()
+
+        for _, _r in _display_plan.iterrows():
+            _sid = str(_r.get("student_id", "")).strip()
+            if not _sid:
+                continue
+            _seat_no = ""
+            for _s_no, _s_sid in seat_map.items():
+                if str(_s_sid).strip() == _sid:
+                    _seat_no = _s_no
+                    break
+
+            display_rows.append({
+                "席": f"席{_seat_no}" if _seat_no else "⚠ 未配置",
+                "生徒": student_name_map.get(_sid, _sid),
+                "種別": str(_r.get("session_type", "")).strip(),
+                "状態": "予定あり",
+                "_seat_num": pd.to_numeric(_seat_no, errors="coerce"),
+            })
+
+    # d209: 共通ロジックに入らなかった月スケジュール/例外追加も、
+    # 表示中コマでは「予定ソース確認」として見えるようにする。
+    # これで「カレンダーにはいるのに座席リストに出ない」原因を画面上で追いやすくする。
+    top_cancel_keys = set()
+    if not schedule_overrides.empty:
+        _ov_cancel = schedule_overrides.copy()
+        for _c in ["date", "student_id", "slot", "action"]:
+            if _c not in _ov_cancel.columns:
+                _ov_cancel[_c] = ""
+            _ov_cancel[_c] = _ov_cancel[_c].fillna("").astype(str).str.strip()
+        _ov_cancel["slot"] = _ov_cancel["slot"].map(normalize_slot)
+        _ov_cancel["action_norm"] = _ov_cancel["action"].map(normalize_action_value)
+        top_cancel_keys = set(
+            zip(
+                _ov_cancel.loc[
+                    (_ov_cancel["date"] == today) & (_ov_cancel["action_norm"] == "キャンセル"),
+                    "student_id",
+                ].astype(str).str.strip(),
+                _ov_cancel.loc[
+                    (_ov_cancel["date"] == today) & (_ov_cancel["action_norm"] == "キャンセル"),
+                    "slot",
+                ].astype(str).str.strip(),
+            )
+        )
+
+    top_existing_keys = set()
+    for _r in display_rows:
+        _name = str(_r.get("生徒", "")).strip()
+        for _sid0, _name0 in student_name_map.items():
+            if str(_name0).strip() == _name:
+                top_existing_keys.add((str(_sid0).strip(), display_slot_norm))
+
+    def _append_top_candidate(_sid, _slot, _stype, _status):
+        _sid = str(_sid).strip()
+        _slot = normalize_slot(_slot)
+        if not _sid or _slot != display_slot_norm:
+            return
+        _key = (_sid, _slot)
+        if _key in top_existing_keys:
+            return
+        _seat_no = ""
+        for _s_no, _s_sid in seat_map.items():
+            if str(_s_sid).strip() == _sid:
+                _seat_no = _s_no
+                break
+        if _key in top_cancel_keys:
+            _status = "キャンセル済み（予定から除外）"
+        display_rows.append({
+            "席": f"席{_seat_no}" if _seat_no else "⚠ 未配置",
+            "生徒": student_name_map.get(_sid, _sid),
+            "種別": str(_stype).strip(),
+            "状態": _status,
+            "_seat_num": pd.to_numeric(_seat_no, errors="coerce"),
+        })
+        top_existing_keys.add(_key)
+
+    if not monthly_schedule.empty:
+        _ms_top = monthly_schedule.copy()
+        for _c in ["date", "student_id", "slot", "session_type"]:
+            if _c not in _ms_top.columns:
+                _ms_top[_c] = ""
+            _ms_top[_c] = _ms_top[_c].fillna("").astype(str).str.strip()
+        _ms_top["slot"] = _ms_top["slot"].map(normalize_slot)
+        _ms_top = _ms_top[(_ms_top["date"] == today) & (_ms_top["slot"] == display_slot_norm)].copy()
+        for _, _r in _ms_top.iterrows():
+            _append_top_candidate(_r.get("student_id", ""), _r.get("slot", ""), _r.get("session_type", ""), "月スケジュール確認")
+
+    if not schedule_overrides.empty:
+        _ov_top = schedule_overrides.copy()
+        for _c in ["date", "student_id", "slot", "action", "session_type"]:
+            if _c not in _ov_top.columns:
+                _ov_top[_c] = ""
+            _ov_top[_c] = _ov_top[_c].fillna("").astype(str).str.strip()
+        _ov_top["slot"] = _ov_top["slot"].map(normalize_slot)
+        _ov_top["action_norm"] = _ov_top["action"].map(normalize_action_value)
+        _ov_top = _ov_top[
+            (_ov_top["date"] == today)
+            & (_ov_top["slot"] == display_slot_norm)
+            & (_ov_top["action_norm"].isin(["追加", "時間変更", "キャンセル"]))
+        ].copy()
+        for _, _r in _ov_top.iterrows():
+            _status = "例外追加/変更確認"
+            if str(_r.get("action_norm", "")).strip() == "キャンセル":
+                _status = "キャンセル済み（予定から除外）"
+            _append_top_candidate(_r.get("student_id", ""), _r.get("slot", ""), _r.get("session_type", ""), _status)
+
+    # 座席だけ登録されていて、今日の予定側にいない生徒も表示する。
+    # 予定連携の漏れや、古い座席登録の残りを見つけやすくするため。
+    planned_names = {str(r.get("生徒", "")).strip() for r in display_rows}
+    for _seat_no, _sid in seat_map.items():
+        _name = student_name_map.get(str(_sid).strip(), str(_sid).strip())
+        if _name and _name not in planned_names:
+            display_rows.append({
+                "席": f"席{_seat_no}",
+                "生徒": _name,
+                "種別": "",
+                "状態": "座席登録のみ",
+                "_seat_num": pd.to_numeric(_seat_no, errors="coerce"),
+            })
+
+    st.markdown("#### 表示中コマの予定と座席")
+    if display_rows:
+        _display_df = pd.DataFrame(display_rows)
+        _display_df = _display_df.sort_values(by=["_seat_num", "生徒"], na_position="last")
+        _show_cols = ["席", "生徒", "種別", "状態"]
+
+        def _highlight_top_seat_status(row):
+            _seat = str(row.get("席", "")).strip()
+            _status = str(row.get("状態", "")).strip()
+            if _seat == "⚠ 未配置":
+                return ["background-color: #ffe5e5; color: #8a1f1f; font-weight: 700"] * len(row)
+            if _status == "座席登録のみ":
+                return ["background-color: #fff7d6; color: #7a5200; font-weight: 700"] * len(row)
+            if "確認" in _status:
+                return ["background-color: #fff7d6; color: #7a5200; font-weight: 700"] * len(row)
+            if "キャンセル済み" in _status:
+                return ["background-color: #eeeeee; color: #666666; text-decoration: line-through"] * len(row)
+            return [""] * len(row)
+
+        st.dataframe(
+            _display_df[_show_cols].style.apply(_highlight_top_seat_status, axis=1),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("このコマの予定はありません。")
     
     with st.expander("補助：1コマずつ席を登録する", expanded=False):
 
@@ -8374,8 +8543,9 @@ elif page == "座席":
 
 
 
-        # 今日の予定の生徒だけを候補にする
-        # 座席画面も月スケジュール優先の共通ロジックから作る
+        # 座席登録の候補生徒を、今日の予定だけでなく
+        # 月スケジュール / 例外追加・時間変更 / 既存座席登録 まで含めて広めに集める。
+        # 振替・当日追加の生徒が候補に出ない事故を防ぐ。
         seat_plan_today = build_daily_plan_for_date(
             dt.date.today(),
             students,
@@ -8386,28 +8556,86 @@ elif page == "座席":
             include_inactive=False,
         )
 
+        today_student_ids = set()
+        today_slot_student_ids = set()
+        seat_register_slot_norm = normalize_slot(seat_register_slot)
+
+        # 1) 共通ロジックで作った「今日の予定」
         if not seat_plan_today.empty and "student_id" in seat_plan_today.columns:
-            today_student_ids = set(
-                seat_plan_today["student_id"].astype(str).str.strip().tolist()
-            )
-        else:
-            today_student_ids = set()
+            _plan_today = seat_plan_today.copy()
+            _plan_today["student_id"] = _plan_today["student_id"].astype(str).str.strip()
+            if "slot" in _plan_today.columns:
+                _plan_today["slot"] = _plan_today["slot"].astype(str).str.strip().map(normalize_slot)
+            today_student_ids |= set(_plan_today["student_id"].tolist())
+            if "slot" in _plan_today.columns:
+                today_slot_student_ids |= set(
+                    _plan_today.loc[
+                        _plan_today["slot"] == seat_register_slot_norm,
+                        "student_id",
+                    ].tolist()
+                )
 
+        # 2) 保存済みの月スケジュール（その日の確定予定）
+        if not monthly_schedule.empty:
+            _ms = monthly_schedule.copy()
+            for _c in ["date", "student_id", "slot"]:
+                if _c not in _ms.columns:
+                    _ms[_c] = ""
+                _ms[_c] = _ms[_c].fillna("").astype(str).str.strip()
+            _ms["slot"] = _ms["slot"].map(normalize_slot)
+            _ms_day = _ms[_ms["date"] == today].copy()
+            if not _ms_day.empty:
+                today_student_ids |= set(_ms_day["student_id"].tolist())
+                today_slot_student_ids |= set(
+                    _ms_day.loc[_ms_day["slot"] == seat_register_slot_norm, "student_id"].tolist()
+                )
 
-        # すでに登録するコマに座席登録済みの生徒も候補に残す
+        # 3) その日の例外（追加 / 時間変更 / 振替）
+        if not schedule_overrides.empty:
+            _ov = schedule_overrides.copy()
+            for _c in ["date", "student_id", "slot", "action"]:
+                if _c not in _ov.columns:
+                    _ov[_c] = ""
+                _ov[_c] = _ov[_c].fillna("").astype(str).str.strip()
+            _ov["slot"] = _ov["slot"].map(normalize_slot)
+            _ov["action_norm"] = _ov["action"].map(normalize_action_value)
+            _ov_day = _ov[
+                (_ov["date"] == today)
+                & (_ov["action_norm"].isin(["追加", "時間変更"]))
+            ].copy()
+            if not _ov_day.empty:
+                today_student_ids |= set(_ov_day["student_id"].tolist())
+                today_slot_student_ids |= set(
+                    _ov_day.loc[_ov_day["slot"] == seat_register_slot_norm, "student_id"].tolist()
+                )
+
+        # 4) すでに登録するコマに座席登録済みの生徒も候補に残す
         if not registration_today_seats.empty and "student_id" in registration_today_seats.columns:
-            today_student_ids |= set(
+            _seat_ids = set(
                 registration_today_seats["student_id"].astype(str).str.strip().tolist()
             )
-
+            today_student_ids |= _seat_ids
+            today_slot_student_ids |= _seat_ids
 
         today_student_ids = {sid for sid in today_student_ids if sid}
+        today_slot_student_ids = {sid for sid in today_slot_student_ids if sid}
 
+        include_all_active_for_seat = st.checkbox(
+            "候補に全在籍生徒も含める",
+            value=False,
+            key=f"seat_include_all_active_{today}_{seat_register_slot}",
+            help="振替・追加の生徒が見つからない時に、全在籍生徒からも選べるようにします。",
+        )
 
         active_students_for_seat = students.copy()
 
-
-        if today_student_ids:
+        if include_all_active_for_seat:
+            pass
+        elif today_slot_student_ids:
+            active_students_for_seat = active_students_for_seat[
+                active_students_for_seat["student_id"].astype(str).str.strip().isin(today_slot_student_ids)
+            ].copy()
+        elif today_student_ids:
             active_students_for_seat = active_students_for_seat[
                 active_students_for_seat["student_id"].astype(str).str.strip().isin(today_student_ids)
             ].copy()
@@ -8532,6 +8760,7 @@ elif page == "座席":
             write_csv_atomic(save_df, SEAT_ASSIGNMENTS_CSV)
 
 
+            st.session_state["seat_display_slot"] = str(target_slot)
             st.success("今日の席を保存しました。")
             st.rerun()
         
@@ -8639,7 +8868,95 @@ elif page == "座席":
                 "end": end,
                 "生徒": student_name_map.get(sid, sid),
                 "種別": str(r.get("session_type", "")).strip(),
+                "状態": "予定あり",
             })
+
+
+    # d209: build_daily_plan_for_date に最終的に入らなかった予定ソースも、
+    # 座席確認リストでは確認用として表示する。
+    # ここに出る場合は、キャンセル・在籍状態・日付/コマ表記のズレなどを確認する。
+    seat_cancel_keys_for_today = set()
+    if not schedule_overrides.empty:
+        _ov_src = schedule_overrides.copy()
+        for _c in ["date", "student_id", "slot", "action", "session_type"]:
+            if _c not in _ov_src.columns:
+                _ov_src[_c] = ""
+            _ov_src[_c] = _ov_src[_c].fillna("").astype(str).str.strip()
+        _ov_src["slot"] = _ov_src["slot"].map(normalize_slot)
+        _ov_src["action_norm"] = _ov_src["action"].map(normalize_action_value)
+        seat_cancel_keys_for_today = set(
+            zip(
+                _ov_src.loc[
+                    (_ov_src["date"] == today_str) & (_ov_src["action_norm"] == "キャンセル"),
+                    "student_id",
+                ].astype(str).str.strip(),
+                _ov_src.loc[
+                    (_ov_src["date"] == today_str) & (_ov_src["action_norm"] == "キャンセル"),
+                    "slot",
+                ].astype(str).str.strip(),
+            )
+        )
+    else:
+        _ov_src = pd.DataFrame()
+
+    existing_seat_today_keys = set(
+        (str(r.get("student_id", "")).strip(), normalize_slot(r.get("コマ", "")))
+        for r in seat_today_rows
+    )
+
+    def _append_seat_today_candidate(_sid, _slot, _stype, _status):
+        _sid = str(_sid).strip()
+        _slot = normalize_slot(_slot)
+        if not _sid or not _slot:
+            return
+        _key = (_sid, _slot)
+        if _key in existing_seat_today_keys:
+            return
+        _start, _end = slot_time_map.get(_slot, ("", ""))
+        if _key in seat_cancel_keys_for_today:
+            _status = "キャンセル済み（予定から除外）"
+        seat_today_rows.append({
+            "student_id": _sid,
+            "コマ": _slot,
+            "start": _start,
+            "end": _end,
+            "生徒": student_name_map.get(_sid, _sid),
+            "種別": str(_stype).strip(),
+            "状態": _status,
+        })
+        existing_seat_today_keys.add(_key)
+
+    if not monthly_schedule.empty:
+        _ms_src = monthly_schedule.copy()
+        for _c in ["date", "student_id", "slot", "session_type"]:
+            if _c not in _ms_src.columns:
+                _ms_src[_c] = ""
+            _ms_src[_c] = _ms_src[_c].fillna("").astype(str).str.strip()
+        _ms_src["slot"] = _ms_src["slot"].map(normalize_slot)
+        _ms_src = _ms_src[_ms_src["date"] == today_str].copy()
+        for _, _r in _ms_src.iterrows():
+            _append_seat_today_candidate(
+                _r.get("student_id", ""),
+                _r.get("slot", ""),
+                _r.get("session_type", ""),
+                "月スケジュール確認",
+            )
+
+    if not _ov_src.empty:
+        _ov_add_src = _ov_src[
+            (_ov_src["date"] == today_str)
+            & (_ov_src["action_norm"].isin(["追加", "時間変更", "キャンセル"]))
+        ].copy()
+        for _, _r in _ov_add_src.iterrows():
+            _status = "例外追加/変更確認"
+            if str(_r.get("action_norm", "")).strip() == "キャンセル":
+                _status = "キャンセル済み（予定から除外）"
+            _append_seat_today_candidate(
+                _r.get("student_id", ""),
+                _r.get("slot", ""),
+                _r.get("session_type", ""),
+                _status,
+            )
 
 
     # 座席登録済みマップ
@@ -8745,7 +9062,7 @@ elif page == "座席":
         )
 
 
-        show_cols = ["コマ", "start", "end", "席", "生徒", "種別"]
+        show_cols = ["コマ", "start", "end", "席", "生徒", "種別", "状態"]
         show_cols = [c for c in show_cols if c in seat_today_df.columns]
 
 
@@ -8754,8 +9071,13 @@ elif page == "座席":
 
         def highlight_missing_seat(row):
             seat_value = str(row.get("席", "")).strip()
+            status_value = str(row.get("状態", "")).strip()
+            if "キャンセル済み" in status_value:
+                return ["background-color: #eeeeee; color: #666666; text-decoration: line-through"] * len(row)
             if seat_value == "⚠ 未配置":
                 return ["background-color: #ffe5e5; color: #8a1f1f; font-weight: 700"] * len(row)
+            if "確認" in status_value:
+                return ["background-color: #fff7d6; color: #7a5200; font-weight: 700"] * len(row)
             return [""] * len(row)
 
 
@@ -9043,74 +9365,155 @@ elif page == "座席":
     st.caption("縦＝コマ、横＝席1〜5で、今日1日の座席をまとめて登録します。")
 
 
-    # 今日の予定に出てくる生徒だけを候補にする
+    # 今日の配置表のプルダウン候補を作る
+    # d210: ここが古い週次スケジュール寄りだったため、
+    # 振替・当日追加・月スケジュールの生徒が出ないことがあった。
+    # 今日の予定と同じ build_daily_plan_for_date() を主軸にして、
+    # 念のため月スケジュール・例外・既存座席登録も候補に含める。
     today_student_ids_for_grid = set()
 
+    grid_today_date_obj = dt.date.today()
+    today_wd_for_grid = ["月", "火", "水", "木", "金", "土", "日"][grid_today_date_obj.weekday()]
 
-    today_wd_for_grid = ["月", "火", "水", "木", "金", "土", "日"][dt.date.today().weekday()]
+    # 1) 最終的な今日の予定（キャンセル反映後）
+    grid_plan_today = build_daily_plan_for_date(
+        grid_today_date_obj,
+        students,
+        student_schedule,
+        monthly_schedule,
+        schedule_overrides,
+        timeslots,
+        include_inactive=False,
+    )
 
-
-    if not student_schedule.empty:
-        grid_sched = student_schedule.copy()
-
-
-        for c in ["student_id", "weekday"]:
-            if c not in grid_sched.columns:
-                grid_sched[c] = ""
-
-
-        grid_sched = grid_sched[
-            grid_sched["weekday"].astype(str).str.strip() == today_wd_for_grid
-        ].copy()
-
-
+    if not grid_plan_today.empty and "student_id" in grid_plan_today.columns:
         today_student_ids_for_grid |= set(
-            grid_sched["student_id"].astype(str).str.strip().tolist()
+            grid_plan_today["student_id"].astype(str).str.strip().tolist()
         )
 
+    # 2) monthly_schedule.csv の今日の予定（保険）
+    if not monthly_schedule.empty:
+        grid_ms = monthly_schedule.copy()
 
+        for c in ["date", "student_id", "slot"]:
+            if c not in grid_ms.columns:
+                grid_ms[c] = ""
+            grid_ms[c] = grid_ms[c].fillna("").astype(str).str.strip()
+
+        grid_ms["slot"] = grid_ms["slot"].map(normalize_slot)
+        grid_ms_day = grid_ms[grid_ms["date"] == today].copy()
+
+        # キャンセル済みの student_id × slot は除外する
+        cancel_keys_for_grid = set()
+        if not schedule_overrides.empty:
+            grid_cancel_src = schedule_overrides.copy()
+            for c in ["student_id", "date", "slot", "action"]:
+                if c not in grid_cancel_src.columns:
+                    grid_cancel_src[c] = ""
+                grid_cancel_src[c] = grid_cancel_src[c].fillna("").astype(str).str.strip()
+            grid_cancel_src["slot"] = grid_cancel_src["slot"].map(normalize_slot)
+            grid_cancel_src["action_norm"] = grid_cancel_src["action"].map(normalize_action_value)
+            grid_cancel_day = grid_cancel_src[
+                (grid_cancel_src["date"] == today)
+                & (grid_cancel_src["action_norm"] == "キャンセル")
+            ].copy()
+            cancel_keys_for_grid = set(
+                zip(
+                    grid_cancel_day["student_id"].astype(str).str.strip(),
+                    grid_cancel_day["slot"].astype(str).str.strip().map(normalize_slot),
+                )
+            )
+
+        if not grid_ms_day.empty:
+            if cancel_keys_for_grid:
+                grid_ms_day["student_id_key"] = grid_ms_day["student_id"].astype(str).str.strip()
+                grid_ms_day["slot_key"] = grid_ms_day["slot"].astype(str).str.strip().map(normalize_slot)
+                grid_ms_day = grid_ms_day[
+                    ~grid_ms_day.apply(
+                        lambda r: (r.get("student_id_key", ""), r.get("slot_key", "")) in cancel_keys_for_grid,
+                        axis=1,
+                    )
+                ].copy()
+
+            today_student_ids_for_grid |= set(
+                grid_ms_day["student_id"].astype(str).str.strip().tolist()
+            )
+
+    # 3) schedule_overrides.csv の今日の追加 / 時間変更 / 振替（保険）
     if not schedule_overrides.empty:
         grid_ov = schedule_overrides.copy()
 
-
-        for c in ["student_id", "date", "action"]:
+        for c in ["student_id", "date", "slot", "action"]:
             if c not in grid_ov.columns:
                 grid_ov[c] = ""
+            grid_ov[c] = grid_ov[c].fillna("").astype(str).str.strip()
 
-
-        grid_ov["date"] = grid_ov["date"].astype(str).str.strip()
+        grid_ov["slot"] = grid_ov["slot"].map(normalize_slot)
         grid_ov["action_norm"] = grid_ov["action"].map(normalize_action_value)
 
-
-        grid_add = grid_ov[
+        grid_extra = grid_ov[
             (grid_ov["date"] == today)
-            & (grid_ov["action_norm"]=="追加")
+            & (grid_ov["action_norm"].isin(["追加", "時間変更"]))
         ].copy()
 
-
-        today_student_ids_for_grid |= set(
-            grid_add["student_id"].astype(str).str.strip().tolist()
-        )
-
-
+        # 同じ student_id × slot にキャンセルがある場合だけ除外する
         grid_cancel = grid_ov[
             (grid_ov["date"] == today)
-            & (grid_ov["action_norm"]=="キャンセル")
+            & (grid_ov["action_norm"] == "キャンセル")
         ].copy()
-
-
-        today_student_ids_for_grid -= set(
-            grid_cancel["student_id"].astype(str).str.strip().tolist()
+        grid_cancel_keys = set(
+            zip(
+                grid_cancel["student_id"].astype(str).str.strip(),
+                grid_cancel["slot"].astype(str).str.strip().map(normalize_slot),
+            )
         )
 
+        if not grid_extra.empty and grid_cancel_keys:
+            grid_extra["student_id_key"] = grid_extra["student_id"].astype(str).str.strip()
+            grid_extra["slot_key"] = grid_extra["slot"].astype(str).str.strip().map(normalize_slot)
+            grid_extra = grid_extra[
+                ~grid_extra.apply(
+                    lambda r: (r.get("student_id_key", ""), r.get("slot_key", "")) in grid_cancel_keys,
+                    axis=1,
+                )
+            ].copy()
+
+        today_student_ids_for_grid |= set(
+            grid_extra["student_id"].astype(str).str.strip().tolist()
+        )
+
+    # 4) 既に今日の配置表に保存済みの生徒も候補に残す
+    #    これを入れないと、候補から外れた生徒が保存時に空席へ戻りやすい。
+    if not seat_assignments.empty:
+        grid_saved_seats = seat_assignments.copy()
+
+        for c in ["date", "student_id"]:
+            if c not in grid_saved_seats.columns:
+                grid_saved_seats[c] = ""
+            grid_saved_seats[c] = grid_saved_seats[c].fillna("").astype(str).str.strip()
+
+        grid_saved_seats = grid_saved_seats[
+            grid_saved_seats["date"].astype(str).str.strip() == today
+        ].copy()
+
+        today_student_ids_for_grid |= set(
+            grid_saved_seats["student_id"].astype(str).str.strip().tolist()
+        )
 
     today_student_ids_for_grid = {sid for sid in today_student_ids_for_grid if sid}
 
+    include_all_active_for_grid = st.checkbox(
+        "配置表の候補に全在籍生徒も含める",
+        value=False,
+        key=f"seat_grid_include_all_active_{today}",
+        help="今日の予定・振替・追加の候補に出ない生徒がいる場合にONにします。",
+    )
 
     grid_students = students.copy()
 
-
-    if today_student_ids_for_grid:
+    if include_all_active_for_grid:
+        pass
+    elif today_student_ids_for_grid:
         grid_students = grid_students[
             grid_students["student_id"].astype(str).str.strip().isin(today_student_ids_for_grid)
         ].copy()
@@ -9149,8 +9552,8 @@ elif page == "座席":
             if sid:
                 grid_options.append((sid, name if name else sid))
                              
-        grid_student_ids = [x[0] for x in grid_options]
-        grid_student_labels = {sid: label for sid, label in grid_options}
+    grid_student_ids = [x[0] for x in grid_options]
+    grid_student_labels = {sid: label for sid, label in grid_options}
             
     # 既存の座席登録を初期値として読む
     existing_grid = {}
