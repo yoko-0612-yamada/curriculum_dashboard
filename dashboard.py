@@ -2150,9 +2150,10 @@ if page == "閲覧":
 
 
     # =========================================================
-    # 🚨 未完了タスク（昨日以前）
-    # 予定があったのに attendance_log が無いものを出す
+    # 🚨 未完了タスク（今日・昨日以前）
+    # 予定があったのに attendance_log / 進捗登録が無いものを出す
     # 判定単位：date × student_id
+    # d215: 昨日以前は current student_schedule.csv ではなく、保存済み monthly_schedule.csv を基準にする。
     # =========================================================
     #st.subheader("🚨 未完了タスク（昨日以前）")
 
@@ -2289,14 +2290,20 @@ if page == "閲覧":
 
 
         # その日の予定
-        # 月スケジュールがある日は monthly_schedule.csv を優先し、
-        # 無い日だけ固定スケジュールを使う。
-        # ここを今日の予定・座席と同じ共通ロジックに寄せることで、
-        # 「今日の未完了だけ固定スケジュールを見てしまう」ズレを防ぐ。
+        # d215方針：
+        # - 今日の未完了は、従来どおり月スケジュール優先 + 固定スケジュールへのフォールバックを許可する。
+        # - 昨日以前の未完了は、現在の固定スケジュールで過去を再計算しない。
+        #   monthly_schedule.csv と schedule_overrides.csv だけを見て判定する。
+        #   その日の月スケジュールが保存されていない場合は、過去未完了には出さない。
+        if d_str == today_str:
+            _schedule_for_unfinished = student_schedule
+        else:
+            _schedule_for_unfinished = pd.DataFrame(columns=list(student_schedule.columns) if student_schedule is not None else ["student_id", "weekday", "slot", "session_type"])
+
         plan_day = build_daily_plan_for_date(
             d_date,
             students,
-            student_schedule,
+            _schedule_for_unfinished,
             monthly_schedule,
             schedule_overrides,
             timeslots,
@@ -2447,10 +2454,9 @@ if page == "閲覧":
                     today_rows.append(row_data)
 
             else:
-                # 一時停止：
-                # 昨日以前の未完了は、現在の固定スケジュールで過去を再計算してしまうため、
-                # 日別予定スナップショット方式に直すまで表示しない。
-                pass
+                # 昨日以前の未完了は、現在の固定スケジュールではなく
+                # 保存済み月スケジュール + 例外反映後の予定だけで表示する。
+                overdue_rows.append(row_data)
 
                     
     if show_progress_warning:
@@ -2730,10 +2736,11 @@ if page == "閲覧":
     overdue_df = pd.DataFrame(overdue_rows)
     
     if overdue_rows:
-        debug_overdue = pd.DataFrame(overdue_rows)
-        st.write("昨日以前の未完了 確認用")
-        show_cols = [c for c in ["日付", "student_id", "生徒", "コマ", "種別", "状態"] if c in debug_overdue.columns]
-        st.dataframe(debug_overdue[show_cols], use_container_width=True)
+        with st.expander("昨日以前の未完了 確認用", expanded=False):
+            st.caption("昨日以前は、保存済み月スケジュールとスケジュール例外だけを見て判定します。現在の固定スケジュール変更には引っ張られません。")
+            debug_overdue = pd.DataFrame(overdue_rows)
+            show_cols = [c for c in ["日付", "student_id", "生徒", "コマ", "種別", "状態"] if c in debug_overdue.columns]
+            st.dataframe(debug_overdue[show_cols], use_container_width=True, hide_index=True)
 
 
     overdue_count = len(overdue_df)
