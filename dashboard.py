@@ -4687,6 +4687,11 @@ if page == "閲覧":
                         was_done = bool(done_map.get(task_id, False))
                         was_skip = bool(skip_map.get(task_id, False))
                         prev_done_date = str(done_date_map.get(task_id, "")).strip()
+                        task_label = (
+                            f"{task_name}　（完了日：{prev_done_date}）"
+                            if was_done and prev_done_date
+                            else task_name
+                        )
 
 
                         if was_done:
@@ -4701,7 +4706,7 @@ if page == "閲覧":
 
 
                         selected_state = st.selectbox(
-                            task_name,
+                            task_label,
                             state_options,
                             index=state_options.index(default_state),
                             key=f"curr_state_{student_id}_{selected_course_id}_{task_id}",
@@ -4717,9 +4722,9 @@ if page == "閲覧":
                             "is_skip": "true" if selected_state == "スキップ" else "false",
                             "done_date": (
                                 dt.date.today().isoformat()
-                                if selected_state in ["完了", "スキップ"] and default_state == "未実施"
+                                if selected_state == "完了" and default_state != "完了"
                                 else prev_done_date
-                            ) if selected_state in ["完了", "スキップ"] else "",
+                            ) if selected_state == "完了" else "",
                             "note": ""
                         })
 
@@ -4859,6 +4864,11 @@ if page == "閲覧":
                 was_done = bool(done_map.get(task_id, False))
                 was_skip = bool(skip_map.get(task_id, False))
                 prev_done_date = str(done_date_map.get(task_id, "")).strip()
+                task_label = (
+                    f"{task_name}　（完了日：{prev_done_date}）"
+                    if was_done and prev_done_date
+                    else task_name
+                )
 
 
                 if was_done:
@@ -4871,7 +4881,7 @@ if page == "閲覧":
                 disabled = is_locked or (was_done and not override_done_lock)
 
                 selected_state = st.selectbox(
-                    task_name,
+                    task_label,
                     state_options,
                     index=state_options.index(default_state),
                     key=f"kentei_state_{student_id}_{grade_sel}_{task_id}",
@@ -4887,9 +4897,9 @@ if page == "閲覧":
                     "is_skip": "true" if selected_state == "スキップ" else "false",
                     "done_date": (
                         dt.date.today().isoformat()
-                        if selected_state in ["完了", "スキップ"] and default_state == "未実施"
+                        if selected_state == "完了" and default_state != "完了"
                         else prev_done_date
-                    ) if selected_state in ["完了", "スキップ"] else "",
+                    ) if selected_state == "完了" else "",
                     "note": ""
                 })
 
@@ -8987,7 +8997,13 @@ elif page == "座席":
     for r in seat_today_rows:
         sid = str(r.get("student_id", "")).strip()
         slot = normalize_slot(r.get("コマ", ""))
-        r["席"] = seat_map_for_today.get((sid, slot), "⚠ 未配置")
+        status_value = str(r.get("状態", "")).strip()
+
+        if "キャンセル済み" in status_value:
+            r["席"] = "キャンセル済み"
+        else:
+            r["席"] = seat_map_for_today.get((sid, slot), "⚠ 未配置")
+
         r["_slot_num"] = pd.to_numeric(slot, errors="coerce")
         
     # 未配置があるコマを記録
@@ -9030,6 +9046,12 @@ elif page == "座席":
 
 
     for r in seat_today_rows:
+        # キャンセル済みの確認行は、未配置アラートには含めない。
+        # 表示上の確認には残しても、座席を配置すべき予定ではないため。
+        status_value = str(r.get("状態", "")).strip()
+        if "キャンセル済み" in status_value:
+            continue
+
         if str(r.get("席", "")).strip() == "⚠ 未配置":
             slot = normalize_slot(r.get("コマ", ""))
             missing_slots.add(slot)
@@ -9045,6 +9067,11 @@ elif page == "座席":
     # 未配置件数カウント
     missing_count = 0
     for r in seat_today_rows:
+        # キャンセル済みの確認行は、未配置件数に含めない
+        status_value = str(r.get("状態", "")).strip()
+        if "キャンセル済み" in status_value:
+            continue
+
         if str(r.get("席", "")).strip() == "⚠ 未配置":
             missing_count += 1
 
