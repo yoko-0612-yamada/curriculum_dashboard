@@ -4599,30 +4599,61 @@ if page == "閲覧":
         
         
     # =========================================================
-    # 表示切替（試験）
+    # 表示切替（整理版）
+    # ---------------------------------------------------------
+    # d225:
+    # 毎日使う「進捗登録」と、たまに見る「確認・一覧」を分ける。
+    # 機能本体はそのままに、迷いにくい導線へ整理する。
     # =========================================================
-    sidebar_view_mode = st.radio(
-        "表示切替（試験）",
-        [
-            "カリキュラム課題",
-            "検定課題",
-            "コース別（件数）",
-            "Scratch検定一覧",
-            "生徒ごと一覧",
-            "生徒別（done）",
-            "詳細（最新状態）",
-        ],
-        horizontal=True,
-        key="view_mode_trial"
-    )
-
-    is_log_view = sidebar_view_mode in [
+    daily_view_options = ["カリキュラム課題", "検定課題"]
+    check_view_options = [
         "コース別（件数）",
         "Scratch検定一覧",
         "生徒ごと一覧",
         "生徒別（done）",
         "詳細（最新状態）",
     ]
+    all_view_options = daily_view_options + check_view_options
+
+    # 他ボタンから「カリキュラム課題へ寄せる」などが来た場合に反映
+    pending_view_mode = str(st.session_state.pop("sidebar_view_mode", "") or "").strip()
+    if pending_view_mode in all_view_options:
+        st.session_state["view_mode_trial"] = pending_view_mode
+        st.session_state["view_mode_group"] = (
+            "毎日使う：進捗登録" if pending_view_mode in daily_view_options else "たまに見る：確認・一覧"
+        )
+
+    current_view_mode = str(st.session_state.get("view_mode_trial", "カリキュラム課題"))
+    default_group = "毎日使う：進捗登録" if current_view_mode in daily_view_options else "たまに見る：確認・一覧"
+
+    st.markdown("### 表示切替")
+    view_group = st.radio(
+        "用途",
+        ["毎日使う：進捗登録", "たまに見る：確認・一覧"],
+        index=0 if default_group == "毎日使う：進捗登録" else 1,
+        horizontal=True,
+        key="view_mode_group",
+    )
+
+    if view_group == "毎日使う：進捗登録":
+        view_options = daily_view_options
+        st.caption("出席後に進捗を登録する時に使う画面です。")
+    else:
+        view_options = check_view_options
+        st.caption("状況確認・一覧・分析寄りの画面です。必要な時だけ開きます。")
+
+    # グループを切り替えた時に、前回の選択が候補外なら先頭へ戻す
+    if str(st.session_state.get("view_mode_trial", "")) not in view_options:
+        st.session_state["view_mode_trial"] = view_options[0]
+
+    sidebar_view_mode = st.radio(
+        "表示内容",
+        view_options,
+        horizontal=True,
+        key="view_mode_trial",
+    )
+
+    is_log_view = sidebar_view_mode in check_view_options
 
 
     # =========================================================
