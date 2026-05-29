@@ -4717,25 +4717,78 @@ if page == "閲覧":
                     cc = curr_courses.copy()
                     cc = cc[cc["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])].copy()
                     cc["order_num"] = pd.to_numeric(cc["course_order"], errors="coerce").fillna(9999).astype(int)
-                    cc = cc.sort_values(by=["order_num", "genre_name", "course_name"], na_position="last")
+
+                    # d236:
+                    # カリキュラム課題のコース一覧を現場で見やすい順に整える。
+                    # まずScratch系（sc_l / sc_h）を上に置き、その後HTML、JavaScript系を優先する。
+                    def _curriculum_course_priority(row):
+                        cid = str(row.get("course_id", "")).strip().lower()
+                        cname = str(row.get("course_name", "")).strip().lower()
+                        gname = str(row.get("genre_name", "")).strip().lower()
+                        joined = f"{cid} {cname} {gname}"
+
+                        if cid == "sc_l" or "sc_l" in joined or "scratch_l" in joined:
+                            return 0
+                        if cid == "sc_h" or "sc_h" in joined or "scratch_h" in joined:
+                            return 1
+                        if "scratch" in joined or "スクラッチ" in joined:
+                            return 2
+                        if "html" in joined:
+                            return 10
+                        if "javascript" in joined or "java script" in joined or cid in ["js", "javascript"]:
+                            return 11
+                        if "python" in joined:
+                            return 20
+                        if "unity" in joined:
+                            return 21
+                        return 99
+
+                    cc["_ui_priority"] = cc.apply(_curriculum_course_priority, axis=1)
+                    cc = cc.sort_values(by=["_ui_priority", "order_num", "genre_name", "course_name"], na_position="last")
 
                     course_labels = []
                     course_ids = []
+                    course_label_by_id = {}
                     for _, r in cc.iterrows():
-                        cid = str(r["course_id"])
+                        cid = str(r["course_id"]).strip()
+                        label = f"{r['genre_name']}｜{r['course_name']}  [{cid}]"
                         course_ids.append(cid)
-                        course_labels.append(f"{r['genre_name']}｜{r['course_name']}  [{cid}]")
+                        course_labels.append(label)
+                        course_label_by_id[cid] = label
 
-                    # 方法A：進捗CSVの最新更新コースをデフォルトにする
+                    # 進捗CSVの最新更新コースを推奨にする。
+                    # Widget key は生徒ごとに分け、検定課題など別画面を見た後に
+                    # HTMLなどリスト先頭へ戻るのを防ぐ。
                     default_course_id = latest_course_for_student(student_id, curr_prog)
-                    default_index = 0
-                    if default_course_id and default_course_id in course_ids:
-                        default_index = course_ids.index(default_course_id)
+                    if default_course_id not in course_ids:
+                        default_course_id = course_ids[0] if course_ids else ""
 
-                    ensure_student_scoped_defaults(student_id, "progress_course", course_labels[default_index] if course_labels else "")
+                    recommended_course_label = course_label_by_id.get(default_course_id, course_labels[0] if course_labels else "")
+                    progress_course_key = f"progress_course_{student_id}"
+                    progress_course_recommend_key = f"progress_course_recommended_{student_id}"
 
-                    selected_course_label = st.selectbox("コース", course_labels, key="progress_course")
+                    if st.session_state.get(progress_course_recommend_key) != recommended_course_label:
+                        st.session_state[progress_course_key] = recommended_course_label
+                        st.session_state[progress_course_recommend_key] = recommended_course_label
+                    elif progress_course_key not in st.session_state:
+                        st.session_state[progress_course_key] = recommended_course_label
+
+                    selected_course_label = st.selectbox(
+                        "コース",
+                        course_labels,
+                        key=progress_course_key,
+                        help="その子の直近のカリキュラム進捗から推奨コースを表示します。必要なら手動で変更できます。",
+                    )
                     selected_course_id = selected_course_label.split("[")[-1].rstrip("]")
+
+                    if selected_course_label == recommended_course_label:
+                        st.caption(f"現在表示中：{selected_course_id}｜判定理由：この生徒の最新カリキュラム進捗から選択しています。")
+                    else:
+                        st.warning(f"現在表示中：{selected_course_id}｜推奨は {default_course_id} です。必要なら手動変更のままでOKです。")
+
+                    if st.button("推奨コースに戻す", key=f"progress_course_reset_{student_id}"):
+                        st.session_state[progress_course_key] = recommended_course_label
+                        st.rerun()
 
                     # Lock done tasks unless override
                     is_locked_done_tasks = (not override_done_lock)
@@ -4969,26 +5022,140 @@ if page == "閲覧":
                 st.info("この級の課題が登録されていません。")
 
 
-        # 生徒切替時：検定予定（kentei_exam_schedule.csv）から直近の級をデフォルトにする
-            _default_k_grade = None
+        # d235:
+        # 検定課題で表示する級を安定化する。
+        # - exam_date が空なら date を見る
+        # - 合格済み級は推奨から外す
+        # - 選択状態を生徒ごとのkeyに分け、他の操作後に級が揺れにくくする
+        # 優先順位：
+        #   1) 今日以降の検定予定のうち、未合格で一番近い級
+        #   2) 検定予定が合格済み級だけなら、次の未合格級
+        #   3) 予定がなければ、次の未合格級
+        #   4) 全級合格済みなら1級
+            grade_options = ["1", "2", "3", "4"]
+            grade_progress_order = ["4", "3", "2", "1"]
+
+            # 合格済み級を取得
+            _passed_grades = set()
+            try:
+                _results_for_grade = load_kentei_results().copy()
+                if not _results_for_grade.empty:
+                    for _c in ["student_id", "grade"]:
+                        if _c not in _results_for_grade.columns:
+                            _results_for_grade[_c] = ""
+                        _results_for_grade[_c] = _results_for_grade[_c].fillna("").astype(str).str.strip()
+                    _passed_grades = set(
+                        _results_for_grade[
+                            _results_for_grade["student_id"].astype(str).str.strip() == student_id
+                        ]["grade"].astype(str).str.strip().tolist()
+                    )
+            except Exception:
+                _passed_grades = set()
+
+            def _next_unpassed_kentei_grade():
+                for _g in grade_progress_order:
+                    if _g not in _passed_grades:
+                        return _g
+                return "1"
+
+            _recommended_k_grade = None
+            _recommended_k_reason = ""
+            _recommended_k_exam_date = ""
+            _passed_schedule_notes = []
+
             try:
                 if not kentei_exam.empty:
-                    dfk = kentei_exam[kentei_exam["student_id"].astype(str).str.strip() == student_id].copy()
-                    if not dfk.empty and "exam_date" in dfk.columns:
-                        dfk["__d"] = pd.to_datetime(dfk["exam_date"], errors="coerce")
-                        dfk = dfk.dropna(subset=["__d"]).sort_values("__d", ascending=True)
-                    if not dfk.empty and "grade" in dfk.columns:
-                        _default_k_grade = str(dfk.iloc[0]["grade"]).strip()
-            except Exception:
-                _default_k_grade = None
+                    dfk = kentei_exam.copy()
+                    for _c in ["student_id", "grade", "exam_date", "date", "kentei", "exam_type", "note"]:
+                        if _c not in dfk.columns:
+                            dfk[_c] = ""
+                        dfk[_c] = dfk[_c].fillna("").astype(str).str.strip()
 
-            grade_options = ["1", "2", "3", "4"]
-            if _default_k_grade in grade_options:
-                ensure_student_scoped_defaults(student_id, "kentei_grade", _default_k_grade)
+                    dfk = dfk[dfk["student_id"].astype(str).str.strip() == student_id].copy()
+
+                    if not dfk.empty:
+                        dfk["__date_raw"] = dfk["exam_date"].where(
+                            dfk["exam_date"].astype(str).str.strip() != "",
+                            dfk["date"],
+                        )
+                        dfk["__d"] = pd.to_datetime(dfk["__date_raw"], errors="coerce")
+                        dfk["grade"] = dfk["grade"].astype(str).str.strip()
+                        dfk = dfk[dfk["grade"].isin(grade_options)].copy()
+
+                        if not dfk.empty:
+                            _passed_sched = dfk[dfk["grade"].isin(_passed_grades)].copy()
+                            if not _passed_sched.empty:
+                                _passed_schedule_notes = [
+                                    f"{str(_r.get('grade', '')).strip()}級（{str(_r.get('__date_raw', '')).strip() or '日付なし'}）"
+                                    for _, _r in _passed_sched.iterrows()
+                                ]
+
+                            dfk_unpassed = dfk[~dfk["grade"].isin(_passed_grades)].copy()
+
+                            today_ts_for_grade = pd.Timestamp(date.today()).normalize()
+                            future_dfk = dfk_unpassed[
+                                dfk_unpassed["__d"].notna() & (dfk_unpassed["__d"] >= today_ts_for_grade)
+                            ].sort_values("__d", ascending=True).copy()
+
+                            if not future_dfk.empty:
+                                picked_row = future_dfk.iloc[0]
+                                _recommended_k_grade = str(picked_row.get("grade", "")).strip()
+                                _recommended_k_exam_date = str(picked_row.get("__date_raw", "")).strip()
+                                _recommended_k_reason = f"未合格の検定予定で一番近い級（{_recommended_k_exam_date}）を表示しています。"
+                            elif not dfk_unpassed.empty:
+                                dated_dfk = dfk_unpassed[dfk_unpassed["__d"].notna()].sort_values("__d", ascending=False).copy()
+                                if not dated_dfk.empty:
+                                    picked_row = dated_dfk.iloc[0]
+                                else:
+                                    picked_row = dfk_unpassed.iloc[0]
+                                _recommended_k_grade = str(picked_row.get("grade", "")).strip()
+                                _recommended_k_exam_date = str(picked_row.get("__date_raw", "")).strip()
+                                _recommended_k_reason = "今日以降の未合格検定予定がないため、この生徒の未合格の検定予定から級を表示しています。"
+            except Exception as _e:
+                _recommended_k_grade = None
+                _recommended_k_reason = f"検定予定の読み取りで確認が必要です：{_e}"
+
+            if _recommended_k_grade not in grade_options:
+                _recommended_k_grade = _next_unpassed_kentei_grade()
+                if _passed_schedule_notes:
+                    _recommended_k_reason = "検定予定が合格済み級だけのため、次の未合格級を表示しています。"
+                else:
+                    _recommended_k_reason = "未合格の検定予定がないため、次の未合格級を表示しています。"
+
+            _grade_key = f"kentei_grade_{student_id}"
+            _grade_recommend_key = f"kentei_grade_recommended_{student_id}"
+
+            # 推奨級が変わった時だけ、その生徒の選択状態を推奨級へ戻す。
+            if st.session_state.get(_grade_recommend_key) != _recommended_k_grade:
+                st.session_state[_grade_key] = _recommended_k_grade
+                st.session_state[_grade_recommend_key] = _recommended_k_grade
+
+            current_grade_value = st.session_state.get(_grade_key, _recommended_k_grade)
+            current_grade_index = grade_options.index(current_grade_value) if current_grade_value in grade_options else grade_options.index(_recommended_k_grade)
+
+            grade_sel = st.selectbox(
+                "検定の級",
+                grade_options,
+                index=current_grade_index,
+                key=_grade_key,
+                help="推奨級は、未合格の検定予定を優先して自動判定します。手動変更もできます。"
+            )
+
+            if grade_sel == _recommended_k_grade:
+                st.caption(f"現在表示中：{grade_sel}級｜判定理由：{_recommended_k_reason}")
             else:
-                ensure_student_scoped_defaults(student_id, "kentei_grade", "4")  # よく使う級に寄せる（必要なら変更OK）
+                st.warning(f"現在表示中：{grade_sel}級｜推奨は {_recommended_k_grade}級 です。理由：{_recommended_k_reason}")
 
-            grade_sel = st.selectbox("検定の級", grade_options, key="kentei_grade")
+            if _passed_schedule_notes:
+                st.warning(
+                    "合格済み級の検定予定が残っています："
+                    + "、".join(_passed_schedule_notes)
+                    + "。必要なら管理（入力）→検定予定登録で予定を整理してください。"
+                )
+
+            if st.button("推奨級に戻す", key=f"kentei_grade_reset_{student_id}"):
+                st.session_state[_grade_key] = _recommended_k_grade
+                st.rerun()
 
             # 合格ロック（判定は kentei_results.csv を唯一の正とする）
             passed_this_grade = is_kentei_passed(student_id, grade_sel)
