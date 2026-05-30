@@ -391,6 +391,112 @@ def is_kentei_passed(student_id: str, grade: str) -> bool:
     )
     return bool(m.any())
 
+
+# =========================================================
+# 🎯 検定練習中フラグ（d250）
+# =========================================================
+KENTEI_TRAINING_STATUS_COLS = ["student_id", "is_training", "grade", "updated_at", "note"]
+
+def load_kentei_training_status() -> pd.DataFrame:
+    try:
+        if Path(KENTEI_TRAINING_STATUS_CSV).exists():
+            df = pd.read_csv(KENTEI_TRAINING_STATUS_CSV, dtype=str).fillna("")
+        else:
+            df = pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
+    except Exception:
+        df = pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
+
+    for c in KENTEI_TRAINING_STATUS_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    return df[KENTEI_TRAINING_STATUS_COLS].fillna("")
+
+def save_kentei_training_status(df: pd.DataFrame) -> None:
+    df2 = df.copy() if df is not None else pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
+    for c in KENTEI_TRAINING_STATUS_COLS:
+        if c not in df2.columns:
+            df2[c] = ""
+    write_csv_atomic(df2[KENTEI_TRAINING_STATUS_COLS].fillna(""), KENTEI_TRAINING_STATUS_CSV)
+
+def is_kentei_training_active(student_id: str) -> bool:
+    df = load_kentei_training_status()
+    if df.empty:
+        return False
+    sid = str(student_id).strip()
+    tmp = df[df["student_id"].astype(str).str.strip() == sid].copy()
+    if tmp.empty:
+        return False
+    v = str(tmp.iloc[-1].get("is_training", "")).strip().lower()
+    return v in ["true", "1", "yes", "on", "検定練習中"]
+
+def get_kentei_training_grade(student_id: str) -> str:
+    df = load_kentei_training_status()
+    if df.empty:
+        return ""
+    sid = str(student_id).strip()
+    tmp = df[df["student_id"].astype(str).str.strip() == sid].copy()
+    if tmp.empty:
+        return ""
+    return str(tmp.iloc[-1].get("grade", "")).strip()
+
+def upsert_kentei_training_status(student_id: str, is_training: bool, grade: str = "", note: str = "") -> None:
+    df = load_kentei_training_status()
+    sid = str(student_id).strip()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    new_row = {
+        "student_id": sid,
+        "is_training": "true" if is_training else "false",
+        "grade": str(grade).strip(),
+        "updated_at": now_str,
+        "note": str(note).strip(),
+    }
+    if df.empty:
+        df2 = pd.DataFrame([new_row])
+    else:
+        mask = df["student_id"].astype(str).str.strip() == sid
+        if mask.any():
+            df2 = df.copy()
+            for k, v in new_row.items():
+                df2.loc[mask, k] = v
+        else:
+            df2 = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    save_kentei_training_status(df2)
+
+def has_unpassed_kentei_exam_schedule(student_id: str, exam_df: pd.DataFrame) -> bool:
+    try:
+        sid = str(student_id).strip()
+        if exam_df is None or exam_df.empty:
+            return False
+
+        ex = exam_df.copy()
+        for c in ["student_id", "grade"]:
+            if c not in ex.columns:
+                ex[c] = ""
+            ex[c] = ex[c].fillna("").astype(str).str.strip()
+        ex = ex[ex["student_id"].astype(str).str.strip() == sid].copy()
+        if ex.empty:
+            return False
+
+        passed = set()
+        try:
+            res = load_kentei_results().copy()
+            if not res.empty:
+                for c in ["student_id", "grade"]:
+                    if c not in res.columns:
+                        res[c] = ""
+                    res[c] = res[c].fillna("").astype(str).str.strip()
+                passed = set(
+                    res[res["student_id"].astype(str).str.strip() == sid]["grade"]
+                    .astype(str).str.strip().tolist()
+                )
+        except Exception:
+            passed = set()
+
+        ex = ex[~ex["grade"].astype(str).str.strip().isin(passed)].copy()
+        return bool(not ex.empty)
+    except Exception:
+        return False
+
 # =========================================================
 # ✅ 出席ログ（attendance_log.csv）: v6.6.3
 #   - 予定ではなく「実績」を1回だけ記録（授業/自習）
@@ -818,6 +924,11 @@ KENTEI_PROGRESS_CSV = DATA_DIR / "kentei_progress.csv"
 
 # Optional (if exists): upcoming exams
 KENTEI_EXAM_SCHEDULE_CSV = DATA_DIR / "kentei_exam_schedule.csv"
+
+# d250:
+# 検定練習中フラグ。
+# 検定予定が未登録でも「今は検定課題を優先する」生徒を明示できるようにする。
+KENTEI_TRAINING_STATUS_CSV = DATA_DIR / "kentei_training_status.csv"
 
 # =========================================================
 # Helpers
@@ -2715,8 +2826,16 @@ if page == "閲覧":
                     target_name = name if name else sid
                     # サイドバー側は pending_sidebar_student を見ているため、このキーに合わせる。
                     st.session_state["pending_sidebar_student"] = target_name
-                    # 進捗をすぐ登録しやすいように、閲覧内の表示モードもカリキュラム課題へ寄せる。
-                    st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+                    # d251:
+                    # 「この生徒」から開く時も、検定練習中/未合格の検定予定があれば検定課題へ寄せる。
+                    # それ以外は通常カリキュラム課題へ寄せる。
+                    try:
+                        if is_kentei_training_active(sid) or has_unpassed_kentei_exam_schedule(sid, kentei_exam):
+                            st.session_state["sidebar_view_mode"] = "検定課題"
+                        else:
+                            st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+                    except Exception:
+                        st.session_state["sidebar_view_mode"] = "カリキュラム課題"
                     st.rerun()
 
     today_df = pd.DataFrame(today_rows)
@@ -2933,6 +3052,20 @@ if page == "閲覧":
         # 表示名が空でも落ちないように保険
         if "display_name" not in next_candidates.columns:
             next_candidates["display_name"] = next_candidates["student_id"].astype(str)
+
+        # d248:
+        # 「次に見る候補」は、先生が次に確認・進捗登録する対象を出す場所。
+        # 自習は基本的に進捗登録不要なので、候補から外す。
+        if "session_type" in next_candidates.columns:
+            _next_session = next_candidates["session_type"].fillna("").astype(str).str.strip().str.lower()
+            next_candidates = next_candidates[
+                ~_next_session.isin(["自習", "self", "selfstudy", "self-study", "自"])
+            ].copy()
+        elif "種別" in next_candidates.columns:
+            _next_session = next_candidates["種別"].fillna("").astype(str).str.strip()
+            next_candidates = next_candidates[
+                ~_next_session.isin(["自習", "🟦 自習", "自"])
+            ].copy()
 
 
         # 優先度
@@ -3441,11 +3574,16 @@ if page == "閲覧":
                         return f"検定：次課題確認エラー {_e}"
 
                 def _today_task_hint(_sid: str) -> str:
-                    # 検定予定が未合格で近い場合は検定を優先して表示。
+                    # 検定練習中フラグON、または未合格の検定予定がある場合は検定を優先。
                     # それ以外は通常カリキュラムを表示する。
                     try:
                         _sid = str(_sid).strip()
                         _grade = _recommended_kentei_grade_for_candidate(_sid)
+
+                        _is_training = is_kentei_training_active(_sid)
+                        _training_grade = get_kentei_training_grade(_sid)
+                        if _is_training and _training_grade:
+                            _grade = _training_grade
 
                         _has_unpassed_exam_schedule = False
                         if _grade:
@@ -3464,7 +3602,7 @@ if page == "閲覧":
                                     ).any()
                                 )
 
-                        if _has_unpassed_exam_schedule:
+                        if _is_training or _has_unpassed_exam_schedule:
                             return _next_kentei_task_hint(_sid, _grade)
 
                         return _next_curriculum_task_hint(_sid)
@@ -4366,6 +4504,20 @@ if page == "閲覧":
                                     if nm:
                                         st.session_state["pending_sidebar_student"] = nm
 
+                                    # d250:
+                                    # 出欠登録後、対象生徒が検定練習中なら検定課題へ、
+                                    # それ以外はカリキュラム課題へ寄せる。
+                                    # 自習は進捗登録不要なので画面切替は強く誘導しない。
+                                    try:
+                                        _picked_kind_for_view = str(picked_kind).strip().lower()
+                                        if _picked_kind_for_view not in ["selfstudy", "self", "自習"]:
+                                            if is_kentei_training_active(sid) or has_unpassed_kentei_exam_schedule(sid, kentei_exam):
+                                                st.session_state["sidebar_view_mode"] = "検定課題"
+                                            else:
+                                                st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+                                    except Exception:
+                                        st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+
                                     st.rerun()
 
 
@@ -5264,9 +5416,10 @@ if page == "閲覧":
                     else:
                         st.warning(f"現在表示中：{selected_course_id}｜推奨は {default_course_id} です。必要なら手動変更のままでOKです。")
 
-                    if st.button("推奨コースに戻す", key=f"progress_course_reset_{student_id}"):
-                        st.session_state[progress_course_key] = recommended_course_label
-                        st.rerun()
+                    # d252:
+                    # 「推奨コースに戻す」ボタンは削除。
+                    # selectbox生成後に同じsession_stateを書き換えるとStreamlitでエラーになりやすく、
+                    # プルダウンで手動選択できるため、ボタンは置かない。
 
                     # Lock done tasks unless override
                     is_locked_done_tasks = (not override_done_lock)
@@ -5600,6 +5753,14 @@ if page == "閲覧":
                 else:
                     _recommended_k_reason = "未合格の検定予定がないため、次の未合格級を表示しています。"
 
+            # d250:
+            # 検定練習中フラグがONで級が保存されている場合は、その級を推奨級として扱う。
+            _training_active_for_student = is_kentei_training_active(student_id)
+            _training_grade_for_student = get_kentei_training_grade(student_id)
+            if _training_active_for_student and _training_grade_for_student in grade_options:
+                _recommended_k_grade = _training_grade_for_student
+                _recommended_k_reason = "検定練習中フラグがONのため、この級を表示しています。"
+
             _grade_key = f"kentei_grade_{student_id}"
             _grade_recommend_key = f"kentei_grade_recommended_{student_id}"
 
@@ -5631,9 +5792,45 @@ if page == "閲覧":
                     + "。必要なら管理（入力）→検定予定登録で予定を整理してください。"
                 )
 
-            if st.button("推奨級に戻す", key=f"kentei_grade_reset_{student_id}"):
-                st.session_state[_grade_key] = _recommended_k_grade
+            # d250:
+            # このチェックがONなら、次に見る候補・出欠後の動線で検定課題を優先する。
+            _training_before = is_kentei_training_active(student_id)
+            _training_now = st.checkbox(
+                "この子は検定練習中（次に見る候補で検定課題を優先）",
+                value=_training_before,
+                key=f"kentei_training_flag_{student_id}",
+                help="ONにすると、検定予定が未登録でもこの生徒は検定課題を優先表示します。",
+            )
+            if _training_now != _training_before:
+                upsert_kentei_training_status(
+                    student_id=student_id,
+                    is_training=bool(_training_now),
+                    grade=grade_sel if _training_now else "",
+                    note="検定課題画面から更新",
+                )
+                st.success("検定練習中フラグを更新しました。")
                 st.rerun()
+
+            if _training_now:
+                _saved_training_grade = get_kentei_training_grade(student_id)
+                if _saved_training_grade and _saved_training_grade != str(grade_sel):
+                    st.warning(f"検定練習中の保存級は {_saved_training_grade}級 です。現在表示中は {grade_sel}級 です。")
+                    if st.button("この級を検定練習中に更新", key=f"kentei_training_update_grade_{student_id}_{grade_sel}"):
+                        upsert_kentei_training_status(
+                            student_id=student_id,
+                            is_training=True,
+                            grade=grade_sel,
+                            note="検定課題画面から対象級を更新",
+                        )
+                        st.success(f"検定練習中の対象級を {grade_sel}級 に更新しました。")
+                        st.rerun()
+                else:
+                    st.caption(f"検定練習中：{grade_sel}級を優先表示します。")
+
+            # d249:
+            # 「推奨級に戻す」ボタンは、selectbox生成後に同じsession_stateを書き換えて
+            # StreamlitAPIException が出ることがあるため削除。
+            # 推奨級と違う級を見ている場合は、上のプルダウンから手動で推奨級を選び直す運用にする。
 
             # 合格ロック（判定は kentei_results.csv を唯一の正とする）
             passed_this_grade = is_kentei_passed(student_id, grade_sel)
@@ -5963,8 +6160,27 @@ if page == "閲覧":
 
                             save_kentei_results(results_df)
 
-
-                            st.success("合格登録しました")
+                            # d251:
+                            # 検定合格登録した級が、検定練習中フラグの対象級なら自動OFF。
+                            # これにより、合格後も「次に見る候補」で検定課題が出続ける事故を防ぐ。
+                            try:
+                                _passed_grade = str(grade_for_pass).strip()
+                                _saved_training_grade = get_kentei_training_grade(student_for_pass)
+                                if is_kentei_training_active(student_for_pass) and (
+                                    str(_saved_training_grade).strip() == _passed_grade
+                                    or str(_saved_training_grade).strip() == ""
+                                ):
+                                    upsert_kentei_training_status(
+                                        student_id=student_for_pass,
+                                        is_training=False,
+                                        grade="",
+                                        note=f"{_passed_grade}級の合格登録により自動OFF",
+                                    )
+                                    st.success("合格登録しました。検定練習中フラグもOFFにしました。")
+                                else:
+                                    st.success("合格登録しました")
+                            except Exception:
+                                st.success("合格登録しました")
 
                 with colB:
                     st.caption("※ 間違えた場合は下の「修正／削除」から変更できます。")
