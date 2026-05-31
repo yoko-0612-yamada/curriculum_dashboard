@@ -2847,13 +2847,27 @@ if page == "閲覧":
 
         today_show = today_df.copy()
         if not today_show.empty:
-            today_show = today_df[["生徒", "状態"]].copy()
+            # d259:
+            # 今日の未完了の要約表示も、出欠未登録・次に見る候補と同じく
+            # 「優先度 → コマが早い順 → 生徒名」で並べる。
+            # 以前は生徒名と状態だけにまとめていたため、コマ情報が落ちて順番が分かりにくかった。
+            _today_base_cols = [c for c in ["生徒", "状態", "コマ"] if c in today_df.columns]
+            today_show = today_df[_today_base_cols].copy()
+            if "コマ" not in today_show.columns:
+                today_show["コマ"] = ""
+
+            today_show["slot_num"] = pd.to_numeric(
+                today_show["コマ"].astype(str).str.strip(),
+                errors="coerce",
+            ).fillna(9999)
+
             today_show = today_show.drop_duplicates().reset_index(drop=True)
 
 
             summary_rows = []
             for name, group in today_show.groupby("生徒", dropna=False):
                 states = list(dict.fromkeys(group["状態"].astype(str).tolist()))
+                min_slot_num = pd.to_numeric(group["slot_num"], errors="coerce").fillna(9999).min()
 
 
                 if "🚨 出欠未 / 進捗未" in states:
@@ -2873,6 +2887,7 @@ if page == "閲覧":
                 summary_rows.append({
                     "生徒": str(name).strip(),
                     "状態": merged_status,
+                    "slot_num": min_slot_num,
                 })
 
 
@@ -2888,7 +2903,7 @@ if page == "閲覧":
 
 
             today_show["priority"] = today_show["状態"].map(priority_map).fillna(99)
-            today_show = today_show.sort_values(["priority", "生徒"]).reset_index(drop=True)
+            today_show = today_show.sort_values(["priority", "slot_num", "生徒"], na_position="last").reset_index(drop=True)
 
 
             for _, r in today_show.iterrows():
@@ -4367,13 +4382,27 @@ if page == "閲覧":
 
 
                         # 初期値の優先順
-                        # 1) 既存の出席記録
-                        # 2) 今日の予定の種別（例外を含む）
-                        # 3) lesson
+                        # 1) 授業＋自習予定なら、授業回数カウントを守るため lesson を優先
+                        # 2) 既存の出席記録
+                        # 3) 今日の予定の種別（例外を含む）
+                        # 4) lesson
                         default_kind = "lesson"
 
+                        planned_label = str(planned_kind_label_map.get(sid, "")).strip()
+                        planned_kind_for_sid = str(planned_kind_map.get(sid, "")).strip()
 
-                        if rec_kind in ["selfstudy", "自習"]:
+                        # d256:
+                        # 授業＋自習なのに過去/既存ログが selfstudy になっていると、
+                        # 授業回数に入らず「0回→今日で1回目」のようなズレが出る。
+                        # 予定上「授業＋自習」の日は、既存 rec_kind が selfstudy でも lesson を優先する。
+                        is_lesson_and_selfstudy_plan = (
+                            planned_label == "授業＋自習"
+                            or (planned_kind_for_sid == "lesson" and rec_kind in ["selfstudy", "自習"])
+                        )
+
+                        if is_lesson_and_selfstudy_plan:
+                            default_kind = "lesson"
+                        elif rec_kind in ["selfstudy", "自習"]:
                             default_kind = "selfstudy"
                         elif sid in planned_kind_map:
                             default_kind = planned_kind_map[sid]
@@ -4429,6 +4458,15 @@ if page == "閲覧":
                                 if memo:
                                     st.info(f"📝 次の準備：{memo}")
 
+                                # d256:
+                                # 既存の出欠ログが selfstudy だが、予定は授業＋自習の場合は警告する。
+                                # 「記録/更新」を押すと、種別が lesson として保存され、授業回数に入る。
+                                if (
+                                    rec_kind in ["selfstudy", "自習"]
+                                    and str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習"
+                                ):
+                                    st.warning("⚠ 授業＋自習予定ですが、出欠ログは自習として保存されています。記録/更新で授業扱いに直せます。")
+
 
 
                             with c2:
@@ -4477,15 +4515,33 @@ if page == "閲覧":
                                 )
 
                             with c4:
+                                # d253:
+                                # 出欠種別に合わせて「進捗なしで完了」の初期値を変える。
+                                # 自習だけの日は進捗登録不要なのでON。
+                                # 授業・授業＋自習は進捗確認が必要なのでOFF。
+                                # すでに「進捗なしで完了」済みの生徒はONで表示する。
+                                _picked_kind_norm = str(picked_kind).strip().lower()
+                                _no_progress_default = (
+                                    _picked_kind_norm in ["selfstudy", "self", "自習"]
+                                    or str(sid).strip() in prog_skip_today_ids
+                                )
                                 no_progress_done = st.checkbox(
                                     "進捗なしで完了にする",
-                                    key=f"no_progress_done_{today}_{sid}"
+                                    value=bool(_no_progress_default),
+                                    key=f"no_progress_done_{today}_{sid}_{_picked_kind_norm}"
                                 )
 
 
                             with c5:
                                 if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
-                                    att_df2 = upsert_attendance(att_df, sid, today, picked_kind, memo, count=count)
+                                    # d256:
+                                    # 授業＋自習予定は、出欠ログ上は lesson を優先して保存する。
+                                    # attendance_log は1日1生徒1レコードのため、selfstudy で保存すると授業回数から漏れる。
+                                    save_kind = picked_kind
+                                    if str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習":
+                                        save_kind = "lesson"
+
+                                    att_df2 = upsert_attendance(att_df, sid, today, save_kind, memo, count=count)
                                     save_attendance_log(att_df2)
 
                                     # 進捗状態を保存
@@ -4509,7 +4565,7 @@ if page == "閲覧":
                                     # それ以外はカリキュラム課題へ寄せる。
                                     # 自習は進捗登録不要なので画面切替は強く誘導しない。
                                     try:
-                                        _picked_kind_for_view = str(picked_kind).strip().lower()
+                                        _picked_kind_for_view = str(save_kind).strip().lower()
                                         if _picked_kind_for_view not in ["selfstudy", "self", "自習"]:
                                             if is_kentei_training_active(sid) or has_unpassed_kentei_exam_schedule(sid, kentei_exam):
                                                 st.session_state["sidebar_view_mode"] = "検定課題"
@@ -8298,12 +8354,81 @@ elif page == "管理（入力）":
                         unsafe_allow_html=True,
                     )
 
+            # d258:
+            # iPad用コンパクト表示のON/OFFをCSVに保存する。
+            # session_stateだけだと再読み込みや別タブ移動で外れるため、
+            # 一度ONにしたら次回以降もONで開けるようにする。
+            _ui_pref_path = DATA_DIR / "ui_preferences.csv"
+
+            def _load_ui_pref_bool(_key: str, default: bool = False) -> bool:
+                try:
+                    if _ui_pref_path.exists():
+                        _df = pd.read_csv(_ui_pref_path, dtype=str).fillna("")
+                    else:
+                        return bool(default)
+
+                    if _df.empty:
+                        return bool(default)
+
+                    for _c in ["key", "value"]:
+                        if _c not in _df.columns:
+                            _df[_c] = ""
+
+                    _df["key"] = _df["key"].fillna("").astype(str).str.strip()
+                    _df["value"] = _df["value"].fillna("").astype(str).str.strip().str.lower()
+
+                    _hit = _df[_df["key"] == str(_key).strip()]
+                    if _hit.empty:
+                        return bool(default)
+
+                    return str(_hit.iloc[-1].get("value", "")).strip().lower() in ["true", "1", "yes", "on"]
+                except Exception:
+                    return bool(default)
+
+            def _save_ui_pref_bool(_key: str, value: bool) -> None:
+                try:
+                    if _ui_pref_path.exists():
+                        _df = pd.read_csv(_ui_pref_path, dtype=str).fillna("")
+                    else:
+                        _df = pd.DataFrame(columns=["key", "value", "updated_at"])
+
+                    for _c in ["key", "value", "updated_at"]:
+                        if _c not in _df.columns:
+                            _df[_c] = ""
+
+                    _df["key"] = _df["key"].fillna("").astype(str).str.strip()
+
+                    _row = {
+                        "key": str(_key).strip(),
+                        "value": "true" if bool(value) else "false",
+                        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+
+                    _mask = _df["key"] == str(_key).strip()
+                    if _mask.any():
+                        for _k, _v in _row.items():
+                            _df.loc[_mask, _k] = _v
+                    else:
+                        _df = pd.concat([_df, pd.DataFrame([_row])], ignore_index=True)
+
+                    write_csv_atomic(_df[["key", "value", "updated_at"]].fillna(""), _ui_pref_path)
+                except Exception:
+                    pass
+
+            _compact_pref_key = "monthly_calendar_compact_mode"
+            _compact_widget_key = f"monthly_calendar_compact_mode_{target_year}_{target_month}"
+
+            if _compact_widget_key not in st.session_state:
+                st.session_state[_compact_widget_key] = _load_ui_pref_bool(_compact_pref_key, default=False)
+
             compact_calendar_mode = st.checkbox(
                 "iPad用コンパクト表示（操作ボタンをたたむ）",
-                value=False,
-                key=f"monthly_calendar_compact_mode_{target_year}_{target_month}",
+                key=_compact_widget_key,
                 help="ONにすると、各予定の選択・取消・解除ボタンを『操作』の中にまとめます。iPadでカレンダーが崩れにくくなります。",
             )
+
+            if bool(compact_calendar_mode) != _load_ui_pref_bool(_compact_pref_key, default=False):
+                _save_ui_pref_bool(_compact_pref_key, bool(compact_calendar_mode))
 
             if compact_calendar_mode:
                 st.caption("コンパクト表示中：予定の操作は、各予定カード下の『操作』を開いて行います。")
@@ -8831,6 +8956,220 @@ elif page == "管理（入力）":
 
                         if shortage_count or over_count:
                             st.caption("※ 前月振替や休み予定がある場合は、メモで補足すると後で分かりやすいです。")
+
+                        # =====================================================
+                        # d257:
+                        # 前月・今月・来月の簡易確認
+                        # -----------------------------------------------------
+                        # いきなり月跨ぎ精算機能にはせず、前後月の不足/超過と
+                        # 振替・回数外などの理由区分を並べて確認しやすくする。
+                        # 例：前月が少ない、今月が多い → 前月振替/今月振替の整合性確認に使う。
+                        # =====================================================
+                        with st.expander("↔ 前月・今月・来月の簡易確認", expanded=False):
+                            st.caption("月跨ぎ振替の確認用です。自動精算ではなく、前月・今月・来月の予定回数と差分を並べて確認します。")
+
+                            def _month_add(_year, _month, _offset):
+                                _base = pd.Timestamp(year=int(_year), month=int(_month), day=1)
+                                _m = _base + pd.DateOffset(months=int(_offset))
+                                return int(_m.year), int(_m.month)
+
+                            def _month_label(_year, _month):
+                                return f"{int(_year)}年{int(_month)}月"
+
+                            def _status_and_diff(_count, _target_raw):
+                                _target_raw = str(_target_raw).strip()
+                                try:
+                                    _target_num = int(float(_target_raw)) if _target_raw else 0
+                                except Exception:
+                                    _target_num = 0
+
+                                if _target_num <= 0:
+                                    return "月回数未設定", ""
+                                if int(_count) < _target_num:
+                                    return "少ない", f"−{_target_num - int(_count)}"
+                                if int(_count) == _target_num:
+                                    return "OK", ""
+                                return "多い", f"+{int(_count) - _target_num}"
+
+                            def _effective_month_plan_for_count(_year, _month):
+                                _start = pd.Timestamp(year=int(_year), month=int(_month), day=1)
+                                _end = _start + pd.offsets.MonthEnd(0)
+                                _rows = []
+
+                                for _day_ts in pd.date_range(_start.date(), _end.date(), freq="D"):
+                                    _day = _day_ts.date()
+                                    _plan = build_daily_plan_for_date(
+                                        _day,
+                                        students,
+                                        _empty_weekly_for_calendar,
+                                        monthly_schedule,
+                                        schedule_overrides,
+                                        timeslots,
+                                        include_inactive=False,
+                                    )
+                                    if _plan is None or _plan.empty:
+                                        continue
+
+                                    _plan = _plan.copy()
+                                    for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
+                                        if _c not in _plan.columns:
+                                            _plan[_c] = ""
+                                        _plan[_c] = _plan[_c].fillna("").astype(str).str.strip()
+                                    _plan["date"] = _day.isoformat()
+                                    _rows.append(_plan)
+
+                                if not _rows:
+                                    return pd.DataFrame(columns=["date", "student_id", "slot", "session_type", "reason", "note", "override_status"])
+
+                                _df = pd.concat(_rows, ignore_index=True)
+                                for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
+                                    if _c not in _df.columns:
+                                        _df[_c] = ""
+                                    _df[_c] = _df[_c].fillna("").astype(str).str.strip()
+
+                                _df = _df[
+                                    _df["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
+                                ].copy()
+                                return _df
+
+                            def _summarize_count_month(_year, _month):
+                                _df = _effective_month_plan_for_count(_year, _month)
+                                _result = {}
+
+                                if _df.empty:
+                                    return _result
+
+                                _reason = _df["reason"].fillna("通常").astype(str).str.strip()
+                                _note = _df["note"].fillna("").astype(str).str.strip() if "note" in _df.columns else pd.Series([""] * len(_df), index=_df.index)
+                                _exclude = (
+                                    _reason.isin(count_excluded_reasons)
+                                    | _note.str.contains("回数外|月回数外", regex=True, na=False)
+                                )
+
+                                _lesson = _df[
+                                    (_df["session_type"].astype(str).str.strip() == "授業")
+                                    & (~_exclude)
+                                ].copy()
+
+                                _count_map = (
+                                    _lesson["student_id"].astype(str).str.strip().value_counts().to_dict()
+                                    if not _lesson.empty and "student_id" in _lesson.columns
+                                    else {}
+                                )
+
+                                for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
+                                    _sid = str(_sid).strip()
+                                    _count = int(_count_map.get(_sid, 0))
+                                    _sid_rows = _df[_df["student_id"].astype(str).str.strip() == _sid].copy()
+
+                                    _reason_values = []
+                                    if not _sid_rows.empty and "reason" in _sid_rows.columns:
+                                        _reason_values = [
+                                            x for x in _sid_rows["reason"].fillna("").astype(str).str.strip().tolist()
+                                            if x and x != "通常"
+                                        ]
+                                    _reason_summary = "、".join(sorted(set(monthly_reason_summary_label(x) for x in _reason_values)))
+
+                                    _target_raw = str(student_target_count_map.get(_sid, "")).strip()
+                                    _status, _diff = _status_and_diff(_count, _target_raw)
+                                    _result[_sid] = {
+                                        "count": _count,
+                                        "target": _target_raw if _target_raw else "未設定",
+                                        "status": _status,
+                                        "diff": _diff,
+                                        "reason": _reason_summary,
+                                    }
+
+                                return _result
+
+                            _prev_y, _prev_m = _month_add(target_year, target_month, -1)
+                            _next_y, _next_m = _month_add(target_year, target_month, 1)
+
+                            _month_specs = [
+                                ("前月", _prev_y, _prev_m),
+                                ("今月", target_year, target_month),
+                                ("来月", _next_y, _next_m),
+                            ]
+
+                            _summaries = {
+                                _label: _summarize_count_month(_y, _m)
+                                for _label, _y, _m in _month_specs
+                            }
+
+                            _summary_pieces = []
+                            for _label, _y, _m in _month_specs:
+                                _s = _summaries.get(_label, {})
+                                _short = sum(1 for _v in _s.values() if _v.get("status") == "少ない")
+                                _over = sum(1 for _v in _s.values() if _v.get("status") == "多い")
+                                _unset = sum(1 for _v in _s.values() if _v.get("status") == "月回数未設定")
+                                _summary_pieces.append(f"{_label}（{_month_label(_y, _m)}）：少ない{_short} / 多い{_over} / 未設定{_unset}")
+                            st.info("　｜　".join(_summary_pieces))
+
+                            def _fmt_month_cell(_v):
+                                if not _v:
+                                    return "予定0 / 未確認"
+                                _count = _v.get("count", 0)
+                                _target = _v.get("target", "未設定")
+                                _status = _v.get("status", "")
+                                _diff = _v.get("diff", "")
+                                if _status == "OK":
+                                    return f"{_count}/{_target} OK"
+                                if _diff:
+                                    return f"{_count}/{_target} {_status}({_diff})"
+                                return f"{_count}/{_target} {_status}"
+
+                            compare_rows = []
+                            for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
+                                _name = student_name_map_month.get(_sid, _sid)
+                                _prev = _summaries.get("前月", {}).get(_sid, {})
+                                _curr = _summaries.get("今月", {}).get(_sid, {})
+                                _next = _summaries.get("来月", {}).get(_sid, {})
+
+                                _reasons_joined = " / ".join([
+                                    x for x in [
+                                        f"前月:{_prev.get('reason','')}" if _prev.get("reason", "") else "",
+                                        f"今月:{_curr.get('reason','')}" if _curr.get("reason", "") else "",
+                                        f"来月:{_next.get('reason','')}" if _next.get("reason", "") else "",
+                                    ] if x
+                                ])
+
+                                _need = (
+                                    _prev.get("status") in ["少ない", "多い", "月回数未設定"]
+                                    or _curr.get("status") in ["少ない", "多い", "月回数未設定"]
+                                    or _next.get("status") in ["少ない", "多い", "月回数未設定"]
+                                    or bool(_reasons_joined)
+                                )
+
+                                compare_rows.append({
+                                    "生徒": _name,
+                                    f"前月({_prev_m}月)": _fmt_month_cell(_prev),
+                                    f"今月({target_month}月)": _fmt_month_cell(_curr),
+                                    f"来月({_next_m}月)": _fmt_month_cell(_next),
+                                    "理由区分メモ": _reasons_joined,
+                                    "_need": _need,
+                                })
+
+                            if compare_rows:
+                                compare_df = pd.DataFrame(compare_rows)
+
+                                only_need_cross = st.checkbox(
+                                    "前後月で確認が必要・理由区分がある生徒だけ表示",
+                                    value=True,
+                                    key=f"monthly_cross_count_only_need_{target_year}_{target_month}",
+                                )
+
+                                if only_need_cross:
+                                    compare_df = compare_df[compare_df["_need"]].copy()
+
+                                compare_df = compare_df.drop(columns=["_need"], errors="ignore")
+
+                                if compare_df.empty:
+                                    st.success("前後月を含めて、確認が必要な生徒はありません。")
+                                else:
+                                    st.dataframe(compare_df, use_container_width=True, hide_index=True)
+                                    st.caption("※ 前月−1・今月+1のような組み合わせがある場合、月跨ぎ振替の確認材料として使えます。")
+                            else:
+                                st.info("前月・今月・来月の比較対象がありません。")
                     else:
                         st.info("在籍中の生徒が見つかりません。")
 
@@ -10586,6 +10925,14 @@ elif page == "座席":
 
         slot = normalize_slot(row.get("slot", ""))
         seat = str(row.get("seat_no", "")).strip()
+        sid_for_seat_check = str(row.get("student_id", "")).strip()
+
+
+        # d254:
+        # キャンセル済みの生徒が過去に座席保存されていても、
+        # 今日実際に座る対象ではないため、座席重複チェックから除外する。
+        if (sid_for_seat_check, slot) in seat_cancel_keys_for_today:
+            continue
 
 
         if not slot or not seat:
@@ -10835,6 +11182,13 @@ elif page == "座席":
                 _sid = str(r.get("student_id", "")).strip()
 
 
+                # d254:
+                # 今日キャンセル済みの生徒の保存済み座席は、自動配置では「空いた席」として扱う。
+                # これを除外しないと、キャンセルした人まで席重複・使用中判定に入ってしまう。
+                if (_sid, _slot) in seat_cancel_keys_for_today:
+                    continue
+
+
                 if _slot and _seat:
                     existing_keys.add((_slot, _seat))
 
@@ -10849,9 +11203,17 @@ elif page == "座席":
         for r in seat_today_rows:
             sid = str(r.get("student_id", "")).strip()
             slot = normalize_slot(r.get("コマ", ""))
+            status_value = str(r.get("状態", "")).strip()
 
 
             if not sid or not slot:
+                continue
+
+
+            # d254:
+            # 座席確認リストにはキャンセル済み行を残すが、
+            # 自動配置・基本席の重複判定には含めない。
+            if "キャンセル済み" in status_value or (sid, slot) in seat_cancel_keys_for_today:
                 continue
 
 
@@ -11086,11 +11448,35 @@ elif page == "座席":
 
     today_student_ids_for_grid = {sid for sid in today_student_ids_for_grid if sid}
 
+    # d255:
+    # 手動座席登録の候補を、通常は「そのコマに来る予定の子」だけに絞る。
+    # ただし例外対応用に、全コマ候補へ切り替えられるようにする。
+    grid_slot_student_ids_map = {}
+    try:
+        if grid_plan_today is not None and not grid_plan_today.empty and {"student_id", "slot"}.issubset(grid_plan_today.columns):
+            _gps = grid_plan_today.copy()
+            _gps["student_id"] = _gps["student_id"].fillna("").astype(str).str.strip()
+            _gps["slot"] = _gps["slot"].fillna("").astype(str).str.strip().map(normalize_slot)
+            for _slot, _g in _gps.groupby("slot"):
+                _slot = normalize_slot(_slot)
+                grid_slot_student_ids_map[_slot] = [
+                    _sid for _sid in _g["student_id"].astype(str).str.strip().tolist() if _sid
+                ]
+    except Exception:
+        grid_slot_student_ids_map = {}
+
+    include_all_slots_for_grid = st.checkbox(
+        "全コマの生徒も候補に表示する",
+        value=False,
+        key=f"seat_grid_include_all_slots_{today}",
+        help="通常は各コマの予定生徒だけを表示します。別コマの子を手動で入れたい時だけONにします。",
+    )
+
     include_all_active_for_grid = st.checkbox(
         "配置表の候補に全在籍生徒も含める",
         value=False,
         key=f"seat_grid_include_all_active_{today}",
-        help="今日の予定・振替・追加の候補に出ない生徒がいる場合にONにします。",
+        help="今日の予定・振替・追加の候補に出ない生徒がいる場合だけONにします。",
     )
 
     grid_students = students.copy()
@@ -11138,6 +11524,45 @@ elif page == "座席":
                              
     grid_student_ids = [x[0] for x in grid_options]
     grid_student_labels = {sid: label for sid, label in grid_options}
+
+    # d255:
+    # コマ別候補を作るための元リスト。
+    # ここには「今日来る予定の全候補」または「全在籍生徒も含めた候補」が入る。
+    grid_all_candidate_ids = list(grid_student_ids)
+
+    def build_seat_options_for_slot(slot_value, current_sid_value="", saved_sid_value=""):
+        """
+        通常はそのコマの予定生徒だけを候補に出す。
+        ただし、空席・使用予定・保存済み/選択中の生徒は必ず候補に残す。
+        """
+        slot_value = normalize_slot(slot_value)
+        current_sid_value = str(current_sid_value or "").strip()
+        saved_sid_value = str(saved_sid_value or "").strip()
+
+        if include_all_slots_for_grid or include_all_active_for_grid:
+            base_ids = list(grid_all_candidate_ids)
+        else:
+            slot_ids = grid_slot_student_ids_map.get(slot_value, [])
+            base_ids = ["", "__RESERVED__"]
+            for _sid in slot_ids:
+                _sid = str(_sid).strip()
+                if _sid and _sid in grid_student_labels and _sid not in base_ids:
+                    base_ids.append(_sid)
+
+        for _sid in [saved_sid_value, current_sid_value]:
+            _sid = str(_sid).strip()
+            if _sid and _sid in grid_student_labels and _sid not in base_ids:
+                base_ids.append(_sid)
+
+        ordered = []
+        for _sid in ["", "__RESERVED__"]:
+            if _sid in base_ids and _sid not in ordered:
+                ordered.append(_sid)
+        for _sid in base_ids:
+            if _sid not in ordered:
+                ordered.append(_sid)
+
+        return ordered
             
     # 既存の座席登録を初期値として読む
     existing_grid = {}
@@ -11326,7 +11751,13 @@ elif page == "座席":
             ).strip()
 
 
-            default_index = grid_student_ids.index(current_sid) if current_sid in grid_student_ids else 0
+            saved_sid = str(existing_grid.get((slot, seat_no), "")).strip()
+            slot_candidate_ids = build_seat_options_for_slot(
+                slot_value=slot,
+                current_sid_value=current_sid,
+                saved_sid_value=saved_sid,
+            )
+            default_index = slot_candidate_ids.index(current_sid) if current_sid in slot_candidate_ids else 0
 
 
             with cols[i]:
@@ -11360,7 +11791,7 @@ elif page == "座席":
 
                 selected_sid = st.selectbox(
                     f"{slot}コマ 席{seat_no}",
-                    grid_student_ids,
+                    slot_candidate_ids,
                     index=default_index,
                     key=widget_key,
                     format_func=lambda sid: grid_student_labels.get(sid, sid),
