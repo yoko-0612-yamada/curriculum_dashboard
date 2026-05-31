@@ -5610,13 +5610,14 @@ if page == "閲覧":
                     for _, row in t.iterrows():
                         task_id = str(row["task_id"]).strip()
                         task_name = str(row["task_name"]).strip()
+                        task_display_name = task_name if task_name else f"{task_id}｜（課題名未設定）"
                         was_done = bool(done_map.get(task_id, False))
                         was_skip = bool(skip_map.get(task_id, False))
                         prev_done_date = str(done_date_map.get(task_id, "")).strip()
                         task_label = (
-                            f"{task_name}　（完了日：{prev_done_date}）"
+                            f"{task_display_name}　（完了日：{prev_done_date}）"
                             if was_done and prev_done_date
-                            else task_name
+                            else task_display_name
                         )
 
 
@@ -7549,11 +7550,69 @@ elif page == "管理（入力）":
         if tasks.empty:
             tasks = pd.DataFrame(columns=["course_id","task_id","task_name","order","is_active","student_id"])
 
+        # d260:
+        # task_name が空だと、編集プルダウンや課題一覧で「消えた」ように見える。
+        # 保存時は必須チェックし、既存の空欄データは task_id を使って表示できるようにする。
+        for _c in ["course_id", "task_id", "task_name", "order", "is_active", "student_id"]:
+            if _c not in tasks.columns:
+                tasks[_c] = ""
+            tasks[_c] = tasks[_c].fillna("").astype(str).str.strip()
+
+        def _task_name_display_value(row):
+            _tid = str(row.get("task_id", "")).strip()
+            _name = str(row.get("task_name", "")).strip()
+            if _name:
+                return _name
+            return "（課題名未設定）"
+
+        def _task_admin_label(row):
+            _tid = str(row.get("task_id", "")).strip()
+            _name = _task_name_display_value(row)
+            return f"{_tid} | {_name}" if _tid else f"（task_id未設定） | {_name}"
+
+        _blank_task_name_count = int((tasks["task_name"].astype(str).str.strip() == "").sum()) if not tasks.empty else 0
+        if _blank_task_name_count:
+            st.warning(f"task_name が空の課題が {_blank_task_name_count} 件あります。CSVを整理するか、この画面から課題名を入れてください。")
+
         # course choices
         course_ids = []
+        course_label_by_id = {}
+
         if not courses.empty:
-            course_ids = sorted(courses["course_id"].astype(str).str.strip().unique().tolist())
-        
+            _course_label_df = courses.copy()
+            for _c in ["course_id", "genre_name", "course_name", "course_order"]:
+                if _c not in _course_label_df.columns:
+                    _course_label_df[_c] = ""
+                _course_label_df[_c] = _course_label_df[_c].fillna("").astype(str).str.strip()
+
+            _course_label_df["_order_num"] = pd.to_numeric(
+                _course_label_df["course_order"], errors="coerce"
+            ).fillna(9999).astype(int)
+
+            _course_label_df = _course_label_df.sort_values(
+                ["_order_num", "genre_name", "course_name", "course_id"],
+                na_position="last",
+            )
+
+            course_ids = _course_label_df["course_id"].astype(str).str.strip().dropna().unique().tolist()
+
+            for _, _r in _course_label_df.iterrows():
+                _cid = str(_r.get("course_id", "")).strip()
+                if not _cid:
+                    continue
+                _genre = str(_r.get("genre_name", "")).strip()
+                _cname = str(_r.get("course_name", "")).strip()
+                _name_parts = "｜".join([x for x in [_genre, _cname] if x])
+                course_label_by_id[_cid] = f"{_cid}（{_name_parts}）" if _name_parts else _cid
+
+        def format_course_admin_label(course_id_value):
+            _cid = str(course_id_value).strip()
+            if _cid == "（全て）":
+                return "（全て）"
+            if _cid.startswith("（"):
+                return _cid
+            return course_label_by_id.get(_cid, _cid)
+
         task_course = st.session_state.get("t_course_filter", "（全て）")
 
 
@@ -7568,13 +7627,21 @@ elif page == "管理（入力）":
             tasks_view = tasks_view.sort_values(["course_id", "order_num", "task_id"], na_position="last").drop(columns=["order_num"])
 
 
-        st.dataframe(tasks_view, use_container_width=True, hide_index=True)
+        tasks_view_display = tasks_view.copy()
+        if not tasks_view_display.empty:
+            tasks_view_display["task_name_display"] = tasks_view_display.apply(_task_name_display_value, axis=1)
+            _display_cols = [c for c in ["course_id", "task_id", "task_name_display", "task_name", "order", "is_active", "student_id"] if c in tasks_view_display.columns]
+            st.dataframe(tasks_view_display[_display_cols], use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(tasks_view, use_container_width=True, hide_index=True)
 
 
         st.selectbox(
-            "編集対象のコースで絞り込み",
+            "編集対象のコースで絞り込み（course_id｜コース名）",
             ["（全て）"] + course_ids,
-            key="t_course_filter"
+            key="t_course_filter",
+            format_func=format_course_admin_label,
+            help="course_idだけだと間違えやすいため、コース名も一緒に表示します。",
         )
 
 
@@ -7593,15 +7660,144 @@ elif page == "管理（入力）":
                     nmax = max(nmax, int(m.group(1)))
             return f"{c}-T{nmax+1:03d}"
 
+        # d263:
+        # 挿入時は、course_id だけで sc_h-T059 のように作るのではなく、
+        # 挿入基準にした課題IDの形式へ寄せる。
+        # 例：scratch_56 の後に入れるなら、既存の scratch_ 系最大番号+1 → scratch_59。
+        def suggest_insert_task_id(course_id: str, after_task_id: str) -> str:
+            c = str(course_id).strip()
+            base_tid = str(after_task_id).strip()
+
+            if not c:
+                return ""
+
+            # d264:
+            # task_id は全体で重複禁止なので、同じコース内だけでなく
+            # curriculum_tasks.csv 全体の task_id を見て、重複しない番号を提案する。
+            # 例：同じコースでは scratch_58 まででも、別行に scratch_59 が残っていれば scratch_60 を提案する。
+            all_existing_ids = (
+                tasks.get("task_id", pd.Series(dtype=str))
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .tolist()
+            )
+            all_existing_set = {x for x in all_existing_ids if x}
+
+            # 末尾数字の手前までを prefix として見る。
+            # scratch_56 -> scratch_ / sc_h-T022 -> sc_h-T
+            m_base = re.match(r"^(.*?)(\d+)$", base_tid)
+            if m_base:
+                prefix = m_base.group(1)
+                width = len(m_base.group(2))
+                nmax = 0
+
+                for tid in all_existing_ids:
+                    m = re.match(rf"^{re.escape(prefix)}(\d+)$", str(tid).strip())
+                    if m:
+                        nmax = max(nmax, int(m.group(1)))
+
+                if nmax > 0:
+                    candidate_num = nmax + 1
+                    candidate = f"{prefix}{candidate_num:0{width}d}"
+                    while candidate in all_existing_set:
+                        candidate_num += 1
+                        candidate = f"{prefix}{candidate_num:0{width}d}"
+                    return candidate
+
+            # 基準課題の形式が読めない場合は従来案に戻す。
+            # ただし従来案も重複する場合は番号を上げる。
+            candidate = suggest_next_task_id(c)
+            if not candidate:
+                return ""
+
+            m_fallback = re.match(r"^(.*?)(\d+)$", candidate)
+            if not m_fallback:
+                return candidate
+
+            prefix = m_fallback.group(1)
+            width = len(m_fallback.group(2))
+            candidate_num = int(m_fallback.group(2))
+            while candidate in all_existing_set:
+                candidate_num += 1
+                candidate = f"{prefix}{candidate_num:0{width}d}"
+            return candidate
+
         with colT1:
             st.markdown("#### ➕ 課題追加")
-            t_course_id = st.selectbox("course_id", course_ids if course_ids else ["（先にコースを追加）"], key="t_add_course_id")
+            t_course_id = st.selectbox(
+                "course_id（コース名つき）",
+                course_ids if course_ids else ["（先にコースを追加）"],
+                key="t_add_course_id",
+                format_func=format_course_admin_label,
+                help="登録先を間違えないよう、course_idとコース名を一緒に表示します。",
+            )
+            if course_ids and str(t_course_id).strip():
+                st.caption(f"選択中：{format_course_admin_label(t_course_id)}")
             t_task_id = st.text_input("task_id（空なら自動提案）", value="", key="t_add_task_id")
-            if course_ids and t_course_id and not t_task_id.strip():
-                st.caption(f"提案 task_id: {suggest_next_task_id(t_course_id)}")
 
             t_task_name = st.text_input("task_name", key="t_add_task_name")
-            t_order = st.number_input("order（並び順）", min_value=0, value=0, step=1, key="t_add_order")
+
+            # d261:
+            # 課題を最後に追加するだけでなく、指定した課題の直後へ挿入できるようにする。
+            # 挿入時は、同じコース内で挿入位置以降の order を自動で +1 する。
+            t_add_mode = st.radio(
+                "追加方法",
+                ["最後に追加", "選択した課題の次に挿入"],
+                horizontal=False,
+                key="t_add_mode",
+            )
+
+            insert_after_tid = ""
+            insert_after_order = None
+
+            if t_add_mode == "選択した課題の次に挿入":
+                insert_df = tasks[
+                    tasks["course_id"].astype(str).str.strip() == str(t_course_id).strip()
+                ].copy()
+
+                if insert_df.empty:
+                    st.info("このコースにはまだ課題がないため、挿入ではなく最後に追加してください。")
+                else:
+                    for _c in ["task_id", "task_name", "order"]:
+                        if _c not in insert_df.columns:
+                            insert_df[_c] = ""
+                        insert_df[_c] = insert_df[_c].fillna("").astype(str).str.strip()
+
+                    insert_df["_order_num"] = pd.to_numeric(insert_df["order"], errors="coerce").fillna(9999).astype(int)
+                    insert_df = insert_df.sort_values(["_order_num", "task_id"], na_position="last").copy()
+
+                    def _insert_after_label(_row):
+                        _tid = str(_row.get("task_id", "")).strip()
+                        _name = str(_row.get("task_name", "")).strip() or "（課題名未設定）"
+                        _order = str(_row.get("order", "")).strip()
+                        return f"{_order}｜{_tid}｜{_name}"
+
+                    insert_labels = insert_df.apply(_insert_after_label, axis=1).tolist()
+                    insert_label = st.selectbox(
+                        "この課題の後に挿入",
+                        insert_labels,
+                        key="t_add_insert_after",
+                        help="選択した課題の直後に新しい課題を挿入し、後ろのorderを自動で+1します。",
+                    )
+
+                    insert_parts = str(insert_label).split("｜")
+                    insert_after_tid = str(insert_parts[1]).strip() if len(insert_parts) >= 2 else ""
+                    _hit = insert_df[insert_df["task_id"].astype(str).str.strip() == insert_after_tid].copy()
+                    if not _hit.empty:
+                        insert_after_order = int(_hit.iloc[0]["_order_num"])
+                        st.caption(f"保存時：新しい課題は order {insert_after_order + 1} に入り、後ろの課題は自動で +1 されます。")
+
+                t_order = 0
+            else:
+                t_order = st.number_input("order（並び順）", min_value=0, value=0, step=1, key="t_add_order")
+
+            if course_ids and t_course_id and not t_task_id.strip():
+                if t_add_mode == "選択した課題の次に挿入" and insert_after_tid:
+                    st.caption(f"提案 task_id: {suggest_insert_task_id(t_course_id, insert_after_tid)}")
+                else:
+                    st.caption(f"提案 task_id: {suggest_next_task_id(t_course_id)}")
+
             t_is_active = st.checkbox("is_active（ON=表示）", value=True, key="t_add_is_active")
             t_student_id = st.text_input("student_id（空=共通 / 入れる=個別課題）", value="", key="t_add_student_id")
 
@@ -7610,26 +7806,62 @@ elif page == "管理（入力）":
                 if not cid or cid.startswith("（"):
                     st.error("course_id を選んでください。")
                 else:
-                    tid = str(t_task_id).strip() or suggest_next_task_id(cid)
+                    if str(t_task_id).strip():
+                        tid = str(t_task_id).strip()
+                    elif t_add_mode == "選択した課題の次に挿入" and insert_after_tid:
+                        tid = suggest_insert_task_id(cid, insert_after_tid)
+                    else:
+                        tid = suggest_next_task_id(cid)
                     if not tid:
                         st.error("task_id が作れませんでした。")
                     elif tid in set(tasks["task_id"].astype(str).str.strip()):
                         st.error("同じ task_id が既に存在します。")
                     elif not str(t_task_name).strip():
-                        st.error("task_name が空です。")
+                        st.error("課題名（task_name）を入力してください。空欄では保存できません。")
+                    elif t_add_mode == "選択した課題の次に挿入" and (not insert_after_tid or insert_after_order is None):
+                        st.error("挿入先の課題を選択してください。")
                     else:
+                        tasks2 = tasks.copy()
+                        for _c in ["course_id", "task_id", "task_name", "order", "is_active", "student_id"]:
+                            if _c not in tasks2.columns:
+                                tasks2[_c] = ""
+                            tasks2[_c] = tasks2[_c].fillna("").astype(str).str.strip()
+
+                        if t_add_mode == "選択した課題の次に挿入":
+                            new_order = int(insert_after_order) + 1
+
+                            # 同じコース内で、挿入位置以降のorderを+1する。
+                            _same_course = tasks2["course_id"].astype(str).str.strip() == cid
+                            _order_num = pd.to_numeric(tasks2["order"], errors="coerce")
+                            _shift_mask = _same_course & (_order_num >= new_order)
+
+                            tasks2.loc[_shift_mask, "order"] = (
+                                _order_num.loc[_shift_mask].fillna(new_order).astype(int) + 1
+                            ).astype(str)
+                        else:
+                            new_order = int(t_order)
+
                         new_row = {
                             "course_id": cid,
                             "task_id": tid,
                             "task_name": str(t_task_name).strip(),
-                            "order": int(t_order),
+                            "order": int(new_order),
                             "is_active": bool(t_is_active),
                             "student_id": str(t_student_id).strip(),
                         }
-                        tasks2 = pd.concat([tasks, pd.DataFrame([new_row])], ignore_index=True)
+                        tasks2 = pd.concat([tasks2, pd.DataFrame([new_row])], ignore_index=True)
+
+                        # 保存前に、表示順が見やすくなるよう同じCSV内を整列しておく。
+                        tasks2["_order_num"] = pd.to_numeric(tasks2["order"], errors="coerce").fillna(9999).astype(int)
+                        tasks2 = tasks2.sort_values(["course_id", "_order_num", "task_id"], na_position="last").drop(columns=["_order_num"])
+                        tasks2 = tasks2[["course_id", "task_id", "task_name", "order", "is_active", "student_id"]].fillna("")
+
                         backup_file(CURRICULUM_TASKS_CSV)
                         write_csv(tasks2, CURRICULUM_TASKS_CSV)
-                        st.success(f"追加しました: {tid}")
+                        if t_add_mode == "選択した課題の次に挿入":
+                            st.success(f"挿入しました: {tid}（{insert_after_tid} の次）")
+                        else:
+                            st.success(f"追加しました: {tid}")
                         st.rerun()
 
         with colT2:
@@ -7642,7 +7874,7 @@ elif page == "管理（入力）":
                     st.info("このコースには課題がありません。")
                 else:
                     pick_df2 = pick_df.copy()
-                    pick_df2["label"] = pick_df2["task_id"].astype(str) + " | " + pick_df2["task_name"].astype(str)
+                    pick_df2["label"] = pick_df2.apply(_task_admin_label, axis=1)
                     sel_t = st.selectbox("編集する課題", pick_df2["label"].tolist(), key="t_edit_sel")
                     sel_tid = sel_t.split("|")[0].strip()
                     cur_t = pick_df2.loc[pick_df2["task_id"].astype(str).str.strip() == sel_tid].iloc[0]
@@ -7676,7 +7908,16 @@ elif page == "管理（入力）":
                         course_index = edit_course_options.index(cur_course) if cur_course in edit_course_options else 0
 
 
-                    e_course_id = st.selectbox("course_id（変更可）", edit_course_options, index=course_index, key="t_edit_course_id")
+                    e_course_id = st.selectbox(
+                        "course_id（変更可・コース名つき）",
+                        edit_course_options,
+                        index=course_index,
+                        key="t_edit_course_id",
+                        format_func=format_course_admin_label,
+                        help="変更先を間違えないよう、course_idとコース名を一緒に表示します。",
+                    )
+                    if str(e_course_id).strip():
+                        st.caption(f"編集先：{format_course_admin_label(e_course_id)}")
 
                     e_task_name = st.text_input("task_name", value=str(cur_t.get("task_name","")), key="t_edit_task_name")
                     try:
@@ -7705,18 +7946,21 @@ elif page == "管理（入力）":
                     colTE1, colTE2 = st.columns(2)
                     with colTE1:
                         if st.button("保存（更新）", key="t_edit_save"):
-                            mask = tasks["task_id"].astype(str).str.strip() == sel_tid
-                            tasks2 = tasks.copy()
-                            tasks2.loc[mask, "course_id"] = str(e_course_id).strip()
-                            tasks2.loc[mask, "task_name"] = str(e_task_name).strip()
-                            tasks2.loc[mask, "order"] = int(e_order)
-                            tasks2.loc[mask, "is_active"] = bool(e_is_active)
-                            tasks2.loc[mask, "student_id"] = str(e_student_id).strip()
+                            if not str(e_task_name).strip():
+                                st.error("課題名（task_name）を入力してください。空欄では保存できません。")
+                            else:
+                                mask = tasks["task_id"].astype(str).str.strip() == sel_tid
+                                tasks2 = tasks.copy()
+                                tasks2.loc[mask, "course_id"] = str(e_course_id).strip()
+                                tasks2.loc[mask, "task_name"] = str(e_task_name).strip()
+                                tasks2.loc[mask, "order"] = int(e_order)
+                                tasks2.loc[mask, "is_active"] = bool(e_is_active)
+                                tasks2.loc[mask, "student_id"] = str(e_student_id).strip()
 
-                            backup_file(CURRICULUM_TASKS_CSV)
-                            write_csv(tasks2, CURRICULUM_TASKS_CSV)
-                            st.success("保存しました。")
-                            st.rerun()
+                                backup_file(CURRICULUM_TASKS_CSV)
+                                write_csv(tasks2, CURRICULUM_TASKS_CSV)
+                                st.success("保存しました。")
+                                st.rerun()
                     with colTE2:
                         confirm_del_t = st.checkbox("削除を有効にする（確認）", value=False, key="t_del_confirm")
                         if st.button("🗑️ この課題を削除", key="t_del_btn", disabled=not confirm_del_t):
