@@ -3261,6 +3261,46 @@ if page == "閲覧":
             else:
                 st.info("表示できる生徒がいません。")
 
+        # d267:
+        # 「次に見る候補」は授業前準備にも使うため、今日の座席番号も一緒に出す。
+        # 座席登録済みなら席番号、未配置なら「未配置」と表示する。
+        def _seat_label_for_today_candidate(_sid: str, _slot: str) -> str:
+            try:
+                _sid = str(_sid).strip()
+                _slot = normalize_slot(_slot)
+                if not _sid or not _slot:
+                    return "未配置"
+
+                _seat_df = seat_assignments.copy()
+                if _seat_df is None or _seat_df.empty:
+                    return "未配置"
+
+                for _c in ["date", "slot", "seat_no", "student_id"]:
+                    if _c not in _seat_df.columns:
+                        _seat_df[_c] = ""
+                    _seat_df[_c] = _seat_df[_c].fillna("").astype(str).str.strip()
+
+                _today_str = str(today)
+                _seat_df["slot"] = _seat_df["slot"].map(normalize_slot)
+
+                _hit = _seat_df[
+                    (_seat_df["date"].astype(str).str.strip() == _today_str)
+                    & (_seat_df["student_id"].astype(str).str.strip() == _sid)
+                    & (_seat_df["slot"].astype(str).str.strip() == _slot)
+                ].copy()
+
+                if _hit.empty:
+                    return "未配置"
+
+                _seat_no = str(_hit.iloc[-1].get("seat_no", "")).strip()
+                if not _seat_no:
+                    return "未配置"
+                if _seat_no == "__RESERVED__":
+                    return "使用予定"
+                return _seat_no
+            except Exception:
+                return "未配置"
+
         st.subheader("👀 次に見る候補")
 
 
@@ -3286,7 +3326,8 @@ if page == "閲覧":
                     memo = ""    
 
 
-                st.write(f"{i}. {slot}限 / {name} / {status}")
+                seat_label = _seat_label_for_today_candidate(sid, slot)
+                st.write(f"{i}. {slot}限 / 席：{seat_label} / {name} / {status}")
 
                 # d245:
                 # まずは「次に見る候補」に、今日やる候補を1行だけ表示して検証する。
@@ -6541,6 +6582,25 @@ if page == "閲覧":
             key="scratch_grade_filter"
         )
 
+        # d265:
+        # Scratch検定一覧は、普段の確認では「在籍中」かつ「1級未合格」を中心に見る。
+        # 退会済み・1級合格済みは必要な時だけ表示する。
+        scratch_col1, scratch_col2 = st.columns(2)
+        with scratch_col1:
+            scratch_include_inactive = st.checkbox(
+                "退会済みも含める",
+                value=False,
+                key="scratch_list_include_inactive",
+                help="ONにすると退会済み生徒もScratch検定一覧に表示します。",
+            )
+        with scratch_col2:
+            scratch_include_grade1_done = st.checkbox(
+                "1級合格済みも含める",
+                value=False,
+                key="scratch_list_include_grade1_done",
+                help="ONにすると1級まで合格済みの生徒も表示します。",
+            )
+
 
         if kentei_results.empty:
             st.info("Scratch検定ログがまだありません。")
@@ -6566,11 +6626,32 @@ if page == "閲覧":
                 .reset_index()
             )
 
+            # d266:
+            # 点数が空でも「受験/合格登録がある」こと自体は区別して表示したい。
+            # score_pivot だけだと、未受験と点数未入力がどちらも NaN に見えるため、
+            # gradeごとの登録有無も別で持つ。
+            attempt_pivot = (
+                score_src.assign(_attempt_record=True)
+                .pivot_table(
+                    index="student_id",
+                    columns="grade_col",
+                    values="_attempt_record",
+                    aggfunc="max",
+                    fill_value=False,
+                )
+                .reset_index()
+            )
+            attempt_pivot = attempt_pivot.rename(
+                columns={_c: f"{_c}_登録あり" for _c in attempt_pivot.columns if _c != "student_id"}
+            )
+
 
             # 必要な列を必ず揃える
             for col in ["4級", "3級", "2級", "1級"]:
                 if col not in score_pivot.columns:
                     score_pivot[col] = np.nan
+                if f"{col}_登録あり" not in attempt_pivot.columns:
+                    attempt_pivot[f"{col}_登録あり"] = False
 
 
             # 最高級
@@ -6590,6 +6671,7 @@ if page == "閲覧":
             scratch_view = students.copy()
             scratch_view = scratch_view.merge(scratch_best_small, on="student_id", how="left")
             scratch_view = scratch_view.merge(score_pivot, on="student_id", how="left")
+            scratch_view = scratch_view.merge(attempt_pivot, on="student_id", how="left")
             scratch_view = scratch_view.merge(best_score_small, on="student_id", how="left")
             scratch_view["次の判断"] = scratch_view["best_score"].apply(judge_next_step)
             scratch_view["次の級"] = scratch_view["scratch_best"].apply(get_next_grade)
@@ -6601,7 +6683,36 @@ if page == "閲覧":
                 | scratch_view["3級"].notna()
                 | scratch_view["2級"].notna()
                 | scratch_view["1級"].notna()
+                | scratch_view["4級_登録あり"].fillna(False).astype(bool)
+                | scratch_view["3級_登録あり"].fillna(False).astype(bool)
+                | scratch_view["2級_登録あり"].fillna(False).astype(bool)
+                | scratch_view["1級_登録あり"].fillna(False).astype(bool)
             ].copy()
+
+            # d265:
+            # 基本表示は「在籍中」＋「1級未合格」。
+            # 退会済み・1級合格済みはチェックONの時だけ表示する。
+            _before_scratch_filter_count = len(scratch_view)
+
+            if not scratch_include_inactive and "is_active" in scratch_view.columns:
+                _active_norm = (
+                    scratch_view["is_active"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .replace("", "true")
+                )
+                scratch_view = scratch_view[_active_norm.isin(["true", "1", "yes", "on"])].copy()
+
+            if not scratch_include_grade1_done and "1級" in scratch_view.columns:
+                _grade1_attempt = scratch_view.get("1級_登録あり", pd.Series([False] * len(scratch_view), index=scratch_view.index)).fillna(False).astype(bool)
+                scratch_view = scratch_view[scratch_view["1級"].isna() & (~_grade1_attempt)].copy()
+
+            _after_scratch_filter_count = len(scratch_view)
+            _hidden_scratch_count = max(0, int(_before_scratch_filter_count) - int(_after_scratch_filter_count))
+            if _hidden_scratch_count:
+                st.caption(f"基本表示では、退会済み・1級合格済みの生徒を {_hidden_scratch_count} 件非表示にしています。必要なら上のチェックをONにしてください。")
 
 
             # フィルタ反映
@@ -6620,10 +6731,17 @@ if page == "閲覧":
         # 級フィルタ適用
             if grade_filter != "（全て）":
 
-                # その級の点数が入っている生徒だけ残す
-                scratch_view = scratch_view[scratch_view[grade_filter].notna()].copy()
+                # その級の点数、または登録自体がある生徒だけ残す
+                _attempt_col = f"{grade_filter}_登録あり"
+                if _attempt_col in scratch_view.columns:
+                    scratch_view = scratch_view[
+                        scratch_view[grade_filter].notna()
+                        | scratch_view[_attempt_col].fillna(False).astype(bool)
+                    ].copy()
+                else:
+                    scratch_view = scratch_view[scratch_view[grade_filter].notna()].copy()
 
-                # 点数でソート（高い順）
+                # 点数でソート（高い順）。点数未入力は最後へ。
                 scratch_view = scratch_view.sort_values(
                     by=grade_filter,
                     ascending=False,
@@ -6631,7 +6749,7 @@ if page == "閲覧":
                 )
 
             if scratch_view.empty:
-                st.info("該当するScratch検定データがありません。")
+                st.info("該当するScratch検定データがありません。退会済みや1級合格済みを確認したい場合は、上のチェックをONにしてください。")
             else:
                 scratch_view["scratch_best"] = scratch_view["scratch_best"].fillna("—")
 
@@ -6639,16 +6757,43 @@ if page == "閲覧":
                 for col in ["4級", "3級", "2級", "1級"]:
                     scratch_view[col] = pd.to_numeric(scratch_view[col], errors="coerce")
 
-                for col in ["4級", "3級", "2級", "1級", "best_score"]:
-                    scratch_view[col] = scratch_view[col].apply(
-                        lambda x: "—" if pd.isna(x) else str(int(x)) if float(x).is_integer() else str(x)
-                    )
+                def _format_score_or_missing(_row, _col):
+                    _score = _row.get(_col, np.nan)
+                    _attempt = bool(_row.get(f"{_col}_登録あり", False))
+                    if pd.isna(_score):
+                        return "△未入力" if _attempt else "—"
+                    try:
+                        return str(int(_score)) if float(_score).is_integer() else str(_score)
+                    except Exception:
+                        return str(_score)
 
+                for col in ["4級", "3級", "2級", "1級"]:
+                    scratch_view[col] = scratch_view.apply(lambda _r, _c=col: _format_score_or_missing(_r, _c), axis=1)
+
+                scratch_view["best_score"] = scratch_view["best_score"].apply(
+                    lambda x: "—" if pd.isna(x) else str(int(x)) if float(x).is_integer() else str(x)
+                )
 
                 show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score", "次の判断","次の級"]
+                scratch_display_df = scratch_view.sort_values(by=["grade", "display_name"], na_position="last")[show_cols].copy()
 
+                def _style_missing_score_cells(_df):
+                    return pd.DataFrame(
+                        [
+                            [
+                                "background-color:#fff3cd; color:#7a5200; font-weight:700"
+                                if str(_value).strip() == "△未入力" else ""
+                                for _value in _row
+                            ]
+                            for _row in _df.to_numpy()
+                        ],
+                        index=_df.index,
+                        columns=_df.columns,
+                    )
+
+                st.caption("点数欄：—＝未受験 / △未入力＝受験・合格登録あり、点数未入力")
                 st.dataframe(
-                    scratch_view.sort_values(by=["grade", "display_name"], na_position="last")[show_cols],
+                    scratch_display_df.style.apply(_style_missing_score_cells, axis=None),
                     use_container_width=True,
                     hide_index=True
                 )
@@ -7565,10 +7710,22 @@ elif page == "管理（入力）":
                 return _name
             return "（課題名未設定）"
 
+        def _short_task_name_for_select(name_value, limit=34):
+            _name = str(name_value).strip()
+            if len(_name) <= limit:
+                return _name
+            return _name[:limit] + "…"
+
         def _task_admin_label(row):
+            # d268:
+            # iPadでは右側が切れやすいため、task_id を必ず先頭に出す。
+            # 課題名は長い場合だけ短くし、編集時にID確認が不要になるようにする。
             _tid = str(row.get("task_id", "")).strip()
-            _name = _task_name_display_value(row)
-            return f"{_tid} | {_name}" if _tid else f"（task_id未設定） | {_name}"
+            _order = str(row.get("order", "")).strip()
+            _name = _short_task_name_for_select(_task_name_display_value(row))
+            if _tid:
+                return f"{_tid} | order {_order} | {_name}"
+            return f"（task_id未設定） | order {_order} | {_name}"
 
         _blank_task_name_count = int((tasks["task_name"].astype(str).str.strip() == "").sum()) if not tasks.empty else 0
         if _blank_task_name_count:
@@ -7637,11 +7794,11 @@ elif page == "管理（入力）":
 
 
         st.selectbox(
-            "編集対象のコースで絞り込み（course_id｜コース名）",
+            "編集 / 削除用：コースで絞り込み（追加には反映しません）",
             ["（全て）"] + course_ids,
             key="t_course_filter",
             format_func=format_course_admin_label,
-            help="course_idだけだと間違えやすいため、コース名も一緒に表示します。",
+            help="下の『編集 / 削除』で表示する課題を絞り込みます。課題追加の登録先は、左側の『追加先コース』で選びます。",
         )
 
 
@@ -7726,14 +7883,14 @@ elif page == "管理（入力）":
         with colT1:
             st.markdown("#### ➕ 課題追加")
             t_course_id = st.selectbox(
-                "course_id（コース名つき）",
+                "追加先コース（course_id｜コース名）",
                 course_ids if course_ids else ["（先にコースを追加）"],
                 key="t_add_course_id",
                 format_func=format_course_admin_label,
-                help="登録先を間違えないよう、course_idとコース名を一緒に表示します。",
+                help="新規追加・挿入する課題の登録先です。上の『編集 / 削除用』絞り込みとは別です。",
             )
             if course_ids and str(t_course_id).strip():
-                st.caption(f"選択中：{format_course_admin_label(t_course_id)}")
+                st.caption(f"追加先：{format_course_admin_label(t_course_id)}")
             t_task_id = st.text_input("task_id（空なら自動提案）", value="", key="t_add_task_id")
 
             t_task_name = st.text_input("task_name", key="t_add_task_name")
@@ -7770,19 +7927,20 @@ elif page == "管理（入力）":
                     def _insert_after_label(_row):
                         _tid = str(_row.get("task_id", "")).strip()
                         _name = str(_row.get("task_name", "")).strip() or "（課題名未設定）"
+                        _name = _short_task_name_for_select(_name)
                         _order = str(_row.get("order", "")).strip()
-                        return f"{_order}｜{_tid}｜{_name}"
+                        return f"{_tid}｜order {_order}｜{_name}"
 
                     insert_labels = insert_df.apply(_insert_after_label, axis=1).tolist()
                     insert_label = st.selectbox(
-                        "この課題の後に挿入",
+                        "この課題の後に挿入（task_id先頭）",
                         insert_labels,
                         key="t_add_insert_after",
                         help="選択した課題の直後に新しい課題を挿入し、後ろのorderを自動で+1します。",
                     )
 
                     insert_parts = str(insert_label).split("｜")
-                    insert_after_tid = str(insert_parts[1]).strip() if len(insert_parts) >= 2 else ""
+                    insert_after_tid = str(insert_parts[0]).strip() if len(insert_parts) >= 1 else ""
                     _hit = insert_df[insert_df["task_id"].astype(str).str.strip() == insert_after_tid].copy()
                     if not _hit.empty:
                         insert_after_order = int(_hit.iloc[0]["_order_num"])
@@ -7897,27 +8055,42 @@ elif page == "管理（入力）":
                         if pd.isna(raw_sid):
                             raw_sid = ""
                         st.session_state["t_edit_student_id"] = str(raw_sid).strip()
+                        st.session_state["t_edit_enable_course_change"] = False
 
                         st.rerun()
 
                     cur_course = str(cur_t.get("course_id","")).strip()
-                    edit_course_options = course_ids if course_ids else [cur_course]
-                    if "t_edit_course_id" in st.session_state and st.session_state["t_edit_course_id"] in edit_course_options:
-                        course_index = edit_course_options.index(st.session_state["t_edit_course_id"])
-                    else:
-                        course_index = edit_course_options.index(cur_course) if cur_course in edit_course_options else 0
 
-
-                    e_course_id = st.selectbox(
-                        "course_id（変更可・コース名つき）",
-                        edit_course_options,
-                        index=course_index,
-                        key="t_edit_course_id",
-                        format_func=format_course_admin_label,
-                        help="変更先を間違えないよう、course_idとコース名を一緒に表示します。",
+                    # d268:
+                    # 所属コースは通常「確認用」にする。
+                    # うっかり別コースへ変更する事故を防ぐため、変更したい時だけチェックをONにする。
+                    st.caption(f"所属コース（確認用）：{format_course_admin_label(cur_course)}")
+                    enable_course_change = st.checkbox(
+                        "所属コースを変更する（通常OFF）",
+                        value=bool(st.session_state.get("t_edit_enable_course_change", False)),
+                        key="t_edit_enable_course_change",
+                        help="コースを間違えて登録した課題を移動したい時だけONにします。",
                     )
-                    if str(e_course_id).strip():
-                        st.caption(f"編集先：{format_course_admin_label(e_course_id)}")
+
+                    if enable_course_change:
+                        edit_course_options = course_ids if course_ids else [cur_course]
+                        if "t_edit_course_id" in st.session_state and st.session_state["t_edit_course_id"] in edit_course_options:
+                            course_index = edit_course_options.index(st.session_state["t_edit_course_id"])
+                        else:
+                            course_index = edit_course_options.index(cur_course) if cur_course in edit_course_options else 0
+
+                        e_course_id = st.selectbox(
+                            "変更先コース（course_id｜コース名）",
+                            edit_course_options,
+                            index=course_index,
+                            key="t_edit_course_id",
+                            format_func=format_course_admin_label,
+                            help="課題の所属コースを本当に変更する場合だけ選んでください。",
+                        )
+                        if str(e_course_id).strip():
+                            st.caption(f"変更先：{format_course_admin_label(e_course_id)}")
+                    else:
+                        e_course_id = cur_course
 
                     e_task_name = st.text_input("task_name", value=str(cur_t.get("task_name","")), key="t_edit_task_name")
                     try:
