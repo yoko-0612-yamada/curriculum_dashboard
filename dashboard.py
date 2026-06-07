@@ -4400,10 +4400,18 @@ if page == "閲覧":
                                 st.session_state["pending_sidebar_student"] = nm
                                 st.rerun()
                                 
-                show_done = st.checkbox("確認済み（取消で復活できる）を表示", value=False, key=f"att_show_done_{today}")
-                                
+                # d270:
+                # 「出欠を未登録に戻す」は確認済みの出欠ログだけに意味がある。
+                # チェックON時だけ確認済みカードを表示し、そのカード内だけに戻すボタンを出す。
+                show_done = st.checkbox(
+                    "確認済み（出欠を未登録に戻せる）を表示",
+                    value=False,
+                    key=f"att_show_done_{today}",
+                    help="ONにすると、記録済みの出欠を表示します。予定取消ではなく、出欠ログだけを未登録に戻すための確認用です。",
+                )
+
                 st.markdown(f"**未確認：{len(pending_ids)}件**")
-                target_ids = pending_ids if not show_done else ids_in_today
+                target_ids = pending_ids if not show_done else (pending_ids + done_ids)
 
 
                 if not target_ids:
@@ -4618,11 +4626,17 @@ if page == "閲覧":
                                     st.rerun()
 
 
-                                if st.button("↩ 取消", key=f"att_del_{today}_{sid}"):
-                                    att_df2 = delete_attendance(att_df, sid, today)
-                                    save_attendance_log(att_df2)
-                                    st.success("取り消しました。")
-                                    st.rerun()
+                                # d270:
+                                # これは予定の取消ではなく、出欠ログだけを削除して
+                                # 「出欠未登録」の状態へ戻す操作。
+                                # 未確認の子には意味がないため、確認済み表示ONかつ記録済みの子だけに出す。
+                                if show_done and rec is not None:
+                                    if st.button("↩ 出欠を未登録に戻す", key=f"att_del_{today}_{sid}"):
+                                        att_df2 = delete_attendance(att_df, sid, today)
+                                        save_attendance_log(att_df2)
+                                        st.success("出欠記録を削除し、未登録に戻しました。予定は残っています。")
+                                        st.rerun()
+
 
 
 
@@ -5552,6 +5566,14 @@ if page == "閲覧":
                     st.markdown('---')
                     st.caption("コース完了（done）は、課題が全て終わっていなくても付けられます")
                     
+                    # d272:
+                    # コース完了は、progress_log.csv の note=course_done の行だけで判定する。
+                    # 通常の課題完了ログと混ざらないようにする。
+                    for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                        if _c not in log.columns:
+                            log[_c] = ""
+                        log[_c] = log[_c].fillna("").astype(str).str.strip()
+
                     course_done_mask = (
                         log["student_id"].astype(str).str.strip() == str(student_id).strip()
                     ) & (
@@ -5559,7 +5581,9 @@ if page == "閲覧":
                     ) & (
                         log["item"].astype(str).str.strip() == str(course_name).strip()
                     ) & (
-                        log["status"].astype(str).str.strip() == "done"
+                        log["status"].astype(str).str.strip().str.lower() == "done"
+                    ) & (
+                        log["note"].astype(str).str.strip() == "course_done"
                     )
 
 
@@ -5580,6 +5604,39 @@ if page == "閲覧":
                             )
 
                     with col_done2:
+                        if is_course_done:
+                            if override_done_lock:
+                                st.warning("編集ロック解除中：コース完了を取り消せます。")
+                                confirm_cancel_course_done_here = st.checkbox(
+                                    "本当にこのコース完了だけを取り消す",
+                                    value=False,
+                                    key=f"confirm_cancel_course_done_here_{student_id}_{selected_course_id}",
+                                )
+                                if st.button(
+                                    "↩ コース完了を取り消す",
+                                    disabled=not confirm_cancel_course_done_here,
+                                    key=f"cancel_course_done_here_{student_id}_{selected_course_id}",
+                                ):
+                                    df_log = log.copy()
+                                    for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                                        if _c not in df_log.columns:
+                                            df_log[_c] = ""
+                                        df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
+
+                                    cancel_mask = (
+                                        (df_log["student_id"].astype(str).str.strip() == str(student_id).strip())
+                                        & (df_log["curriculum"].astype(str).str.strip() == str(genre_id).strip())
+                                        & (df_log["item"].astype(str).str.strip() == str(course_name).strip())
+                                        & (df_log["status"].astype(str).str.strip().str.lower() == "done")
+                                        & (df_log["note"].astype(str).str.strip() == "course_done")
+                                    )
+                                    df_log = df_log.loc[~cancel_mask].reset_index(drop=True)
+                                    write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                    st.success("コース完了を取り消しました。課題ごとの完了・スキップ記録は残っています。")
+                                    st.rerun()
+                            else:
+                                st.caption("コース完了を取り消す場合は、左の『完了済み課題を編集する』をONにしてください。")
+
                         if not is_course_done:
                             if st.button(
                                 "完了を保存",
@@ -5644,6 +5701,8 @@ if page == "閲覧":
 
 
                     st.markdown("### 課題一覧")
+                    if override_done_lock:
+                        st.warning("⚠ 完了済み課題の編集ロックを解除中です。完了済みのプルダウンも変更できます。")
                     updated_rows = []
 
                     state_options = ["未実施", "完了", "スキップ"]
@@ -5672,12 +5731,22 @@ if page == "閲覧":
 
                         disabled = (was_done and is_locked_done_tasks)
 
+                        # d272:
+                        # Streamlitは同じkeyのselectbox状態を保持するため、
+                        # CSV上は完了になっていても、画面だけ古い「未実施」のまま残ることがある。
+                        # 元データ由来のdefault_stateが変わった時だけ、widget状態を同期する。
+                        state_key = f"curr_state_{student_id}_{selected_course_id}_{task_id}"
+                        source_key = f"{state_key}__source_default"
+                        if st.session_state.get(source_key) != default_state:
+                            st.session_state[state_key] = default_state
+                            st.session_state[source_key] = default_state
+
 
                         selected_state = st.selectbox(
                             task_label,
                             state_options,
                             index=state_options.index(default_state),
-                            key=f"curr_state_{student_id}_{selected_course_id}_{task_id}",
+                            key=state_key,
                             disabled=disabled,
                             format_func=status_label
                         )
@@ -5717,6 +5786,13 @@ if page == "閲覧":
 
                         save_df = pd.concat([others, new_df], ignore_index=True)
                         write_csv_atomic(save_df, CURRICULUM_PROGRESS_CSV)
+
+                        # d272:
+                        # 保存後は、次回表示時にCSV側の状態を正としてプルダウンを再同期する。
+                        for _r in updated_rows:
+                            _tid = str(_r.get("task_id", "")).strip()
+                            _k = f"curr_state_{student_id}_{selected_course_id}_{_tid}"
+                            st.session_state.pop(f"{_k}__source_default", None)
 
                         st.success("保存しました。")
                         st.rerun()
@@ -7545,6 +7621,118 @@ elif page == "管理（入力）":
         def normalize_bool_str(v):
             s = str(v).strip().lower()
             return s in ("1","true","t","yes","y","on")
+
+        # =====================================================
+        # d271:
+        # ↩ コース完了を取り消す
+        # -----------------------------------------------------
+        # 誤って「コース完了」を付けた時に戻すための安全操作。
+        # 課題ごとの完了・スキップ（curriculum_progress.csv）は消さず、
+        # progress_log.csv の note=course_done 行だけ削除する。
+        # =====================================================
+        if override_done_lock:
+            with st.expander("↩ コース完了を取り消す（安全操作）", expanded=False):
+                st.caption("誤って付けたコース完了だけを取り消します。課題ごとの完了・スキップ記録は消しません。")
+
+                course_done_log = log.copy()
+                if course_done_log.empty:
+                    st.info("コース完了ログはありません。")
+                else:
+                    for _c in ["date", "student_id", "curriculum", "item", "status", "note"]:
+                        if _c not in course_done_log.columns:
+                            course_done_log[_c] = ""
+                        course_done_log[_c] = course_done_log[_c].fillna("").astype(str).str.strip()
+
+                    course_done_log = course_done_log[
+                        (course_done_log["status"].astype(str).str.strip().str.lower() == "done")
+                        & (course_done_log["note"].astype(str).str.strip() == "course_done")
+                    ].copy()
+
+                    if course_done_log.empty:
+                        st.info("取り消せるコース完了ログはありません。")
+                    else:
+                        _student_name_map_for_course_done = {}
+                        try:
+                            _students_for_course_done = students.copy()
+                            for _c in ["student_id", "display_name"]:
+                                if _c not in _students_for_course_done.columns:
+                                    _students_for_course_done[_c] = ""
+                                _students_for_course_done[_c] = _students_for_course_done[_c].fillna("").astype(str).str.strip()
+                            _student_name_map_for_course_done = dict(
+                                zip(
+                                    _students_for_course_done["student_id"].astype(str).str.strip(),
+                                    _students_for_course_done["display_name"].astype(str).str.strip(),
+                                )
+                            )
+                        except Exception:
+                            _student_name_map_for_course_done = {}
+
+                        course_done_log = course_done_log.reset_index().rename(columns={"index": "_log_index"})
+                        course_done_log["_label"] = course_done_log.apply(
+                            lambda _r: (
+                                f"{str(_r.get('date','')).strip()}｜"
+                                f"{_student_name_map_for_course_done.get(str(_r.get('student_id','')).strip(), str(_r.get('student_id','')).strip())}｜"
+                                f"{str(_r.get('curriculum','')).strip()} / {str(_r.get('item','')).strip()}"
+                            ),
+                            axis=1,
+                        )
+
+                        selected_course_done_label = st.selectbox(
+                            "取り消すコース完了",
+                            course_done_log["_label"].tolist(),
+                            key="cancel_course_done_target",
+                        )
+
+                        selected_course_done_row = course_done_log[
+                            course_done_log["_label"].astype(str) == str(selected_course_done_label)
+                        ].iloc[0]
+
+                        st.info(
+                            "取り消す対象："
+                            f"{selected_course_done_row.get('date','')} / "
+                            f"{_student_name_map_for_course_done.get(str(selected_course_done_row.get('student_id','')).strip(), str(selected_course_done_row.get('student_id','')).strip())} / "
+                            f"{selected_course_done_row.get('curriculum','')} / {selected_course_done_row.get('item','')}"
+                        )
+
+                        confirm_cancel_course_done = st.checkbox(
+                            "本当にこのコース完了だけを取り消す",
+                            value=False,
+                            key="confirm_cancel_course_done",
+                        )
+
+                        if st.button(
+                            "↩ コース完了を取り消す",
+                            key="cancel_course_done_btn",
+                            disabled=not confirm_cancel_course_done,
+                        ):
+                            target_index = selected_course_done_row.get("_log_index", None)
+                            log2 = log.copy()
+
+                            if target_index is not None and target_index in log2.index:
+                                log2 = log2.drop(index=target_index).reset_index(drop=True)
+                            else:
+                                # 念のため、indexが合わない場合は内容一致で削除
+                                for _c in ["date", "student_id", "curriculum", "item", "status", "note"]:
+                                    if _c not in log2.columns:
+                                        log2[_c] = ""
+                                    log2[_c] = log2[_c].fillna("").astype(str).str.strip()
+
+                                _mask = (
+                                    (log2["date"].astype(str).str.strip() == str(selected_course_done_row.get("date", "")).strip())
+                                    & (log2["student_id"].astype(str).str.strip() == str(selected_course_done_row.get("student_id", "")).strip())
+                                    & (log2["curriculum"].astype(str).str.strip() == str(selected_course_done_row.get("curriculum", "")).strip())
+                                    & (log2["item"].astype(str).str.strip() == str(selected_course_done_row.get("item", "")).strip())
+                                    & (log2["status"].astype(str).str.strip().str.lower() == "done")
+                                    & (log2["note"].astype(str).str.strip() == "course_done")
+                                )
+                                log2 = log2.loc[~_mask].reset_index(drop=True)
+
+                            backup_file(PROGRESS_LOG_CSV)
+                            write_csv_atomic(log2, PROGRESS_LOG_CSV)
+                            st.success("コース完了を取り消しました。課題ごとの進捗記録は残っています。")
+                            st.rerun()
+        else:
+            st.caption("コース完了の取り消しは、上の『完了済み課題を編集する』をONにすると表示されます。")
 
         # ---------- Courses ----------
         st.markdown("### 1) コース（curriculum_courses.csv）")
