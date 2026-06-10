@@ -9027,9 +9027,9 @@ elif page == "管理（入力）":
                 st.session_state[_compact_widget_key] = _load_ui_pref_bool(_compact_pref_key, default=False)
 
             compact_calendar_mode = st.checkbox(
-                "iPad用コンパクト表示（操作ボタンをたたむ）",
+                "iPad用コンパクト表示",
                 key=_compact_widget_key,
-                help="ONにすると、各予定の選択・取消・解除ボタンを『操作』の中にまとめます。iPadでカレンダーが崩れにくくなります。",
+                help="ON/OFF状態を保存します。d273ではカレンダー内の修正ボタンを整理し、予定カードは選択だけにしています。",
             )
 
             if bool(compact_calendar_mode) != _load_ui_pref_bool(_compact_pref_key, default=False):
@@ -9332,92 +9332,16 @@ elif page == "管理（入力）":
                                                 st.caption("※ 出席ログ自体を直す必要がある場合は、出席記録の取消も確認してください。")
                                             st.rerun()
 
-                                        if compact_calendar_mode:
-                                            with st.expander("操作", expanded=False):
-                                                if st.button(
-                                                    btn_label,
-                                                    key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
-                                                    use_container_width=True,
-                                                ):
-                                                    _pick_current_monthly_calendar_item()
+                                        # d273:
+                                        # カレンダー内は「予定を選択するだけ」にする。
+                                        # 取消線・解除・削除などの修正操作は、右/左の操作パネルへ集約して誤操作を減らす。
+                                        if st.button(
+                                            btn_label,
+                                            key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
+                                            use_container_width=True,
+                                        ):
+                                            _pick_current_monthly_calendar_item()
 
-                                                if override_status == "キャンセル":
-                                                    if st.button(
-                                                        "解除",
-                                                        key=f"monthly_calendar_uncancel_{target_year}_{target_month}_{row_idx}",
-                                                        use_container_width=True,
-                                                        help="登録ミスなどで入れたキャンセル行だけを削除し、元の予定を復活させます。",
-                                                    ):
-                                                        _uncancel_current_monthly_calendar_item()
-                                                else:
-                                                    unlock_attended = True
-                                                    if attendance_locked:
-                                                        st.caption("🔒出席済")
-                                                        unlock_attended = st.checkbox(
-                                                            "修正",
-                                                            key=f"monthly_calendar_unlock_attended_{target_year}_{target_month}_{row_idx}",
-                                                            help="出席登録済みの予定です。登録ミスを修正する場合だけチェックしてください。",
-                                                        )
-                                                        if not unlock_attended:
-                                                            st.button(
-                                                                "取消",
-                                                                key=f"monthly_calendar_cancel_locked_{target_year}_{target_month}_{row_idx}",
-                                                                use_container_width=True,
-                                                                disabled=True,
-                                                                help="出席済みのためロック中です。修正する場合は上の『修正』をチェックしてください。",
-                                                            )
-                                                    if unlock_attended:
-                                                        if st.button(
-                                                            "取消",
-                                                            key=f"monthly_calendar_cancel_{target_year}_{target_month}_{row_idx}",
-                                                            use_container_width=True,
-                                                            help="出席済みの予定を取り消す場合は、事実確認してから操作してください。" if attendance_locked else None,
-                                                        ):
-                                                            _cancel_current_monthly_calendar_item()
-                                        else:
-                                            _btn_col1, _btn_col2 = st.columns([2, 1])
-                                            with _btn_col1:
-                                                if st.button(
-                                                    btn_label,
-                                                    key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
-                                                    use_container_width=True,
-                                                ):
-                                                    _pick_current_monthly_calendar_item()
-                                            with _btn_col2:
-                                                if override_status == "キャンセル":
-                                                    if st.button(
-                                                        "解除",
-                                                        key=f"monthly_calendar_uncancel_{target_year}_{target_month}_{row_idx}",
-                                                        use_container_width=True,
-                                                        help="登録ミスなどで入れたキャンセル行だけを削除し、元の予定を復活させます。",
-                                                    ):
-                                                        _uncancel_current_monthly_calendar_item()
-                                                else:
-                                                    unlock_attended = True
-                                                    if attendance_locked:
-                                                        st.caption("🔒出席済")
-                                                        unlock_attended = st.checkbox(
-                                                            "修正",
-                                                            key=f"monthly_calendar_unlock_attended_{target_year}_{target_month}_{row_idx}",
-                                                            help="出席登録済みの予定です。登録ミスを修正する場合だけチェックしてください。",
-                                                        )
-                                                        if not unlock_attended:
-                                                            st.button(
-                                                                "取消",
-                                                                key=f"monthly_calendar_cancel_locked_{target_year}_{target_month}_{row_idx}",
-                                                                use_container_width=True,
-                                                                disabled=True,
-                                                                help="出席済みのためロック中です。修正する場合は上の『修正』をチェックしてください。",
-                                                            )
-
-                                                    if unlock_attended:
-                                                        if st.button(
-                                                            "取消",
-                                                            key=f"monthly_calendar_cancel_{target_year}_{target_month}_{row_idx}",
-                                                            use_container_width=True,
-                                                            help="出席済みの予定を取り消す場合は、事実確認してから操作してください。" if attendance_locked else None,
-                                                        ):
-                                                            _cancel_current_monthly_calendar_item()
 
             # =====================================================
             # 📊 月スケジュール 回数チェック（保存済み予定ベース）
@@ -9796,7 +9720,7 @@ elif page == "管理（入力）":
             # カレンダーを確認しながら、操作のたびに大きくスクロールしなくて済むようにする。
             # =====================================================
             st.markdown("### 🛠 操作")
-            st.caption("カレンダーで選択した予定をここで修正・削除できます。")
+            st.caption("カレンダーで選択した予定をここで変更・取消線・削除できます。カレンダー内は選択だけに整理しています。")
             with st.expander("追加・修正・削除", expanded=True):
                 st.caption("カレンダーの予定を押すと、ここに選択中の予定が表示されます。")
                 st.caption("理由区分の ↑ は月回数に含める、− は月回数に含めない、という意味です。")
@@ -10019,11 +9943,47 @@ elif page == "管理（入力）":
                         key=f"monthly_sidebar_update_note_{target_year}_{target_month}_{selected_idx}",
                     )
 
-                    col_update, col_delete = st.columns(2)
+                    # d273:
+                    # 「登録ミスの修正」と「実際の予定変更・振替」を分ける。
+                    # チェックOFF：元の予定を直接修正する（登録ミス修正）
+                    # チェックON ：元の予定は取消線で残し、変更後予定を追加する（振替・予定変更）
+                    keep_original_as_cancelled = st.checkbox(
+                        "元の予定を取消線で残す（振替・予定変更）",
+                        value=False,
+                        key=f"monthly_sidebar_keep_original_cancelled_{target_year}_{target_month}_{selected_idx}",
+                        help="ONにすると、選択中の元予定に取消線を残し、変更後の日付・コマに新しい予定を追加します。OFFなら登録ミス修正として、元予定自体を書き換えます。",
+                    )
+                    if keep_original_as_cancelled:
+                        st.caption("ON：元予定は取消線で残り、変更後予定が追加されます。登録ミスではなく、実際の予定変更・振替向けです。")
+                    else:
+                        st.caption("OFF：登録ミス修正として、選択中の予定自体を書き換えます。取消線は残りません。")
+
+                    selected_has_cancel_override = False
+                    try:
+                        _ov_check = schedule_overrides.copy()
+                        if not _ov_check.empty:
+                            for _c in ["student_id", "date", "slot", "action"]:
+                                if _c not in _ov_check.columns:
+                                    _ov_check[_c] = ""
+                                _ov_check[_c] = _ov_check[_c].fillna("").astype(str).str.strip()
+                            _ov_check["_slot_norm"] = _ov_check["slot"].map(normalize_slot)
+                            _ov_check["_action_norm"] = _ov_check["action"].map(normalize_action_value)
+                            selected_has_cancel_override = bool(
+                                (
+                                    (_ov_check["student_id"].astype(str).str.strip() == str(selected_sid).strip())
+                                    & (_ov_check["date"].astype(str).str.strip() == str(selected_date_value))
+                                    & (_ov_check["_slot_norm"].astype(str).str.strip() == normalize_slot(selected_slot))
+                                    & (_ov_check["_action_norm"].astype(str).str.strip() == "キャンセル")
+                                ).any()
+                            )
+                    except Exception:
+                        selected_has_cancel_override = False
+
+                    col_update, col_cancel, col_delete = st.columns([1.4, 1.4, 1.0])
 
                     with col_update:
                         if st.button(
-                            "💾 修正",
+                            "💾 変更を保存",
                             key=f"monthly_sidebar_update_button_{target_year}_{target_month}_{selected_idx}",
                             disabled=not selected_can_edit,
                             help="出席済みのためロック中です。修正する場合は『出席済みだけど修正する』をチェックしてください。" if not selected_can_edit else None,
@@ -10034,31 +9994,118 @@ elif page == "管理（入力）":
                                     updated_df[c] = ""
                             updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
 
-                            updated_df.loc[selected_idx, "date"] = new_date.isoformat()
-                            updated_df.loc[selected_idx, "slot"] = normalize_slot(new_slot)
-                            updated_df.loc[selected_idx, "session_type"] = str(new_type).strip()
-                            updated_df.loc[selected_idx, "reason"] = str(new_reason).strip() or "通常"
-                            updated_df.loc[selected_idx, "note"] = str(new_note).strip()
-                            updated_df.loc[selected_idx, "source"] = "カレンダー選択から修正"
+                            if keep_original_as_cancelled:
+                                # 元の予定は残したまま、schedule_overridesで取消線を付ける
+                                ov2 = upsert_schedule_override_row(
+                                    schedule_overrides,
+                                    student_id=selected_sid,
+                                    d=selected_date_value,
+                                    slot=selected_slot,
+                                    action="キャンセル",
+                                    note="予定変更・振替のため元予定を取消線で残す",
+                                )
+                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
 
-                            updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
-                            write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
-                            st.success("月スケジュールを修正しました。")
+                                seat2 = remove_seat_assignment_for_plan(
+                                    seat_assignments,
+                                    d=selected_date_value,
+                                    student_id=selected_sid,
+                                    slot=selected_slot,
+                                )
+                                write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
+
+                                # 変更後の予定は新規追加する
+                                new_row = {
+                                    "date": new_date.isoformat(),
+                                    "student_id": str(selected_sid).strip(),
+                                    "slot": normalize_slot(new_slot),
+                                    "session_type": str(new_type).strip(),
+                                    "reason": str(new_reason).strip() or "通常",
+                                    "note": str(new_note).strip(),
+                                    "source": "サイドバー変更（元予定取消線あり）",
+                                }
+                                updated_df = pd.concat(
+                                    [updated_df, pd.DataFrame([new_row], columns=MONTHLY_SCHEDULE_COLS)],
+                                    ignore_index=True,
+                                )
+                                updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
+                                write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
+
+                                st.success("元の予定に取消線を残し、変更後の予定を追加しました。")
+                            else:
+                                # 登録ミス修正として、元の予定自体を書き換える
+                                updated_df.loc[selected_idx, "date"] = new_date.isoformat()
+                                updated_df.loc[selected_idx, "slot"] = normalize_slot(new_slot)
+                                updated_df.loc[selected_idx, "session_type"] = str(new_type).strip()
+                                updated_df.loc[selected_idx, "reason"] = str(new_reason).strip() or "通常"
+                                updated_df.loc[selected_idx, "note"] = str(new_note).strip()
+                                updated_df.loc[selected_idx, "source"] = "カレンダー選択から修正"
+
+                                updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
+                                write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
+                                st.success("月スケジュールを修正しました。取消線は残していません。")
+
                             st.rerun()
+
+                    with col_cancel:
+                        if selected_has_cancel_override:
+                            if st.button(
+                                "↩ 取消線を解除",
+                                key=f"monthly_sidebar_uncancel_button_{target_year}_{target_month}_{selected_idx}",
+                                disabled=not selected_can_edit,
+                                help="この予定についている取消線だけを解除します。座席は必要に応じて再登録してください。" if selected_can_edit else "出席済みのためロック中です。",
+                            ):
+                                ov2 = remove_schedule_override_rows(
+                                    schedule_overrides,
+                                    student_id=selected_sid,
+                                    d=selected_date_value,
+                                    slot=selected_slot,
+                                    action="キャンセル",
+                                )
+                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                                st.success("取消線を解除しました。元の予定を復活させます。")
+                                st.caption("※ 座席を空席にしていた場合、座席は必要に応じて再登録してください。")
+                                st.rerun()
+                        else:
+                            if st.button(
+                                "↩ 取消線のみ",
+                                key=f"monthly_sidebar_cancel_only_button_{target_year}_{target_month}_{selected_idx}",
+                                disabled=not selected_can_edit,
+                                help="振替先が未定の時など、選択中の予定に取消線だけを付けます。予定データ自体は残ります。" if selected_can_edit else "出席済みのためロック中です。",
+                            ):
+                                ov2 = upsert_schedule_override_row(
+                                    schedule_overrides,
+                                    student_id=selected_sid,
+                                    d=selected_date_value,
+                                    slot=selected_slot,
+                                    action="キャンセル",
+                                    note="サイドバー操作：取消線のみ",
+                                )
+                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+
+                                seat2 = remove_seat_assignment_for_plan(
+                                    seat_assignments,
+                                    d=selected_date_value,
+                                    student_id=selected_sid,
+                                    slot=selected_slot,
+                                )
+                                write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
+
+                                st.success("選択中の予定に取消線を付けました。予定データ自体は残っています。")
+                                st.rerun()
 
                     with col_delete:
                         if st.button(
                             "🗑 削除",
                             key=f"monthly_sidebar_delete_button_{target_year}_{target_month}_{selected_idx}",
                             disabled=not selected_can_edit,
-                            help="削除＝登録ミスや月回数調整として予定自体を消します。取消線を残したい場合はカレンダー側の取消を使います。" if selected_can_edit else "出席済みのためロック中です。削除する場合は『出席済みだけど修正する』をチェックしてください。",
+                            help="削除＝登録ミスや月回数調整として予定自体を完全に消します。取消線を残したい場合は『取消線のみ』を使います。" if selected_can_edit else "出席済みのためロック中です。削除する場合は『出席済みだけど修正する』をチェックしてください。",
                         ):
                             updated_df = monthly_schedule.copy()
                             updated_df = updated_df.drop(index=selected_idx, errors="ignore")
                             updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
                             write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
 
-                            # d231:
                             # 月スケジュール操作の「削除」は、登録ミス・月2回調整などのための完全削除。
                             # 同じ date × student_id × slot の schedule_overrides が残っていると、
                             # カレンダーに取消線だけが残って混乱するため、関連例外も削除する。
@@ -10074,8 +10121,9 @@ elif page == "管理（入力）":
                             st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
                             st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
 
-                            st.success("月スケジュールから削除しました。関連する例外行も整理したため、取消線表示には残りません。")
+                            st.success("月スケジュールから完全削除しました。関連する取消線・例外行も整理しました。")
                             st.rerun()
+
 
         # d228: カレンダー操作が主になったため、1件ずつ編集する古いUIは通常非表示。
         show_legacy_monthly_edit = st.checkbox(
