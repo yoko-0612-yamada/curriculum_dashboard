@@ -9036,9 +9036,9 @@ elif page == "管理（入力）":
                 _save_ui_pref_bool(_compact_pref_key, bool(compact_calendar_mode))
 
             if compact_calendar_mode:
-                st.caption("コンパクト表示中：予定の操作は、各予定カード下の『操作』を開いて行います。")
+                st.caption("コンパクト表示中：カレンダー内は予定を選択するだけです。変更・取消線・削除は操作パネルで行います。")
             else:
-                st.caption("予定ボタンを押すと左の操作パネルに反映されます。取消＝取消線を残す、解除＝取消線を戻す、削除＝予定を完全削除です。")
+                st.caption("予定ボタンを押すと操作パネルに反映されます。変更・取消線・削除は操作パネルで行います。")
 
             # d242:
             # 土日など予定が多い月はカレンダーが長くなるため、週ごとに折りたたむ。
@@ -9076,6 +9076,12 @@ elif page == "管理（入力）":
                 week_lesson_count = 0
                 week_self_count = 0
                 week_selected_count = 0
+                # d274:
+                # 強調中の生徒について、週タブを開かなくても「授業か自習か」が分かるようにする。
+                # 例：★山田さん 授業1 / 自習1
+                week_selected_lesson_count = 0
+                week_selected_self_count = 0
+
                 for _wd in week_target_days:
                     _dr = rows_by_date.get(_wd, pd.DataFrame())
                     if _dr is None or _dr.empty:
@@ -9086,14 +9092,28 @@ elif page == "管理（入力）":
                     _types = _tmp["session_type"].fillna("").astype(str).str.strip()
                     week_lesson_count += int((_types == "授業").sum())
                     week_self_count += int((_types == "自習").sum())
+
                     if selected_highlight_sid:
-                        week_selected_count += int((_tmp["student_id"].astype(str).str.strip() == selected_highlight_sid).sum())
+                        _selected_week_rows = _tmp[
+                            _tmp["student_id"].astype(str).str.strip() == selected_highlight_sid
+                        ].copy()
+                        week_selected_count += int(len(_selected_week_rows))
+                        if not _selected_week_rows.empty:
+                            _selected_types = _selected_week_rows["session_type"].fillna("").astype(str).str.strip()
+                            week_selected_lesson_count += int((_selected_types == "授業").sum())
+                            week_selected_self_count += int((_selected_types == "自習").sum())
 
                 week_label = f"第{week_no}週（{week_start_label}〜{week_end_label}）｜授業{week_lesson_count} / 自習{week_self_count}"
                 if week_has_today:
                     week_label = "📍 " + week_label + "｜今日"
                 if selected_highlight_sid and week_selected_count > 0:
-                    week_label += f"｜★{selected_highlight_name} {week_selected_count}件"
+                    _selected_type_parts = []
+                    if week_selected_lesson_count > 0:
+                        _selected_type_parts.append(f"授業{week_selected_lesson_count}")
+                    if week_selected_self_count > 0:
+                        _selected_type_parts.append(f"自習{week_selected_self_count}")
+                    _selected_type_label = " / ".join(_selected_type_parts) if _selected_type_parts else f"{week_selected_count}件"
+                    week_label += f"｜★{selected_highlight_name} {_selected_type_label}"
 
                 with st.expander(week_label, expanded=bool(st.session_state.get(week_key, False))):
                     day_cols = st.columns(7)
@@ -9943,18 +9963,33 @@ elif page == "管理（入力）":
                         key=f"monthly_sidebar_update_note_{target_year}_{target_month}_{selected_idx}",
                     )
 
-                    # d273:
-                    # 「登録ミスの修正」と「実際の予定変更・振替」を分ける。
-                    # チェックOFF：元の予定を直接修正する（登録ミス修正）
-                    # チェックON ：元の予定は取消線で残し、変更後予定を追加する（振替・予定変更）
-                    keep_original_as_cancelled = st.checkbox(
-                        "元の予定を取消線で残す（振替・予定変更）",
-                        value=False,
-                        key=f"monthly_sidebar_keep_original_cancelled_{target_year}_{target_month}_{selected_idx}",
-                        help="ONにすると、選択中の元予定に取消線を残し、変更後の日付・コマに新しい予定を追加します。OFFなら登録ミス修正として、元予定自体を書き換えます。",
+                    # d275:
+                    # 「選択中の予定を取消線にして残す」という意味へ文言を変更する。
+                    # ただし、取消線は student_id × date × slot で判定しているため、
+                    # 変更後も同じ日付・同じコマの場合、新しく追加した予定にも取消線が当たってしまう。
+                    # そのため、同じ日付・同じコマではチェックを無効化し、種別だけの変更は直接修正に寄せる。
+                    same_date_slot_update = (
+                        str(new_date) == str(selected_date_value)
+                        and normalize_slot(new_slot) == normalize_slot(selected_slot)
                     )
-                    if keep_original_as_cancelled:
-                        st.caption("ON：元予定は取消線で残り、変更後予定が追加されます。登録ミスではなく、実際の予定変更・振替向けです。")
+                    keep_original_key = f"monthly_sidebar_keep_original_cancelled_{target_year}_{target_month}_{selected_idx}"
+                    if same_date_slot_update:
+                        st.session_state[keep_original_key] = False
+
+                    keep_original_as_cancelled = st.checkbox(
+                        "選択中の予定を取消線にして残す（振替・予定変更）",
+                        value=False,
+                        key=keep_original_key,
+                        disabled=same_date_slot_update,
+                        help=(
+                            "ONにすると、選択中の予定に取消線を残し、変更後の日付・コマに新しい予定を追加します。"
+                            "同じ日付・同じコマでは、新しい予定にも取消線が当たるため使えません。"
+                        ),
+                    )
+                    if same_date_slot_update:
+                        st.caption("同じ日付・同じコマです。種別だけ変更する場合は、取消線を残さず直接修正します。")
+                    elif keep_original_as_cancelled:
+                        st.caption("ON：選択中の予定を取消線にして残し、変更後の予定を追加します。実際の振替・予定変更向けです。")
                     else:
                         st.caption("OFF：登録ミス修正として、選択中の予定自体を書き換えます。取消線は残りません。")
 
@@ -9994,15 +10029,19 @@ elif page == "管理（入力）":
                                     updated_df[c] = ""
                             updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
 
+                            if keep_original_as_cancelled and same_date_slot_update:
+                                st.error("同じ日付・同じコマでは、取消線を残す変更はできません。種別だけ変更する場合は、チェックOFFで直接修正してください。")
+                                st.stop()
+
                             if keep_original_as_cancelled:
-                                # 元の予定は残したまま、schedule_overridesで取消線を付ける
+                                # 選択中の予定は残したまま、schedule_overridesで取消線を付ける
                                 ov2 = upsert_schedule_override_row(
                                     schedule_overrides,
                                     student_id=selected_sid,
                                     d=selected_date_value,
                                     slot=selected_slot,
                                     action="キャンセル",
-                                    note="予定変更・振替のため元予定を取消線で残す",
+                                    note="予定変更・振替のため選択中の予定を取消線で残す",
                                 )
                                 write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
 
@@ -10022,7 +10061,7 @@ elif page == "管理（入力）":
                                     "session_type": str(new_type).strip(),
                                     "reason": str(new_reason).strip() or "通常",
                                     "note": str(new_note).strip(),
-                                    "source": "サイドバー変更（元予定取消線あり）",
+                                    "source": "サイドバー変更（選択中予定取消線あり）",
                                 }
                                 updated_df = pd.concat(
                                     [updated_df, pd.DataFrame([new_row], columns=MONTHLY_SCHEDULE_COLS)],
@@ -10031,7 +10070,7 @@ elif page == "管理（入力）":
                                 updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
                                 write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
 
-                                st.success("元の予定に取消線を残し、変更後の予定を追加しました。")
+                                st.success("選択中の予定に取消線を残し、変更後の予定を追加しました。")
                             else:
                                 # 登録ミス修正として、元の予定自体を書き換える
                                 updated_df.loc[selected_idx, "date"] = new_date.isoformat()
