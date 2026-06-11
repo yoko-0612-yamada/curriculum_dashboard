@@ -8332,11 +8332,11 @@ elif page == "管理（入力）":
                             st.rerun()
 
     # ---------------------------
-    # 🗓️ 月スケジュール（monthly_schedule.csv） STEP1
+    # 🗓️ 月スケジュール（monthly_schedule.csv）
     # ---------------------------
     with sub_month:
-        st.subheader("🗓️ 月スケジュール（試験版）")
-        st.caption("固定スケジュール（週次）から1か月分の予定を生成し、月の確定予定として保存します。保存済み予定の回数チェックもできます。")
+        st.subheader("🗓️ 月スケジュール")
+        st.caption("保存済みの月スケジュールを、カレンダー中心に確認・変更します。固定スケジュールからの生成機能は整理候補として下に残しています。")
 
         today_for_month = dt.date.today()
         col_m1, col_m2 = st.columns(2)
@@ -8367,7 +8367,7 @@ elif page == "管理（入力）":
         else:
             month_end = dt.date(target_year, target_month + 1, 1) - dt.timedelta(days=1)
 
-        st.info("固定スケジュールから月予定を生成し、保存済み月スケジュールの授業回数をチェックできます。今後はカレンダー中心の操作を基本にします。")
+        st.info("月スケジュールは、回数チェック → カレンダー確認 → 操作パネルで修正、の流れで使います。")
 
         # 在籍中の生徒だけ対象にする
         active_student_ids_for_month = set()
@@ -8449,117 +8449,6 @@ elif page == "管理（入力）":
                 current_day += dt.timedelta(days=1)
 
         generated_df = pd.DataFrame(generated_rows, columns=MONTHLY_SCHEDULE_COLS)
-
-        with st.expander("📋 生成プレビュー・回数チェック", expanded=False):
-            st.markdown("### 生成プレビュー")
-            if generated_df.empty:
-                st.warning("生成できる月予定がありません。固定スケジュール（週次）を確認してください。")
-            else:
-                preview_df = generated_df.copy()
-                preview_df["生徒"] = preview_df["student_id"].map(student_name_map_month).fillna(preview_df["student_id"])
-                preview_df = preview_df.rename(columns={
-                    "date": "日付",
-                    "slot": "コマ",
-                    "session_type": "種別",
-                    "reason": "理由区分",
-                    "note": "メモ",
-                    "source": "作成元",
-                })
-                show_cols = ["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]
-                st.dataframe(
-                    preview_df[show_cols],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.markdown("### 回数チェック（授業のみ）")
-                lesson_df = generated_df[
-                    generated_df["session_type"].astype(str).str.strip() == "授業"
-                ].copy()
-                count_map = lesson_df["student_id"].astype(str).str.strip().value_counts().to_dict()
-
-                count_rows = []
-                for sid, current_count in count_map.items():
-                    target_raw = str(student_target_count_map.get(sid, "")).strip()
-                    try:
-                        target_num = int(float(target_raw)) if target_raw else 0
-                    except Exception:
-                        target_num = 0
-
-                    if target_num <= 0:
-                        check_label = "月回数未設定"
-                    elif current_count < target_num:
-                        check_label = f"不足 あと{target_num - current_count}回"
-                    elif current_count == target_num:
-                        check_label = "OK"
-                    else:
-                        check_label = f"超過 +{current_count - target_num}回"
-
-                    count_rows.append({
-                        "生徒": student_name_map_month.get(sid, sid),
-                        "予定回数": current_count,
-                        "月回数": target_raw,
-                        "判定": check_label,
-                    })
-
-                if count_rows:
-                    count_df = pd.DataFrame(count_rows).sort_values(["判定", "生徒"])
-                    st.dataframe(count_df, use_container_width=True, hide_index=True)
-                else:
-                    st.info("授業予定がありません。")
-
-                st.warning("反映すると、同じ年月の monthly_schedule.csv 既存データを置き換えます。")
-                if st.button("📅 固定スケジュールをカレンダーに反映", key=f"save_monthly_schedule_{target_year}_{target_month}"):
-                    monthly_existing = monthly_schedule.copy()
-                    for c in MONTHLY_SCHEDULE_COLS:
-                        if c not in monthly_existing.columns:
-                            monthly_existing[c] = ""
-                    monthly_existing = monthly_existing[MONTHLY_SCHEDULE_COLS].fillna("")
-                    monthly_existing["date_dt"] = pd.to_datetime(monthly_existing["date"], errors="coerce")
-
-                    keep_df = monthly_existing[
-                        ~(
-                            (monthly_existing["date_dt"].dt.year == target_year)
-                            & (monthly_existing["date_dt"].dt.month == target_month)
-                        )
-                    ].drop(columns=["date_dt"], errors="ignore").copy()
-
-                    save_df = pd.concat([keep_df, generated_df], ignore_index=True)
-                    save_df = save_df[MONTHLY_SCHEDULE_COLS].fillna("")
-                    write_csv_atomic(save_df, MONTHLY_SCHEDULE_CSV)
-                    st.success(f"{target_year}年{target_month}月の固定スケジュールをカレンダーに反映しました。")
-                    st.rerun()
-
-        with st.expander("📋 保存済み月スケジュールを確認", expanded=False):
-            if monthly_schedule.empty:
-                st.info("まだ月スケジュールは保存されていません。")
-            else:
-                saved_month = monthly_schedule.copy()
-                saved_month["date_dt"] = pd.to_datetime(saved_month["date"], errors="coerce")
-                saved_month = saved_month[
-                    (saved_month["date_dt"].dt.year == target_year)
-                    & (saved_month["date_dt"].dt.month == target_month)
-                ].copy()
-                saved_month = saved_month.drop(columns=["date_dt"], errors="ignore")
-
-                if saved_month.empty:
-                    st.info("この年月の保存済み月スケジュールはありません。")
-                else:
-                    saved_month["生徒"] = saved_month["student_id"].map(student_name_map_month).fillna(saved_month["student_id"])
-                    saved_month = saved_month.rename(columns={
-                        "date": "日付",
-                        "slot": "コマ",
-                        "session_type": "種別",
-                        "reason": "理由区分",
-                        "note": "メモ",
-                        "source": "作成元",
-                    })
-                    st.dataframe(
-                        saved_month[["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
 
         # 月スケジュール編集・カレンダー共通の候補
         monthly_student_options = sorted(list(active_student_ids_for_month))
@@ -8825,13 +8714,415 @@ elif page == "管理（入力）":
             # =====================================================
             # d227:
             # 古い「保存済み月スケジュールの回数チェック」は、
-            # 下の「月スケジュール回数チェック」と役割が重複していたため非表示化。
+            # 下の「予定回数チェック（出欠実績は含みません）」と役割が重複していたため非表示化。
             # 今後は、下の1つだけを見ればよい。
             # =====================================================
 
             # d206: 出席済みの予定は、月カレンダー上で誤操作しにくいように軽くロックする。
             # 完全ロックではなく、各所の「修正モード」で解除できる。
             monthly_attended_keys = build_attended_student_date_keys(load_attendance_log())
+
+            # =====================================================
+            # d276: 予定回数チェック（出欠実績は含みません）を、カレンダーより上へ移動。
+            # 📊 月スケジュール 回数チェック（保存済み予定ベース）
+            # =====================================================
+            with st.expander("📊 予定回数チェック（出欠実績は含みません）", expanded=False):
+                st.caption("保存済みの月スケジュールに当日例外（追加・取消・変更）を重ねて、予定上の授業回数だけを月回数と比較します。出欠登録の実績回数はここには含みません。自習・前月振替・回数外は月回数に含めません。今月振替・2コマ連続の通常授業は月回数に含めます。")
+                st.info("このチェックは予定表ベースです。実際に出席・欠席した回数は attendance_log.csv ではなく、ここでは集計していません。過去月の実績確認は今後別枠で追加予定です。")
+
+                # d203: 回数チェックもカレンダーと同じ有効予定を使う。
+                # これにより、古い「追加」例外が通常予定と二重カウントされる事故を防ぐ。
+                check_month = calendar_month.copy()
+                if not check_month.empty:
+                    if "override_status" not in check_month.columns:
+                        check_month["override_status"] = ""
+                    check_month = check_month[
+                        check_month["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
+                    ].copy()
+
+                if check_month.empty:
+                    st.info("この年月の保存済み月スケジュールがないため、回数チェックはまだできません。")
+                else:
+                    # 授業だけを数える。ただし、意図的に「今月の契約回数とは別」と分かる区分は外す。
+                    # d227:
+                    # 2コマ連続の通常授業は「特別追加」とメモされていても月回数に含める。
+                    # 回数外にしたい場合は、今後はメモや区分に「回数外」または「月回数外」と入れて区別する。
+                    count_excluded_reasons = {"前月振替", "回数外", "月回数外"}
+                    _reason_for_count = check_month["reason"].fillna("通常").astype(str).str.strip()
+                    _note_for_count = check_month["note"].fillna("").astype(str).str.strip() if "note" in check_month.columns else pd.Series([""] * len(check_month), index=check_month.index)
+                    _is_count_excluded = (
+                        _reason_for_count.isin(count_excluded_reasons)
+                        | _note_for_count.str.contains("回数外|月回数外", regex=True, na=False)
+                    )
+                    lesson_month = check_month[
+                        (check_month["session_type"].astype(str).str.strip() == "授業")
+                        & (~_is_count_excluded)
+                    ].copy()
+
+                    lesson_count_map = (
+                        lesson_month["student_id"].astype(str).str.strip().value_counts().to_dict()
+                        if not lesson_month.empty and "student_id" in lesson_month.columns
+                        else {}
+                    )
+
+                    count_rows = []
+
+                    for sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
+                        name = student_name_map_month.get(sid, sid)
+                        current_count = int(lesson_count_map.get(sid, 0))
+                        target_raw = str(student_target_count_map.get(sid, "")).strip()
+
+                        try:
+                            target_num = int(float(target_raw)) if target_raw else 0
+                        except Exception:
+                            target_num = 0
+
+                        if target_num <= 0:
+                            status = "月回数未設定"
+                            diff = ""
+                            sort_key = 3
+                        elif current_count < target_num:
+                            status = "少ない"
+                            diff = f"あと{target_num - current_count}回"
+                            sort_key = 0
+                        elif current_count == target_num:
+                            status = "OK"
+                            diff = ""
+                            sort_key = 2
+                        else:
+                            status = "多い"
+                            diff = f"+{current_count - target_num}回"
+                            sort_key = 1
+
+                        sid_rows = check_month[
+                            check_month["student_id"].astype(str).str.strip() == str(sid).strip()
+                        ].copy()
+                        reason_values = []
+                        if not sid_rows.empty and "reason" in sid_rows.columns:
+                            reason_values = [
+                                x for x in sid_rows["reason"].fillna("").astype(str).str.strip().tolist()
+                                if x and x != "通常"
+                            ]
+                        reason_summary = "、".join(sorted(set(monthly_reason_summary_label(x) for x in reason_values)))
+
+                        count_rows.append({
+                            "生徒": name,
+                            "予定回数": current_count,
+                            "月回数": target_raw if target_raw else "未設定",
+                            "判定": status,
+                            "差分": diff,
+                            "例外区分": reason_summary,
+                            "_sort": sort_key,
+                        })
+
+                    if count_rows:
+                        count_df = pd.DataFrame(count_rows).sort_values(["_sort", "生徒"]).drop(columns=["_sort"])
+
+                        def _style_month_count(row):
+                            status = str(row.get("判定", "")).strip()
+                            if status == "少ない":
+                                return ["background-color:#fff3cd"] * len(row)
+                            if status == "多い":
+                                return ["background-color:#ffe5cc"] * len(row)
+                            if status == "OK":
+                                return ["background-color:#e9f8ee"] * len(row)
+                            return ["background-color:#f3f3f3"] * len(row)
+
+                        shortage_count = int((count_df["判定"] == "少ない").sum())
+                        over_count = int((count_df["判定"] == "多い").sum())
+                        unset_count = int((count_df["判定"] == "月回数未設定").sum())
+                        need_check_statuses = ["少ない", "多い", "月回数未設定"]
+
+                        if shortage_count or over_count or unset_count:
+                            st.warning(
+                                f"確認が必要：少ない {shortage_count}人 / 多い {over_count}人 / 月回数未設定 {unset_count}人"
+                            )
+                        else:
+                            st.success("月回数と授業予定回数は大きくズレていません。")
+
+                        only_need_check2 = st.checkbox(
+                            "確認が必要な生徒だけ表示",
+                            value=True,
+                            key=f"monthly_count_only_ng_{target_year}_{target_month}",
+                            help="予定回数ベースで、少ない・多い・月回数未設定だけを表示します。OFFにするとOKの生徒も表示します。",
+                        )
+
+                        st.caption("※ ↑の区分は月回数に含めます。−の区分は月回数に含めません。今月振替・2コマ連続授業はカウント、前月振替・回数外は除外します。")
+
+                        display_count_df = count_df.copy()
+                        if only_need_check2:
+                            display_count_df = display_count_df[
+                                display_count_df["判定"].isin(need_check_statuses)
+                            ].copy()
+
+                        if display_count_df.empty:
+                            st.success("確認が必要な生徒はいません。")
+                        else:
+                            st.dataframe(
+                                display_count_df.style.apply(_style_month_count, axis=1),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+
+                        if shortage_count or over_count:
+                            st.caption("※ 前月振替や休み予定がある場合は、メモで補足すると後で分かりやすいです。")
+
+                        # =====================================================
+                        # d257:
+                        # 前月・今月・来月の簡易確認
+                        # -----------------------------------------------------
+                        # いきなり月跨ぎ精算機能にはせず、前後月の不足/超過と
+                        # 振替・回数外などの理由区分を並べて確認しやすくする。
+                        # 例：前月が少ない、今月が多い → 前月振替/今月振替の整合性確認に使う。
+                        # =====================================================
+                        with st.expander("↔ 前月・今月・来月の簡易確認", expanded=False):
+                            st.caption("月跨ぎ振替の確認用です。自動精算ではなく、前月・今月・来月の予定回数と差分を並べて確認します。出欠実績ではなく予定表ベースです。")
+
+                            def _month_add(_year, _month, _offset):
+                                _base = pd.Timestamp(year=int(_year), month=int(_month), day=1)
+                                _m = _base + pd.DateOffset(months=int(_offset))
+                                return int(_m.year), int(_m.month)
+
+                            def _month_label(_year, _month):
+                                return f"{int(_year)}年{int(_month)}月"
+
+                            def _status_and_diff(_count, _target_raw):
+                                _target_raw = str(_target_raw).strip()
+                                try:
+                                    _target_num = int(float(_target_raw)) if _target_raw else 0
+                                except Exception:
+                                    _target_num = 0
+
+                                if _target_num <= 0:
+                                    return "月回数未設定", ""
+                                if int(_count) < _target_num:
+                                    return "少ない", f"−{_target_num - int(_count)}"
+                                if int(_count) == _target_num:
+                                    return "OK", ""
+                                return "多い", f"+{int(_count) - _target_num}"
+
+                            def _effective_month_plan_for_count(_year, _month):
+                                _start = pd.Timestamp(year=int(_year), month=int(_month), day=1)
+                                _end = _start + pd.offsets.MonthEnd(0)
+                                _rows = []
+
+                                for _day_ts in pd.date_range(_start.date(), _end.date(), freq="D"):
+                                    _day = _day_ts.date()
+                                    _plan = build_daily_plan_for_date(
+                                        _day,
+                                        students,
+                                        _empty_weekly_for_calendar,
+                                        monthly_schedule,
+                                        schedule_overrides,
+                                        timeslots,
+                                        include_inactive=False,
+                                    )
+                                    if _plan is None or _plan.empty:
+                                        continue
+
+                                    _plan = _plan.copy()
+                                    for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
+                                        if _c not in _plan.columns:
+                                            _plan[_c] = ""
+                                        _plan[_c] = _plan[_c].fillna("").astype(str).str.strip()
+                                    _plan["date"] = _day.isoformat()
+                                    _rows.append(_plan)
+
+                                if not _rows:
+                                    return pd.DataFrame(columns=["date", "student_id", "slot", "session_type", "reason", "note", "override_status"])
+
+                                _df = pd.concat(_rows, ignore_index=True)
+                                for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
+                                    if _c not in _df.columns:
+                                        _df[_c] = ""
+                                    _df[_c] = _df[_c].fillna("").astype(str).str.strip()
+
+                                _df = _df[
+                                    _df["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
+                                ].copy()
+                                return _df
+
+                            def _summarize_count_month(_year, _month):
+                                _df = _effective_month_plan_for_count(_year, _month)
+                                _result = {}
+
+                                if _df.empty:
+                                    return _result
+
+                                _reason = _df["reason"].fillna("通常").astype(str).str.strip()
+                                _note = _df["note"].fillna("").astype(str).str.strip() if "note" in _df.columns else pd.Series([""] * len(_df), index=_df.index)
+                                _exclude = (
+                                    _reason.isin(count_excluded_reasons)
+                                    | _note.str.contains("回数外|月回数外", regex=True, na=False)
+                                )
+
+                                _lesson = _df[
+                                    (_df["session_type"].astype(str).str.strip() == "授業")
+                                    & (~_exclude)
+                                ].copy()
+
+                                _count_map = (
+                                    _lesson["student_id"].astype(str).str.strip().value_counts().to_dict()
+                                    if not _lesson.empty and "student_id" in _lesson.columns
+                                    else {}
+                                )
+
+                                for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
+                                    _sid = str(_sid).strip()
+                                    _count = int(_count_map.get(_sid, 0))
+                                    _sid_rows = _df[_df["student_id"].astype(str).str.strip() == _sid].copy()
+
+                                    _reason_values = []
+                                    if not _sid_rows.empty and "reason" in _sid_rows.columns:
+                                        _reason_values = [
+                                            x for x in _sid_rows["reason"].fillna("").astype(str).str.strip().tolist()
+                                            if x and x != "通常"
+                                        ]
+                                    _reason_summary = "、".join(sorted(set(monthly_reason_summary_label(x) for x in _reason_values)))
+
+                                    _target_raw = str(student_target_count_map.get(_sid, "")).strip()
+                                    _status, _diff = _status_and_diff(_count, _target_raw)
+                                    _result[_sid] = {
+                                        "count": _count,
+                                        "target": _target_raw if _target_raw else "未設定",
+                                        "status": _status,
+                                        "diff": _diff,
+                                        "reason": _reason_summary,
+                                    }
+
+                                return _result
+
+                            _prev_y, _prev_m = _month_add(target_year, target_month, -1)
+                            _next_y, _next_m = _month_add(target_year, target_month, 1)
+
+                            _month_specs = [
+                                ("前月", _prev_y, _prev_m),
+                                ("今月", target_year, target_month),
+                                ("来月", _next_y, _next_m),
+                            ]
+
+                            _summaries = {
+                                _label: _summarize_count_month(_y, _m)
+                                for _label, _y, _m in _month_specs
+                            }
+
+                            _summary_pieces = []
+                            for _label, _y, _m in _month_specs:
+                                _s = _summaries.get(_label, {})
+                                _short = sum(1 for _v in _s.values() if _v.get("status") == "少ない")
+                                _over = sum(1 for _v in _s.values() if _v.get("status") == "多い")
+                                _unset = sum(1 for _v in _s.values() if _v.get("status") == "月回数未設定")
+                                _summary_pieces.append(f"{_label}（{_month_label(_y, _m)}）：少ない{_short} / 多い{_over} / 未設定{_unset}")
+                            st.info("　｜　".join(_summary_pieces))
+
+                            def _fmt_month_cell(_v):
+                                if not _v:
+                                    return "予定0 / 未確認"
+                                _count = _v.get("count", 0)
+                                _target = _v.get("target", "未設定")
+                                _status = _v.get("status", "")
+                                _diff = _v.get("diff", "")
+                                if _status == "OK":
+                                    return f"{_count}/{_target} OK"
+                                if _diff:
+                                    return f"{_count}/{_target} {_status}({_diff})"
+                                return f"{_count}/{_target} {_status}"
+
+                            compare_rows = []
+                            for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
+                                _name = student_name_map_month.get(_sid, _sid)
+                                _prev = _summaries.get("前月", {}).get(_sid, {})
+                                _curr = _summaries.get("今月", {}).get(_sid, {})
+                                _next = _summaries.get("来月", {}).get(_sid, {})
+
+                                _reasons_joined = " / ".join([
+                                    x for x in [
+                                        f"前月:{_prev.get('reason','')}" if _prev.get("reason", "") else "",
+                                        f"今月:{_curr.get('reason','')}" if _curr.get("reason", "") else "",
+                                        f"来月:{_next.get('reason','')}" if _next.get("reason", "") else "",
+                                    ] if x
+                                ])
+
+                                # d277:
+                                # 「回数ズレ」と「理由区分あり」を分けて扱う。
+                                # OKだけど今月内振替などの理由区分がある生徒は、普段は隠せるようにする。
+                                _has_count_issue = (
+                                    _prev.get("status") in ["少ない", "多い", "月回数未設定"]
+                                    or _curr.get("status") in ["少ない", "多い", "月回数未設定"]
+                                    or _next.get("status") in ["少ない", "多い", "月回数未設定"]
+                                )
+                                _has_reason = bool(_reasons_joined)
+
+                                compare_rows.append({
+                                    "生徒": _name,
+                                    f"前月({_prev_m}月)": _fmt_month_cell(_prev),
+                                    f"今月({target_month}月)": _fmt_month_cell(_curr),
+                                    f"来月({_next_m}月)": _fmt_month_cell(_next),
+                                    "理由区分メモ": _reasons_joined,
+                                    "_has_count_issue": _has_count_issue,
+                                    "_has_reason": _has_reason,
+                                })
+
+                            if compare_rows:
+                                compare_df = pd.DataFrame(compare_rows)
+
+                                # d277:
+                                # 以前は「回数ズレあり」と「理由区分あり」を1つのチェックにまとめていたため、
+                                # OKだけど理由区分がある生徒まで普段から表示されて見づらかった。
+                                # 普段は回数ズレだけ、必要な時だけ理由区分ありも表示できるように分離する。
+                                col_cross_filter1, col_cross_filter2 = st.columns(2)
+                                with col_cross_filter1:
+                                    only_count_issue_cross = st.checkbox(
+                                        "回数ズレがある生徒だけ表示",
+                                        value=True,
+                                        key=f"monthly_cross_count_only_issue_{target_year}_{target_month}",
+                                        help="予定回数ベースで、前月・今月・来月のどこかに少ない／多い／月回数未設定がある生徒だけ表示します。OFFにすると全員を表示します。",
+                                    )
+                                with col_cross_filter2:
+                                    include_reason_cross = st.checkbox(
+                                        "理由区分がある生徒も表示",
+                                        value=False,
+                                        key=f"monthly_cross_count_include_reason_{target_year}_{target_month}",
+                                        help="ONにすると、回数はOKでも前月振替・今月振替・回数外などの理由区分がある生徒も表示します。",
+                                    )
+
+                                if only_count_issue_cross:
+                                    if include_reason_cross:
+                                        compare_df = compare_df[
+                                            compare_df["_has_count_issue"] | compare_df["_has_reason"]
+                                        ].copy()
+                                    else:
+                                        compare_df = compare_df[
+                                            compare_df["_has_count_issue"]
+                                        ].copy()
+                                else:
+                                    if not include_reason_cross:
+                                        st.caption("全員表示中です。理由区分ありの生徒も含めて表示します。")
+                                    else:
+                                        st.caption("全員表示中です。理由区分も確認できます。")
+
+                                compare_df = compare_df.drop(
+                                    columns=["_has_count_issue", "_has_reason", "_need"],
+                                    errors="ignore",
+                                )
+
+                                if compare_df.empty:
+                                    if include_reason_cross:
+                                        st.success("回数ズレ・理由区分ありの生徒はいません。")
+                                    else:
+                                        st.success("回数ズレがある生徒はいません。")
+                                else:
+                                    st.dataframe(compare_df, use_container_width=True, hide_index=True)
+                                    if include_reason_cross:
+                                        st.caption("※ 回数ズレの生徒に加えて、理由区分があるOKの生徒も表示しています。")
+                                    else:
+                                        st.caption("※ 前月−1・今月+1のような回数ズレがある生徒を中心に表示しています。理由区分だけ確認したい時は右のチェックをONにしてください。")
+                            else:
+                                st.info("前月・今月・来月の比較対象がありません。")
+                    else:
+                        st.info("在籍中の生徒が見つかりません。")
+
+
 
             # d204: 月カレンダー内で、選択した生徒の予定を強調表示する。
             # 予定ボタンを押しても、上のselectboxから選んでも、同じ強調状態を見る。
@@ -9363,366 +9654,6 @@ elif page == "管理（入力）":
                                             _pick_current_monthly_calendar_item()
 
 
-            # =====================================================
-            # 📊 月スケジュール 回数チェック（保存済み予定ベース）
-            # =====================================================
-            with st.expander("📊 月スケジュール回数チェック", expanded=False):
-                st.caption("保存済みの月スケジュールに当日例外（追加・取消・変更）を重ねて、授業回数だけを月回数と比較します。自習・前月振替・回数外は月回数に含めません。今月振替・2コマ連続の通常授業は月回数に含めます。")
-
-                # d203: 回数チェックもカレンダーと同じ有効予定を使う。
-                # これにより、古い「追加」例外が通常予定と二重カウントされる事故を防ぐ。
-                check_month = calendar_month.copy()
-                if not check_month.empty:
-                    if "override_status" not in check_month.columns:
-                        check_month["override_status"] = ""
-                    check_month = check_month[
-                        check_month["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
-                    ].copy()
-
-                if check_month.empty:
-                    st.info("この年月の保存済み月スケジュールがないため、回数チェックはまだできません。")
-                else:
-                    # 授業だけを数える。ただし、意図的に「今月の契約回数とは別」と分かる区分は外す。
-                    # d227:
-                    # 2コマ連続の通常授業は「特別追加」とメモされていても月回数に含める。
-                    # 回数外にしたい場合は、今後はメモや区分に「回数外」または「月回数外」と入れて区別する。
-                    count_excluded_reasons = {"前月振替", "回数外", "月回数外"}
-                    _reason_for_count = check_month["reason"].fillna("通常").astype(str).str.strip()
-                    _note_for_count = check_month["note"].fillna("").astype(str).str.strip() if "note" in check_month.columns else pd.Series([""] * len(check_month), index=check_month.index)
-                    _is_count_excluded = (
-                        _reason_for_count.isin(count_excluded_reasons)
-                        | _note_for_count.str.contains("回数外|月回数外", regex=True, na=False)
-                    )
-                    lesson_month = check_month[
-                        (check_month["session_type"].astype(str).str.strip() == "授業")
-                        & (~_is_count_excluded)
-                    ].copy()
-
-                    lesson_count_map = (
-                        lesson_month["student_id"].astype(str).str.strip().value_counts().to_dict()
-                        if not lesson_month.empty and "student_id" in lesson_month.columns
-                        else {}
-                    )
-
-                    count_rows = []
-
-                    for sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
-                        name = student_name_map_month.get(sid, sid)
-                        current_count = int(lesson_count_map.get(sid, 0))
-                        target_raw = str(student_target_count_map.get(sid, "")).strip()
-
-                        try:
-                            target_num = int(float(target_raw)) if target_raw else 0
-                        except Exception:
-                            target_num = 0
-
-                        if target_num <= 0:
-                            status = "月回数未設定"
-                            diff = ""
-                            sort_key = 3
-                        elif current_count < target_num:
-                            status = "少ない"
-                            diff = f"あと{target_num - current_count}回"
-                            sort_key = 0
-                        elif current_count == target_num:
-                            status = "OK"
-                            diff = ""
-                            sort_key = 2
-                        else:
-                            status = "多い"
-                            diff = f"+{current_count - target_num}回"
-                            sort_key = 1
-
-                        sid_rows = check_month[
-                            check_month["student_id"].astype(str).str.strip() == str(sid).strip()
-                        ].copy()
-                        reason_values = []
-                        if not sid_rows.empty and "reason" in sid_rows.columns:
-                            reason_values = [
-                                x for x in sid_rows["reason"].fillna("").astype(str).str.strip().tolist()
-                                if x and x != "通常"
-                            ]
-                        reason_summary = "、".join(sorted(set(monthly_reason_summary_label(x) for x in reason_values)))
-
-                        count_rows.append({
-                            "生徒": name,
-                            "予定回数": current_count,
-                            "月回数": target_raw if target_raw else "未設定",
-                            "判定": status,
-                            "差分": diff,
-                            "例外区分": reason_summary,
-                            "_sort": sort_key,
-                        })
-
-                    if count_rows:
-                        count_df = pd.DataFrame(count_rows).sort_values(["_sort", "生徒"]).drop(columns=["_sort"])
-
-                        def _style_month_count(row):
-                            status = str(row.get("判定", "")).strip()
-                            if status == "少ない":
-                                return ["background-color:#fff3cd"] * len(row)
-                            if status == "多い":
-                                return ["background-color:#ffe5cc"] * len(row)
-                            if status == "OK":
-                                return ["background-color:#e9f8ee"] * len(row)
-                            return ["background-color:#f3f3f3"] * len(row)
-
-                        shortage_count = int((count_df["判定"] == "少ない").sum())
-                        over_count = int((count_df["判定"] == "多い").sum())
-                        unset_count = int((count_df["判定"] == "月回数未設定").sum())
-                        need_check_statuses = ["少ない", "多い", "月回数未設定"]
-
-                        if shortage_count or over_count or unset_count:
-                            st.warning(
-                                f"確認が必要：少ない {shortage_count}人 / 多い {over_count}人 / 月回数未設定 {unset_count}人"
-                            )
-                        else:
-                            st.success("月回数と授業予定回数は大きくズレていません。")
-
-                        only_need_check2 = st.checkbox(
-                            "確認が必要な生徒だけ表示",
-                            value=True,
-                            key=f"monthly_count_only_ng_{target_year}_{target_month}",
-                            help="少ない・多い・月回数未設定だけを表示します。OFFにするとOKの生徒も表示します。",
-                        )
-
-                        st.caption("※ ↑の区分は月回数に含めます。−の区分は月回数に含めません。今月振替・2コマ連続授業はカウント、前月振替・回数外は除外します。")
-
-                        display_count_df = count_df.copy()
-                        if only_need_check2:
-                            display_count_df = display_count_df[
-                                display_count_df["判定"].isin(need_check_statuses)
-                            ].copy()
-
-                        if display_count_df.empty:
-                            st.success("確認が必要な生徒はいません。")
-                        else:
-                            st.dataframe(
-                                display_count_df.style.apply(_style_month_count, axis=1),
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-
-                        if shortage_count or over_count:
-                            st.caption("※ 前月振替や休み予定がある場合は、メモで補足すると後で分かりやすいです。")
-
-                        # =====================================================
-                        # d257:
-                        # 前月・今月・来月の簡易確認
-                        # -----------------------------------------------------
-                        # いきなり月跨ぎ精算機能にはせず、前後月の不足/超過と
-                        # 振替・回数外などの理由区分を並べて確認しやすくする。
-                        # 例：前月が少ない、今月が多い → 前月振替/今月振替の整合性確認に使う。
-                        # =====================================================
-                        with st.expander("↔ 前月・今月・来月の簡易確認", expanded=False):
-                            st.caption("月跨ぎ振替の確認用です。自動精算ではなく、前月・今月・来月の予定回数と差分を並べて確認します。")
-
-                            def _month_add(_year, _month, _offset):
-                                _base = pd.Timestamp(year=int(_year), month=int(_month), day=1)
-                                _m = _base + pd.DateOffset(months=int(_offset))
-                                return int(_m.year), int(_m.month)
-
-                            def _month_label(_year, _month):
-                                return f"{int(_year)}年{int(_month)}月"
-
-                            def _status_and_diff(_count, _target_raw):
-                                _target_raw = str(_target_raw).strip()
-                                try:
-                                    _target_num = int(float(_target_raw)) if _target_raw else 0
-                                except Exception:
-                                    _target_num = 0
-
-                                if _target_num <= 0:
-                                    return "月回数未設定", ""
-                                if int(_count) < _target_num:
-                                    return "少ない", f"−{_target_num - int(_count)}"
-                                if int(_count) == _target_num:
-                                    return "OK", ""
-                                return "多い", f"+{int(_count) - _target_num}"
-
-                            def _effective_month_plan_for_count(_year, _month):
-                                _start = pd.Timestamp(year=int(_year), month=int(_month), day=1)
-                                _end = _start + pd.offsets.MonthEnd(0)
-                                _rows = []
-
-                                for _day_ts in pd.date_range(_start.date(), _end.date(), freq="D"):
-                                    _day = _day_ts.date()
-                                    _plan = build_daily_plan_for_date(
-                                        _day,
-                                        students,
-                                        _empty_weekly_for_calendar,
-                                        monthly_schedule,
-                                        schedule_overrides,
-                                        timeslots,
-                                        include_inactive=False,
-                                    )
-                                    if _plan is None or _plan.empty:
-                                        continue
-
-                                    _plan = _plan.copy()
-                                    for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
-                                        if _c not in _plan.columns:
-                                            _plan[_c] = ""
-                                        _plan[_c] = _plan[_c].fillna("").astype(str).str.strip()
-                                    _plan["date"] = _day.isoformat()
-                                    _rows.append(_plan)
-
-                                if not _rows:
-                                    return pd.DataFrame(columns=["date", "student_id", "slot", "session_type", "reason", "note", "override_status"])
-
-                                _df = pd.concat(_rows, ignore_index=True)
-                                for _c in ["date", "student_id", "slot", "session_type", "reason", "note", "override_status"]:
-                                    if _c not in _df.columns:
-                                        _df[_c] = ""
-                                    _df[_c] = _df[_c].fillna("").astype(str).str.strip()
-
-                                _df = _df[
-                                    _df["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
-                                ].copy()
-                                return _df
-
-                            def _summarize_count_month(_year, _month):
-                                _df = _effective_month_plan_for_count(_year, _month)
-                                _result = {}
-
-                                if _df.empty:
-                                    return _result
-
-                                _reason = _df["reason"].fillna("通常").astype(str).str.strip()
-                                _note = _df["note"].fillna("").astype(str).str.strip() if "note" in _df.columns else pd.Series([""] * len(_df), index=_df.index)
-                                _exclude = (
-                                    _reason.isin(count_excluded_reasons)
-                                    | _note.str.contains("回数外|月回数外", regex=True, na=False)
-                                )
-
-                                _lesson = _df[
-                                    (_df["session_type"].astype(str).str.strip() == "授業")
-                                    & (~_exclude)
-                                ].copy()
-
-                                _count_map = (
-                                    _lesson["student_id"].astype(str).str.strip().value_counts().to_dict()
-                                    if not _lesson.empty and "student_id" in _lesson.columns
-                                    else {}
-                                )
-
-                                for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
-                                    _sid = str(_sid).strip()
-                                    _count = int(_count_map.get(_sid, 0))
-                                    _sid_rows = _df[_df["student_id"].astype(str).str.strip() == _sid].copy()
-
-                                    _reason_values = []
-                                    if not _sid_rows.empty and "reason" in _sid_rows.columns:
-                                        _reason_values = [
-                                            x for x in _sid_rows["reason"].fillna("").astype(str).str.strip().tolist()
-                                            if x and x != "通常"
-                                        ]
-                                    _reason_summary = "、".join(sorted(set(monthly_reason_summary_label(x) for x in _reason_values)))
-
-                                    _target_raw = str(student_target_count_map.get(_sid, "")).strip()
-                                    _status, _diff = _status_and_diff(_count, _target_raw)
-                                    _result[_sid] = {
-                                        "count": _count,
-                                        "target": _target_raw if _target_raw else "未設定",
-                                        "status": _status,
-                                        "diff": _diff,
-                                        "reason": _reason_summary,
-                                    }
-
-                                return _result
-
-                            _prev_y, _prev_m = _month_add(target_year, target_month, -1)
-                            _next_y, _next_m = _month_add(target_year, target_month, 1)
-
-                            _month_specs = [
-                                ("前月", _prev_y, _prev_m),
-                                ("今月", target_year, target_month),
-                                ("来月", _next_y, _next_m),
-                            ]
-
-                            _summaries = {
-                                _label: _summarize_count_month(_y, _m)
-                                for _label, _y, _m in _month_specs
-                            }
-
-                            _summary_pieces = []
-                            for _label, _y, _m in _month_specs:
-                                _s = _summaries.get(_label, {})
-                                _short = sum(1 for _v in _s.values() if _v.get("status") == "少ない")
-                                _over = sum(1 for _v in _s.values() if _v.get("status") == "多い")
-                                _unset = sum(1 for _v in _s.values() if _v.get("status") == "月回数未設定")
-                                _summary_pieces.append(f"{_label}（{_month_label(_y, _m)}）：少ない{_short} / 多い{_over} / 未設定{_unset}")
-                            st.info("　｜　".join(_summary_pieces))
-
-                            def _fmt_month_cell(_v):
-                                if not _v:
-                                    return "予定0 / 未確認"
-                                _count = _v.get("count", 0)
-                                _target = _v.get("target", "未設定")
-                                _status = _v.get("status", "")
-                                _diff = _v.get("diff", "")
-                                if _status == "OK":
-                                    return f"{_count}/{_target} OK"
-                                if _diff:
-                                    return f"{_count}/{_target} {_status}({_diff})"
-                                return f"{_count}/{_target} {_status}"
-
-                            compare_rows = []
-                            for _sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
-                                _name = student_name_map_month.get(_sid, _sid)
-                                _prev = _summaries.get("前月", {}).get(_sid, {})
-                                _curr = _summaries.get("今月", {}).get(_sid, {})
-                                _next = _summaries.get("来月", {}).get(_sid, {})
-
-                                _reasons_joined = " / ".join([
-                                    x for x in [
-                                        f"前月:{_prev.get('reason','')}" if _prev.get("reason", "") else "",
-                                        f"今月:{_curr.get('reason','')}" if _curr.get("reason", "") else "",
-                                        f"来月:{_next.get('reason','')}" if _next.get("reason", "") else "",
-                                    ] if x
-                                ])
-
-                                _need = (
-                                    _prev.get("status") in ["少ない", "多い", "月回数未設定"]
-                                    or _curr.get("status") in ["少ない", "多い", "月回数未設定"]
-                                    or _next.get("status") in ["少ない", "多い", "月回数未設定"]
-                                    or bool(_reasons_joined)
-                                )
-
-                                compare_rows.append({
-                                    "生徒": _name,
-                                    f"前月({_prev_m}月)": _fmt_month_cell(_prev),
-                                    f"今月({target_month}月)": _fmt_month_cell(_curr),
-                                    f"来月({_next_m}月)": _fmt_month_cell(_next),
-                                    "理由区分メモ": _reasons_joined,
-                                    "_need": _need,
-                                })
-
-                            if compare_rows:
-                                compare_df = pd.DataFrame(compare_rows)
-
-                                only_need_cross = st.checkbox(
-                                    "前後月で確認が必要・理由区分がある生徒だけ表示",
-                                    value=True,
-                                    key=f"monthly_cross_count_only_need_{target_year}_{target_month}",
-                                )
-
-                                if only_need_cross:
-                                    compare_df = compare_df[compare_df["_need"]].copy()
-
-                                compare_df = compare_df.drop(columns=["_need"], errors="ignore")
-
-                                if compare_df.empty:
-                                    st.success("前後月を含めて、確認が必要な生徒はありません。")
-                                else:
-                                    st.dataframe(compare_df, use_container_width=True, hide_index=True)
-                                    st.caption("※ 前月−1・今月+1のような組み合わせがある場合、月跨ぎ振替の確認材料として使えます。")
-                            else:
-                                st.info("前月・今月・来月の比較対象がありません。")
-                    else:
-                        st.info("在籍中の生徒が見つかりません。")
-
-
         with monthly_op_col:
             # d243:
             # 操作パネルがカレンダー見出しより上に来すぎないよう、
@@ -10164,14 +10095,135 @@ elif page == "管理（入力）":
                             st.rerun()
 
 
+
+        # =====================================================
+        # d276:
+        # 便利だから畳んでいる機能と、不要かもしれない整理候補を分ける。
+        # 🧹整理候補は、しばらく使わなければ後で削除するための仮置き場。
+        # =====================================================
+        with st.expander("🧹整理候補：生成プレビュー・固定スケジュール反映", expanded=False):
+            st.caption("固定スケジュールから月予定を作り直す時だけ使います。普段使わなければ、後で削除候補です。")
+            st.markdown("### 生成プレビュー")
+            if generated_df.empty:
+                st.warning("生成できる月予定がありません。固定スケジュール（週次）を確認してください。")
+            else:
+                preview_df = generated_df.copy()
+                preview_df["生徒"] = preview_df["student_id"].map(student_name_map_month).fillna(preview_df["student_id"])
+                preview_df = preview_df.rename(columns={
+                    "date": "日付",
+                    "slot": "コマ",
+                    "session_type": "種別",
+                    "reason": "理由区分",
+                    "note": "メモ",
+                    "source": "作成元",
+                })
+                show_cols = ["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]
+                st.dataframe(
+                    preview_df[show_cols],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.markdown("### 回数チェック（授業のみ）")
+                lesson_df = generated_df[
+                    generated_df["session_type"].astype(str).str.strip() == "授業"
+                ].copy()
+                count_map = lesson_df["student_id"].astype(str).str.strip().value_counts().to_dict()
+
+                count_rows = []
+                for sid, current_count in count_map.items():
+                    target_raw = str(student_target_count_map.get(sid, "")).strip()
+                    try:
+                        target_num = int(float(target_raw)) if target_raw else 0
+                    except Exception:
+                        target_num = 0
+
+                    if target_num <= 0:
+                        check_label = "月回数未設定"
+                    elif current_count < target_num:
+                        check_label = f"不足 あと{target_num - current_count}回"
+                    elif current_count == target_num:
+                        check_label = "OK"
+                    else:
+                        check_label = f"超過 +{current_count - target_num}回"
+
+                    count_rows.append({
+                        "生徒": student_name_map_month.get(sid, sid),
+                        "予定回数": current_count,
+                        "月回数": target_raw,
+                        "判定": check_label,
+                    })
+
+                if count_rows:
+                    count_df = pd.DataFrame(count_rows).sort_values(["判定", "生徒"])
+                    st.dataframe(count_df, use_container_width=True, hide_index=True)
+                else:
+                    st.info("授業予定がありません。")
+
+                st.warning("反映すると、同じ年月の monthly_schedule.csv 既存データを置き換えます。")
+                if st.button("📅 固定スケジュールをカレンダーに反映", key=f"save_monthly_schedule_{target_year}_{target_month}"):
+                    monthly_existing = monthly_schedule.copy()
+                    for c in MONTHLY_SCHEDULE_COLS:
+                        if c not in monthly_existing.columns:
+                            monthly_existing[c] = ""
+                    monthly_existing = monthly_existing[MONTHLY_SCHEDULE_COLS].fillna("")
+                    monthly_existing["date_dt"] = pd.to_datetime(monthly_existing["date"], errors="coerce")
+
+                    keep_df = monthly_existing[
+                        ~(
+                            (monthly_existing["date_dt"].dt.year == target_year)
+                            & (monthly_existing["date_dt"].dt.month == target_month)
+                        )
+                    ].drop(columns=["date_dt"], errors="ignore").copy()
+
+                    save_df = pd.concat([keep_df, generated_df], ignore_index=True)
+                    save_df = save_df[MONTHLY_SCHEDULE_COLS].fillna("")
+                    write_csv_atomic(save_df, MONTHLY_SCHEDULE_CSV)
+                    st.success(f"{target_year}年{target_month}月の固定スケジュールをカレンダーに反映しました。")
+                    st.rerun()
+
+        with st.expander("🧹整理候補：保存済み月スケジュールの表確認", expanded=False):
+            st.caption("カレンダー表示と役割が重なっているため、普段使わなければ後で削除候補です。")
+            if monthly_schedule.empty:
+                st.info("まだ月スケジュールは保存されていません。")
+            else:
+                saved_month = monthly_schedule.copy()
+                saved_month["date_dt"] = pd.to_datetime(saved_month["date"], errors="coerce")
+                saved_month = saved_month[
+                    (saved_month["date_dt"].dt.year == target_year)
+                    & (saved_month["date_dt"].dt.month == target_month)
+                ].copy()
+                saved_month = saved_month.drop(columns=["date_dt"], errors="ignore")
+
+                if saved_month.empty:
+                    st.info("この年月の保存済み月スケジュールはありません。")
+                else:
+                    saved_month["生徒"] = saved_month["student_id"].map(student_name_map_month).fillna(saved_month["student_id"])
+                    saved_month = saved_month.rename(columns={
+                        "date": "日付",
+                        "slot": "コマ",
+                        "session_type": "種別",
+                        "reason": "理由区分",
+                        "note": "メモ",
+                        "source": "作成元",
+                    })
+                    st.dataframe(
+                        saved_month[["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+
+
         # d228: カレンダー操作が主になったため、1件ずつ編集する古いUIは通常非表示。
         show_legacy_monthly_edit = st.checkbox(
-            "旧UI：月スケジュールを1件ずつ編集する（通常はOFF）",
+            "🧹整理候補：旧UI 月スケジュールを1件ずつ編集する（通常はOFF）",
             value=False,
             key=f"show_legacy_monthly_edit_{target_year}_{target_month}",
-            help="通常はカレンダー表示と月スケジュール操作を使います。古い個別編集が必要な時だけONにします。",
+            help="現在のカレンダー＋操作パネルで代替できる可能性が高い旧UIです。しばらく使わなければ削除候補です。",
         )
         if show_legacy_monthly_edit:
+            st.caption("この項目は整理候補です。普段使わなければ、後で削除して画面をさらに軽くできます。")
             # 月スケジュール編集対象（選択中の年月だけ）
             monthly_edit_month = monthly_schedule.copy()
             for c in MONTHLY_SCHEDULE_COLS:
