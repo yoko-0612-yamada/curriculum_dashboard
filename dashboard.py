@@ -8457,15 +8457,29 @@ elif page == "管理（入力）":
         monthly_slot_options = ["1", "2", "3", "4", "5", "6", "7"]
         monthly_slot_label_map = build_slot_label_map(timeslots)
 
-        # d229:
-        # 理由区分ごとに「月回数にカウントする / しない」を分かるようにする。
-        # actual value はCSVに保存する素の値、format_func でだけ印付き表示にする。
-        # d239:
-        # 理由区分を絞る。用途が重なりやすい「休み調整」「特別追加」は
-        # 通常候補から外し、必要な補足はメモで扱う。
-        # 既存データに残っている場合は、選択肢に一時的に追加して編集可能にする。
-        monthly_reason_base_options = ["通常", "今月振替", "前月振替", "回数外", "確認必要"]
-        monthly_reason_legacy_options = ["休み調整", "特別追加"]
+        # d279:
+        # 「回数区分」は実際には回数チェックに使うデータなので、
+        # 画面上では「回数区分（集計に使います）」として扱う。
+        # 選択肢の時点で「回数に含める / 回数外」が分かるようにし、
+        # 登録する人のさじ加減でカウント扱いがブレないようにする。
+        monthly_count_included_reasons = {"通常", "今月振替", "追加授業", "確認必要"}
+        monthly_count_excluded_reasons = {
+            "前月振替", "自習", "補習・確認", "特典追加", "その他回数外",
+            "回数外", "月回数外"
+        }
+
+        monthly_reason_base_options = [
+            "通常",
+            "今月振替",
+            "追加授業",
+            "前月振替",
+            "自習",
+            "補習・確認",
+            "特典追加",
+            "その他回数外",
+            "確認必要",
+        ]
+        monthly_reason_legacy_options = ["休み調整", "特別追加", "回数外", "月回数外"]
 
         monthly_reason_existing_values = []
         try:
@@ -8480,20 +8494,39 @@ elif page == "管理（入力）":
 
         monthly_reason_options = monthly_reason_base_options[:]
         for _r in monthly_reason_existing_values:
-            if _r in monthly_reason_legacy_options and _r not in monthly_reason_options:
+            # 既存データに旧区分・未知の値がある場合でも、編集画面で選べるように残す
+            if _r and _r not in monthly_reason_options:
                 monthly_reason_options.append(_r)
-
-        monthly_count_excluded_reasons = {"前月振替", "回数外", "月回数外"}
 
         def format_monthly_reason_label(reason):
             r = str(reason).strip() or "通常"
-            if r in monthly_count_excluded_reasons:
-                return f"− {r}（月回数に含めない）"
+            if r == "通常":
+                return "↑ 通常授業（回数に含める）"
+            if r == "今月振替":
+                return "↑ 今月振替（回数に含める）"
+            if r == "追加授業":
+                return "↑ 追加授業（回数に含める）"
             if r == "確認必要":
                 return "↑ 確認必要（仮でカウント・要確認）"
+            if r == "前月振替":
+                return "− 前月振替（回数外）"
+            if r == "自習":
+                return "− 自習（回数外）"
+            if r == "補習・確認":
+                return "− 補習・確認（回数外）"
+            if r == "特典追加":
+                return "− 特典追加（回数外）"
+            if r == "その他回数外":
+                return "− その他回数外（回数外）"
+            if r in {"回数外", "月回数外"}:
+                return f"− {r}（旧区分・できれば自習/補習・確認/特典追加/その他回数外へ整理）"
+            if r == "特別追加":
+                return "↑ 特別追加（旧区分・できれば追加授業へ整理）"
+            if r in monthly_count_excluded_reasons:
+                return f"− {r}（回数外）"
             if r in monthly_reason_legacy_options:
-                return f"↑ {r}（旧区分・できれば通常/今月振替/回数外＋メモへ整理）"
-            return f"↑ {r}（月回数に含める）"
+                return f"↑ {r}（旧区分・できれば新しい回数区分へ整理）"
+            return f"↑ {r}（回数に含める）"
 
         def monthly_reason_summary_label(reason):
             r = str(reason).strip() or "通常"
@@ -8543,7 +8576,7 @@ elif page == "管理（入力）":
 
             st.caption("予定の確認・取消・解除・削除は、基本的にこのカレンダーから行います。")
             st.info("操作の意味：取消＝キャンセル記録を残します（取消線がつき、解除で戻せます） / 削除＝登録ミス・月回数調整用に予定を完全削除します（解除では戻せません） / 解除＝取消線を戻して予定を復活させます。")
-            st.caption("理由区分は、通常・今月振替・前月振替・回数外・確認必要を基本にします。細かい事情はメモで補足します。")
+            st.caption("回数区分は、通常・今月振替・前月振替・回数外・確認必要を基本にします。細かい事情はメモで補足します。")
 
             # =====================================================
             # 月カレンダー表示用データ
@@ -8747,7 +8780,7 @@ elif page == "管理（入力）":
                     # d227:
                     # 2コマ連続の通常授業は「特別追加」とメモされていても月回数に含める。
                     # 回数外にしたい場合は、今後はメモや区分に「回数外」または「月回数外」と入れて区別する。
-                    count_excluded_reasons = {"前月振替", "回数外", "月回数外"}
+                    count_excluded_reasons = {"前月振替", "自習", "補習・確認", "特典追加", "その他回数外", "回数外", "月回数外"}
                     _reason_for_count = check_month["reason"].fillna("通常").astype(str).str.strip()
                     _note_for_count = check_month["note"].fillna("").astype(str).str.strip() if "note" in check_month.columns else pd.Series([""] * len(check_month), index=check_month.index)
                     _is_count_excluded = (
@@ -8847,7 +8880,7 @@ elif page == "管理（入力）":
                             help="予定回数ベースで、少ない・多い・月回数未設定だけを表示します。OFFにするとOKの生徒も表示します。",
                         )
 
-                        st.caption("※ ↑の区分は月回数に含めます。−の区分は月回数に含めません。今月振替・2コマ連続授業はカウント、前月振替・回数外は除外します。")
+                        st.caption("※ ↑の区分は予定回数に含めます。−の区分は予定回数に含めません。今月振替・追加授業はカウント、前月振替・自習・補習/確認・特典追加は除外します。")
 
                         display_count_df = count_df.copy()
                         if only_need_check2:
@@ -8872,7 +8905,7 @@ elif page == "管理（入力）":
                         # 前月・今月・来月の簡易確認
                         # -----------------------------------------------------
                         # いきなり月跨ぎ精算機能にはせず、前後月の不足/超過と
-                        # 振替・回数外などの理由区分を並べて確認しやすくする。
+                        # 振替・回数外などの回数区分を並べて確認しやすくする。
                         # 例：前月が少ない、今月が多い → 前月振替/今月振替の整合性確認に使う。
                         # =====================================================
                         with st.expander("↔ 前月・今月・来月の簡易確認", expanded=False):
@@ -9044,8 +9077,8 @@ elif page == "管理（入力）":
                                 ])
 
                                 # d277:
-                                # 「回数ズレ」と「理由区分あり」を分けて扱う。
-                                # OKだけど今月内振替などの理由区分がある生徒は、普段は隠せるようにする。
+                                # 「回数ズレ」と「回数区分あり」を分けて扱う。
+                                # OKだけど今月内振替などの回数区分がある生徒は、普段は隠せるようにする。
                                 _has_count_issue = (
                                     _prev.get("status") in ["少ない", "多い", "月回数未設定"]
                                     or _curr.get("status") in ["少ない", "多い", "月回数未設定"]
@@ -9058,7 +9091,7 @@ elif page == "管理（入力）":
                                     f"前月({_prev_m}月)": _fmt_month_cell(_prev),
                                     f"今月({target_month}月)": _fmt_month_cell(_curr),
                                     f"来月({_next_m}月)": _fmt_month_cell(_next),
-                                    "理由区分メモ": _reasons_joined,
+                                    "回数区分メモ": _reasons_joined,
                                     "_has_count_issue": _has_count_issue,
                                     "_has_reason": _has_reason,
                                 })
@@ -9067,9 +9100,9 @@ elif page == "管理（入力）":
                                 compare_df = pd.DataFrame(compare_rows)
 
                                 # d277:
-                                # 以前は「回数ズレあり」と「理由区分あり」を1つのチェックにまとめていたため、
-                                # OKだけど理由区分がある生徒まで普段から表示されて見づらかった。
-                                # 普段は回数ズレだけ、必要な時だけ理由区分ありも表示できるように分離する。
+                                # 以前は「回数ズレあり」と「回数区分あり」を1つのチェックにまとめていたため、
+                                # OKだけど回数区分がある生徒まで普段から表示されて見づらかった。
+                                # 普段は回数ズレだけ、必要な時だけ回数区分ありも表示できるように分離する。
                                 col_cross_filter1, col_cross_filter2 = st.columns(2)
                                 with col_cross_filter1:
                                     only_count_issue_cross = st.checkbox(
@@ -9080,10 +9113,10 @@ elif page == "管理（入力）":
                                     )
                                 with col_cross_filter2:
                                     include_reason_cross = st.checkbox(
-                                        "理由区分がある生徒も表示",
+                                        "回数区分がある生徒も表示",
                                         value=False,
                                         key=f"monthly_cross_count_include_reason_{target_year}_{target_month}",
-                                        help="ONにすると、回数はOKでも前月振替・今月振替・回数外などの理由区分がある生徒も表示します。",
+                                        help="ONにすると、回数はOKでも前月振替・今月振替・回数外などの回数区分がある生徒も表示します。",
                                     )
 
                                 if only_count_issue_cross:
@@ -9097,9 +9130,9 @@ elif page == "管理（入力）":
                                         ].copy()
                                 else:
                                     if not include_reason_cross:
-                                        st.caption("全員表示中です。理由区分ありの生徒も含めて表示します。")
+                                        st.caption("全員表示中です。回数区分ありの生徒も含めて表示します。")
                                     else:
-                                        st.caption("全員表示中です。理由区分も確認できます。")
+                                        st.caption("全員表示中です。回数区分も確認できます。")
 
                                 compare_df = compare_df.drop(
                                     columns=["_has_count_issue", "_has_reason", "_need"],
@@ -9108,15 +9141,15 @@ elif page == "管理（入力）":
 
                                 if compare_df.empty:
                                     if include_reason_cross:
-                                        st.success("回数ズレ・理由区分ありの生徒はいません。")
+                                        st.success("回数ズレ・回数区分ありの生徒はいません。")
                                     else:
                                         st.success("回数ズレがある生徒はいません。")
                                 else:
                                     st.dataframe(compare_df, use_container_width=True, hide_index=True)
                                     if include_reason_cross:
-                                        st.caption("※ 回数ズレの生徒に加えて、理由区分があるOKの生徒も表示しています。")
+                                        st.caption("※ 回数ズレの生徒に加えて、回数区分があるOKの生徒も表示しています。")
                                     else:
-                                        st.caption("※ 前月−1・今月+1のような回数ズレがある生徒を中心に表示しています。理由区分だけ確認したい時は右のチェックをONにしてください。")
+                                        st.caption("※ 前月−1・今月+1のような回数ズレがある生徒を中心に表示しています。回数区分だけ確認したい時は右のチェックをONにしてください。")
                             else:
                                 st.info("前月・今月・来月の比較対象がありません。")
                     else:
@@ -9674,7 +9707,7 @@ elif page == "管理（入力）":
             st.caption("カレンダーで選択した予定をここで変更・取消線・削除できます。カレンダー内は選択だけに整理しています。")
             with st.expander("追加・修正・削除", expanded=True):
                 st.caption("カレンダーの予定を押すと、ここに選択中の予定が表示されます。")
-                st.caption("理由区分の ↑ は月回数に含める、− は月回数に含めない、という意味です。")
+                st.caption("回数区分の ↑ は月回数に含める、− は月回数に含めない、という意味です。")
 
                 # -------------------------
                 # 追加フォーム
@@ -9715,20 +9748,20 @@ elif page == "管理（入力）":
                 )
 
                 # d232:
-                # 月スケジュール操作の追加でも、種別と理由区分を連動させる。
+                # 月スケジュール操作の追加でも、種別と回数区分を連動させる。
                 # 自習 → 回数外、授業 → 通常。
                 # 種別を変更した時だけ自動変更し、その後の手動変更は尊重する。
                 if _add_prev_type_key not in st.session_state:
                     st.session_state[_add_prev_type_key] = str(add_session_type2)
                     if _add_reason_key not in st.session_state:
-                        st.session_state[_add_reason_key] = "回数外" if add_session_type2 == "自習" else "通常"
+                        st.session_state[_add_reason_key] = "自習" if add_session_type2 == "自習" else "通常"
                 elif st.session_state.get(_add_prev_type_key) != str(add_session_type2):
                     st.session_state[_add_prev_type_key] = str(add_session_type2)
-                    st.session_state[_add_reason_key] = "回数外" if add_session_type2 == "自習" else "通常"
+                    st.session_state[_add_reason_key] = "自習" if add_session_type2 == "自習" else "通常"
 
                 _add_reason_value = st.session_state.get(
                     _add_reason_key,
-                    "回数外" if add_session_type2 == "自習" else "通常",
+                    "自習" if add_session_type2 == "自習" else "通常",
                 )
                 _add_reason_index = (
                     monthly_reason_options.index(_add_reason_value)
@@ -9736,18 +9769,22 @@ elif page == "管理（入力）":
                 )
 
                 add_reason2 = st.selectbox(
-                    "理由区分",
+                    "回数区分（集計に使います）",
                     monthly_reason_options,
                     index=_add_reason_index,
                     key=_add_reason_key,
                     format_func=format_monthly_reason_label,
-                    help="種別を自習にすると回数外、授業にすると通常が自動で選ばれます。必要なら手動で変更できます。",
+                    help="種別を自習にすると「自習（回数外）」、授業にすると「通常授業（回数に含める）」が自動で選ばれます。必要なら回数区分を選び直してください。",
                 )
+                if str(add_reason2).strip() in monthly_count_excluded_reasons:
+                    st.caption("回数扱い：回数外（予定回数に含めません）")
+                else:
+                    st.caption("回数扱い：回数に含める")
 
                 add_note2 = st.text_input(
                     "追加メモ",
                     value="",
-                    placeholder="例：前月振替、今月のみ追加 など",
+                    placeholder="例：保護者都合、検定前確認、入会特典分 など",
                     key=f"monthly_sidebar_add_note_{target_year}_{target_month}",
                 )
 
@@ -9856,19 +9893,19 @@ elif page == "管理（入力）":
                     )
 
                     # d230:
-                    # 種別を変えた時だけ、理由区分を現場でよく使う初期値に寄せる。
+                    # 種別を変えた時だけ、回数区分を現場でよく使う初期値に寄せる。
                     # 自習 → 回数外、授業 → 通常。
-                    # 初回表示では既存データの理由区分を尊重する。
+                    # 初回表示では既存データの回数区分を尊重する。
                     if _update_prev_type_key not in st.session_state:
                         st.session_state[_update_prev_type_key] = str(new_type)
                         if _update_reason_key not in st.session_state:
                             st.session_state[_update_reason_key] = (
                                 selected_reason if selected_reason in monthly_reason_options
-                                else ("回数外" if new_type == "自習" else "通常")
+                                else ("自習" if new_type == "自習" else "通常")
                             )
                     elif st.session_state.get(_update_prev_type_key) != str(new_type):
                         st.session_state[_update_prev_type_key] = str(new_type)
-                        st.session_state[_update_reason_key] = "回数外" if new_type == "自習" else "通常"
+                        st.session_state[_update_reason_key] = "自習" if new_type == "自習" else "通常"
 
                     _current_reason_value = st.session_state.get(
                         _update_reason_key,
@@ -9880,13 +9917,17 @@ elif page == "管理（入力）":
                     )
 
                     new_reason = st.selectbox(
-                        "理由区分",
+                        "回数区分（集計に使います）",
                         monthly_reason_options,
                         index=_current_reason_index,
                         key=_update_reason_key,
                         format_func=format_monthly_reason_label,
-                        help="種別を自習に変えると回数外、授業に変えると通常が自動で選ばれます。必要なら手動で変更できます。",
+                        help="種別を自習に変えると「自習（回数外）」、授業に変えると「通常授業（回数に含める）」が自動で選ばれます。必要なら回数区分を選び直してください。",
                     )
+                    if str(new_reason).strip() in monthly_count_excluded_reasons:
+                        st.caption("回数扱い：回数外（予定回数に含めません）")
+                    else:
+                        st.caption("回数扱い：回数に含める")
 
                     new_note = st.text_input(
                         "メモ",
@@ -10113,11 +10154,11 @@ elif page == "管理（入力）":
                     "date": "日付",
                     "slot": "コマ",
                     "session_type": "種別",
-                    "reason": "理由区分",
+                    "reason": "回数区分",
                     "note": "メモ",
                     "source": "作成元",
                 })
-                show_cols = ["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]
+                show_cols = ["日付", "コマ", "生徒", "種別", "回数区分", "メモ", "作成元"]
                 st.dataframe(
                     preview_df[show_cols],
                     use_container_width=True,
@@ -10203,12 +10244,12 @@ elif page == "管理（入力）":
                         "date": "日付",
                         "slot": "コマ",
                         "session_type": "種別",
-                        "reason": "理由区分",
+                        "reason": "回数区分",
                         "note": "メモ",
                         "source": "作成元",
                     })
                     st.dataframe(
-                        saved_month[["日付", "コマ", "生徒", "種別", "理由区分", "メモ", "作成元"]],
+                        saved_month[["日付", "コマ", "生徒", "種別", "回数区分", "メモ", "作成元"]],
                         use_container_width=True,
                         hide_index=True,
                     )
@@ -10274,7 +10315,7 @@ elif page == "管理（入力）":
                     )
                 with add_col5:
                     add_reason = st.selectbox(
-                        "理由区分",
+                        "回数区分",
                         monthly_reason_options,
                         index=0,
                         key=f"monthly_add_reason_{target_year}_{target_month}",
@@ -10387,7 +10428,7 @@ elif page == "管理（入力）":
                         )
                     with edit_col5:
                         edit_reason = st.selectbox(
-                            "理由区分",
+                            "回数区分",
                             monthly_reason_options,
                             index=monthly_reason_options.index(current_reason) if current_reason in monthly_reason_options else 0,
                             key=f"monthly_edit_reason_{target_year}_{target_month}_{selected_monthly_idx}",
