@@ -6551,7 +6551,9 @@ if page == "閲覧":
             label_to_id = dict(zip(labels, active_students["student_id"].tolist()))
 
 
-            # 左フィルタで生徒が選ばれているときは、それを優先する
+            # d282:
+            # 左サイドバーの生徒フィルタが選ばれている時は、それを優先する。
+            # その場合、画面内の「生徒を選択」は非表示になるため、動きが分かるように明記する。
             if selected_student != "（全員）":
                 student_row = active_students[active_students["display_name"] == str(selected_student).strip()].head(1)
                 if student_row.empty:
@@ -6560,7 +6562,9 @@ if page == "閲覧":
                 else:
                     sid = str(student_row.iloc[0]["student_id"]).strip()
                     st.caption(f"対象生徒：{sid} | {selected_student}")
+                    st.caption("左サイドバーの生徒フィルタを反映中です。画面内の「生徒を選択」は非表示になります。")
             else:
+                st.caption("左サイドバーの生徒フィルタが「全員」の時だけ、下の「生徒を選択」が表示されます。")
                 selected_label = st.selectbox("生徒を選択", labels, key="course_done_student")
                 sid = label_to_id.get(selected_label)
 
@@ -6651,12 +6655,23 @@ if page == "閲覧":
         is_log_tab = True
         st.subheader("Scratch検定一覧（生徒ごと）")
 
-        # 級フィルタ
+        # d281:
+        # 「級フィルタ」は、その級の登録データがある人を見るためのもの。
+        # 「受験ステップ」は、次に受ける候補を見るためのもの。
         grade_filter = st.selectbox(
-            "級フィルタ",
+            "級フィルタ（その級の登録あり）",
             ["（全て）", "4級", "3級", "2級", "1級"],
-            key="scratch_grade_filter"
+            key="scratch_grade_filter",
+            help="例：3級を選ぶと、3級の結果登録・受験登録がある生徒だけ表示します。"
         )
+
+        step_filter = st.selectbox(
+            "受験ステップ（次に受ける候補）",
+            ["（全て）", "次に4級", "次に3級", "次に2級", "次に1級"],
+            key="scratch_step_filter",
+            help="例：次に3級＝4級の登録があり、3級・2級・1級の登録がまだない生徒です。"
+        )
+        st.caption("見方：級フィルタ＝その級の登録あり / 受験ステップ＝次に受ける候補。人数は左端のNo.で確認できます。")
 
         # d265:
         # Scratch検定一覧は、普段の確認では「在籍中」かつ「1級未合格」を中心に見る。
@@ -6752,18 +6767,45 @@ if page == "閲覧":
             scratch_view["次の判断"] = scratch_view["best_score"].apply(judge_next_step)
             scratch_view["次の級"] = scratch_view["scratch_best"].apply(get_next_grade)
 
-            # Scratch検定が1件もない生徒は除外
-            scratch_view = scratch_view[
-                scratch_view["scratch_best"].notna()
-                | scratch_view["4級"].notna()
-                | scratch_view["3級"].notna()
-                | scratch_view["2級"].notna()
-                | scratch_view["1級"].notna()
-                | scratch_view["4級_登録あり"].fillna(False).astype(bool)
-                | scratch_view["3級_登録あり"].fillna(False).astype(bool)
-                | scratch_view["2級_登録あり"].fillna(False).astype(bool)
-                | scratch_view["1級_登録あり"].fillna(False).astype(bool)
-            ].copy()
+            # d281:
+            # 各級の「登録あり」を、点数あり・登録ありの両方から判定する。
+            # ここでは合格者/受験登録者として扱い、次の受験級候補を絞り込めるようにする。
+            for _gcol in ["4級", "3級", "2級", "1級"]:
+                _attempt_col = f"{_gcol}_登録あり"
+                if _attempt_col not in scratch_view.columns:
+                    scratch_view[_attempt_col] = False
+                scratch_view[_attempt_col] = (
+                    scratch_view[_attempt_col].fillna(False).astype(bool)
+                    | scratch_view[_gcol].notna()
+                )
+
+            _has4 = scratch_view["4級_登録あり"].fillna(False).astype(bool)
+            _has3 = scratch_view["3級_登録あり"].fillna(False).astype(bool)
+            _has2 = scratch_view["2級_登録あり"].fillna(False).astype(bool)
+            _has1 = scratch_view["1級_登録あり"].fillna(False).astype(bool)
+
+            if step_filter == "次に4級":
+                scratch_view = scratch_view[(~_has4) & (~_has3) & (~_has2) & (~_has1)].copy()
+            elif step_filter == "次に3級":
+                scratch_view = scratch_view[_has4 & (~_has3) & (~_has2) & (~_has1)].copy()
+            elif step_filter == "次に2級":
+                scratch_view = scratch_view[_has3 & (~_has2) & (~_has1)].copy()
+            elif step_filter == "次に1級":
+                scratch_view = scratch_view[_has2 & (~_has1)].copy()
+            else:
+                # Scratch検定が1件もない生徒は、通常表示では除外する。
+                # ただし「次に4級」を選んだ時だけは、未取得の生徒も候補として表示する。
+                scratch_view = scratch_view[
+                    scratch_view["scratch_best"].notna()
+                    | scratch_view["4級"].notna()
+                    | scratch_view["3級"].notna()
+                    | scratch_view["2級"].notna()
+                    | scratch_view["1級"].notna()
+                    | scratch_view["4級_登録あり"].fillna(False).astype(bool)
+                    | scratch_view["3級_登録あり"].fillna(False).astype(bool)
+                    | scratch_view["2級_登録あり"].fillna(False).astype(bool)
+                    | scratch_view["1級_登録あり"].fillna(False).astype(bool)
+                ].copy()
 
             # d265:
             # 基本表示は「在籍中」＋「1級未合格」。
@@ -6853,6 +6895,12 @@ if page == "閲覧":
                 show_cols = ["grade", "display_name", "4級", "3級", "2級", "1級", "scratch_best", "best_score", "次の判断","次の級"]
                 scratch_display_df = scratch_view.sort_values(by=["grade", "display_name"], na_position="last")[show_cols].copy()
 
+                # d280:
+                # Scratch検定一覧の左端に、表示中データだけの連番を付ける。
+                # CSVには保存しない表示専用番号。絞り込み後に1から振り直されるため、
+                # 一番下の番号を見るだけで「現在表示されている人数」が分かる。
+                scratch_display_df.insert(0, "No.", range(1, len(scratch_display_df) + 1))
+
                 def _style_missing_score_cells(_df):
                     return pd.DataFrame(
                         [
@@ -6866,6 +6914,11 @@ if page == "閲覧":
                         index=_df.index,
                         columns=_df.columns,
                     )
+
+                if step_filter != "（全て）":
+                    st.caption(f"{step_filter}：表示人数 {len(scratch_display_df)} 人（左端No.の最終番号と同じです）")
+                elif grade_filter != "（全て）":
+                    st.caption(f"{grade_filter}の登録あり：表示人数 {len(scratch_display_df)} 人（左端No.の最終番号と同じです）")
 
                 st.caption("点数欄：—＝未受験 / △未入力＝受験・合格登録あり、点数未入力")
                 st.dataframe(
@@ -6937,6 +6990,11 @@ if page == "閲覧":
         is_log_tab = True
         #生徒別（done）
         st.subheader("生徒別：完了したもの（done）")
+        st.caption("この一覧は、左サイドバーの「学年・生徒・今日の生徒のみ」フィルタが反映されます。特定の生徒だけ見たい場合は、左サイドバーの「生徒」で選択してください。")
+        st.caption(
+            f"現在の絞り込み：学年＝{selected_grade} / 生徒＝{selected_student} / 今日の生徒のみ＝{'ON' if show_today_only else 'OFF'}"
+        )
+
         cols = ["date", "grade", "display_name", "curriculum", "item", "note"]
         cols = [c for c in cols if c in filtered_done.columns]
         done_view = filtered_done.copy()
@@ -6945,7 +7003,9 @@ if page == "閲覧":
 
 
 
-        show = done_view[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"])
+        show = done_view[cols].sort_values(by=["grade", "display_name", "date", "curriculum", "item"]).copy()
+        show.insert(0, "No.", range(1, len(show) + 1))
+        st.caption(f"表示件数：{len(show)}件")
         st.dataframe(show, use_container_width=True, hide_index=True)
 
     if sidebar_view_mode == "詳細（最新状態）":
