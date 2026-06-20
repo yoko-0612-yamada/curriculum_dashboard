@@ -257,7 +257,11 @@ def build_today_status(att_done, prog_done):
 # =========================================================
 # Page
 # =========================================================
-st.set_page_config(page_title="Curriculum Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Curriculum Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 st.title("📚 Curriculum Dashboard（ローカル）")
 
 # =========================================================
@@ -292,6 +296,32 @@ page = st.radio(
 # radioの選択を内部状態に反映
 st.session_state.page_state = page
 admin_mode = (page == "管理（入力）")
+
+# =========================================================
+# d295:
+# 左サイドバーの扱い
+# ---------------------------------------------------------
+# Streamlitの initial_sidebar_state は「初回表示時だけ」の指定で、
+# 画面切替ごとに閉じる/開く制御には弱い。
+# そのため、閲覧ではサイドバーを使い、管理・座席では画面上から隠す。
+# =========================================================
+if page != "閲覧":
+    st.markdown(
+        """
+        <style>
+        section[data-testid="stSidebar"] {
+            display: none !important;
+        }
+        div[data-testid="stSidebarCollapsedControl"] {
+            display: none !important;
+        }
+        button[data-testid="collapsedControl"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =========================================================
@@ -505,6 +535,11 @@ def has_unpassed_kentei_exam_schedule(student_id: str, exam_df: pd.DataFrame) ->
 ATTENDANCE_LOG_CSV = DATA_DIR / "attendance_log.csv"
 PROGRESS_SKIP_OK_CSV = DATA_DIR / "progress_skip_ok.csv"
 PREP_MEMO_CSV = DATA_DIR / "prep_memo.csv"
+
+# d296:
+# 教室に来た生徒の「5分タイピング練習」を確認するログ。
+# 出席登録済みの生徒を対象に、done / skip を1日1レコードで保存する。
+TYPING_LOG_CSV = DATA_DIR / "typing_log.csv"
 
 # [KEEP 2026-04-24] 座席表（今日の配置）の保存先。STEP1/2では読み込み・表示のみ。
 SEAT_ASSIGNMENTS_CSV = DATA_DIR / "seat_assignments.csv"
@@ -761,6 +796,148 @@ def delete_attendance(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFram
     ds = str(d)
     mask = (df["student_id"].astype(str).str.strip() == sid) & (df["date"].astype(str).str.strip() == ds)
     return df.loc[~mask].copy()
+
+
+# =========================================================
+# ⌨️ タイピング5分チェック（d296）
+# ---------------------------------------------------------
+# 出席登録済みの生徒を対象に、5分タイピングを実施したかを記録する。
+# 先生の記憶に頼らず、未完了の子が画面に残るようにする。
+# =========================================================
+TYPING_LOG_COLS = ["date", "student_id", "status", "completed_at", "note"]
+
+
+def load_typing_log() -> pd.DataFrame:
+    if TYPING_LOG_CSV.exists():
+        try:
+            df = pd.read_csv(TYPING_LOG_CSV, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=TYPING_LOG_COLS)
+    else:
+        df = pd.DataFrame(columns=TYPING_LOG_COLS)
+        write_csv_atomic(df, TYPING_LOG_CSV)
+        return df
+
+    for c in TYPING_LOG_COLS:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str).str.strip()
+
+    df["date"] = pd.to_datetime(
+        df["date"],
+        errors="coerce",
+    ).dt.strftime("%Y-%m-%d").fillna(df["date"])
+
+    df["status"] = (
+        df["status"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    return df[TYPING_LOG_COLS].fillna("")
+
+
+def save_typing_log(df: pd.DataFrame) -> None:
+    df2 = df.copy() if df is not None else pd.DataFrame(columns=TYPING_LOG_COLS)
+    for c in TYPING_LOG_COLS:
+        if c not in df2.columns:
+            df2[c] = ""
+        df2[c] = df2[c].fillna("").astype(str).str.strip()
+    write_csv_atomic(df2[TYPING_LOG_COLS].fillna(""), TYPING_LOG_CSV)
+
+
+def get_typing_today(df: pd.DataFrame, student_id: str, d: date) -> dict | None:
+    if df is None or df.empty:
+        return None
+
+    sid = str(student_id).strip()
+    ds = str(d)
+
+    tmp = df.copy()
+    for c in TYPING_LOG_COLS:
+        if c not in tmp.columns:
+            tmp[c] = ""
+        tmp[c] = tmp[c].fillna("").astype(str).str.strip()
+
+    hit = tmp[
+        tmp["student_id"].astype(str).str.strip().eq(sid)
+        & tmp["date"].astype(str).str.strip().eq(ds)
+    ].copy()
+
+    if hit.empty:
+        return None
+
+    return hit.iloc[-1].to_dict()
+
+
+def upsert_typing_log(
+    df: pd.DataFrame,
+    student_id: str,
+    d: date,
+    status: str,
+    note: str = "",
+) -> pd.DataFrame:
+    sid = str(student_id).strip()
+    ds = str(d)
+    status = str(status).strip().lower()
+    note = str(note).strip()
+
+    if status not in ["done", "skip"]:
+        status = "done"
+
+    df2 = df.copy() if df is not None else pd.DataFrame(columns=TYPING_LOG_COLS)
+    for c in TYPING_LOG_COLS:
+        if c not in df2.columns:
+            df2[c] = ""
+        df2[c] = df2[c].fillna("").astype(str).str.strip()
+
+    if not df2.empty:
+        mask = (
+            df2["student_id"].astype(str).str.strip().eq(sid)
+            & df2["date"].astype(str).str.strip().eq(ds)
+        )
+        df2 = df2.loc[~mask].copy()
+
+    new_row = {
+        "date": ds,
+        "student_id": sid,
+        "status": status,
+        "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "note": note,
+    }
+
+    return pd.concat([df2, pd.DataFrame([new_row])], ignore_index=True)
+
+
+def delete_typing_log(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=TYPING_LOG_COLS)
+
+    sid = str(student_id).strip()
+    ds = str(d)
+
+    df2 = df.copy()
+    for c in TYPING_LOG_COLS:
+        if c not in df2.columns:
+            df2[c] = ""
+        df2[c] = df2[c].fillna("").astype(str).str.strip()
+
+    mask = (
+        df2["student_id"].astype(str).str.strip().eq(sid)
+        & df2["date"].astype(str).str.strip().eq(ds)
+    )
+    return df2.loc[~mask].copy()
+
+
+def typing_status_label(status: str) -> str:
+    s = str(status).strip().lower()
+    if s == "done":
+        return "✅ 完了"
+    if s == "skip":
+        return "⚪ 免除"
+    return "未完了"
+
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def count_month_lessons(df: pd.DataFrame, student_id: str, d: date) -> int:
@@ -1465,6 +1642,836 @@ def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     tmp.replace(path)
 
 
+
+# =========================================================
+# 🧩 サブ課題管理（d287 試作版）
+# =========================================================
+SUB_CURRICULA_CSV = DATA_DIR / "sub_curricula.csv"
+SUB_CURRICULUM_ITEMS_CSV = DATA_DIR / "sub_curriculum_items.csv"
+STUDENT_SUB_PROGRESS_CSV = DATA_DIR / "student_sub_progress.csv"
+SUB_PROGRESS_LOG_CSV = DATA_DIR / "sub_progress_log.csv"
+
+SUB_CURRICULA_COLS = [
+    "sub_id", "sub_name", "main_course_id",
+    "is_active", "note", "created_at", "updated_at"
+]
+SUB_CURRICULUM_ITEMS_COLS = [
+    "sub_id", "item_id", "item_name", "order", "is_active", "created_at", "updated_at"
+]
+STUDENT_SUB_PROGRESS_COLS = [
+    "student_id", "sub_id", "current_item_id", "is_active", "updated_at", "note"
+]
+SUB_PROGRESS_LOG_COLS = [
+    "student_id", "sub_id", "item_id", "completed_at", "note"
+]
+
+
+def _load_or_empty_csv(path: Path, columns: list[str]) -> pd.DataFrame:
+    """サブ課題CSVを安全に読み込む。未作成時は空の表を返す。"""
+    path = Path(path)
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+
+    try:
+        df = pd.read_csv(path, dtype=str).fillna("")
+    except Exception:
+        return pd.DataFrame(columns=columns)
+
+    for c in columns:
+        if c not in df.columns:
+            df[c] = ""
+    return df[columns].fillna("")
+
+
+def _save_sub_csv(df: pd.DataFrame, path: Path, columns: list[str]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df2 = df.copy() if df is not None else pd.DataFrame(columns=columns)
+    for c in columns:
+        if c not in df2.columns:
+            df2[c] = ""
+    write_csv_atomic(df2[columns].fillna(""), path)
+
+
+def load_sub_curricula() -> pd.DataFrame:
+    return _load_or_empty_csv(SUB_CURRICULA_CSV, SUB_CURRICULA_COLS)
+
+
+def save_sub_curricula(df: pd.DataFrame) -> None:
+    _save_sub_csv(df, SUB_CURRICULA_CSV, SUB_CURRICULA_COLS)
+
+
+def load_sub_curriculum_items() -> pd.DataFrame:
+    return _load_or_empty_csv(SUB_CURRICULUM_ITEMS_CSV, SUB_CURRICULUM_ITEMS_COLS)
+
+
+def save_sub_curriculum_items(df: pd.DataFrame) -> None:
+    _save_sub_csv(df, SUB_CURRICULUM_ITEMS_CSV, SUB_CURRICULUM_ITEMS_COLS)
+
+
+def load_student_sub_progress() -> pd.DataFrame:
+    return _load_or_empty_csv(STUDENT_SUB_PROGRESS_CSV, STUDENT_SUB_PROGRESS_COLS)
+
+
+def save_student_sub_progress(df: pd.DataFrame) -> None:
+    _save_sub_csv(df, STUDENT_SUB_PROGRESS_CSV, STUDENT_SUB_PROGRESS_COLS)
+
+
+def load_sub_progress_log() -> pd.DataFrame:
+    return _load_or_empty_csv(SUB_PROGRESS_LOG_CSV, SUB_PROGRESS_LOG_COLS)
+
+
+def save_sub_progress_log(df: pd.DataFrame) -> None:
+    _save_sub_csv(df, SUB_PROGRESS_LOG_CSV, SUB_PROGRESS_LOG_COLS)
+
+
+def _next_prefixed_id(existing_values, prefix: str, width: int = 3) -> str:
+    nums = []
+    for raw in pd.Series(existing_values, dtype=str).fillna("").astype(str):
+        s = str(raw).strip()
+        if s.startswith(prefix) and s[len(prefix):].isdigit():
+            nums.append(int(s[len(prefix):]))
+    n = max(nums) + 1 if nums else 1
+    return f"{prefix}{n:0{width}d}"
+
+
+
+def get_main_course_label(course_id: str) -> str:
+    """course_idから、画面表示用のコース名を返す。"""
+    cid = str(course_id).strip()
+    if not cid:
+        return "紐づけなし"
+
+    try:
+        courses_df = curr_courses.copy()
+    except Exception:
+        return cid
+
+    if courses_df.empty:
+        return cid
+
+    for c in ["course_id", "genre_name", "course_name"]:
+        if c not in courses_df.columns:
+            courses_df[c] = ""
+        courses_df[c] = courses_df[c].fillna("").astype(str).str.strip()
+
+    hit = courses_df[
+        courses_df["course_id"].astype(str).str.strip() == cid
+    ].copy()
+    if hit.empty:
+        return f"{cid}（見つかりません）"
+
+    row = hit.iloc[-1]
+    genre_name = str(row.get("genre_name", "")).strip()
+    course_name = str(row.get("course_name", "")).strip()
+
+    if genre_name and course_name and genre_name != course_name:
+        return f"{genre_name} / {course_name}"
+    return course_name or genre_name or cid
+
+
+def get_student_main_course_status(student_id: str, course_id: str) -> dict:
+    """生徒とメインコースの進捗を、未着手・進行中・完了で返す。
+
+    完了判定:
+      progress_log.csv の note=course_done を正とする。
+    進行中判定:
+      curriculum_progress.csv に完了またはスキップ済み課題が1件以上ある。
+    """
+    result = {
+        "linked": False,
+        "course_exists": False,
+        "course_id": str(course_id).strip(),
+        "course_name": "紐づけなし",
+        "status": "紐づけなし",
+        "status_detail": "紐づけなし",
+        "completed_count": 0,
+        "total_count": 0,
+        "all_tasks_finished": False,
+    }
+
+    sid = str(student_id).strip()
+    cid = str(course_id).strip()
+    if not cid:
+        return result
+
+    result["linked"] = True
+    result["course_name"] = get_main_course_label(cid)
+
+    try:
+        courses_df = curr_courses.copy()
+    except Exception:
+        courses_df = pd.DataFrame()
+
+    if courses_df.empty:
+        result["status"] = "コース不明"
+        result["status_detail"] = "コース不明"
+        return result
+
+    for c in [
+        "course_id", "genre_id", "genre_name",
+        "course_name", "course_order", "is_active"
+    ]:
+        if c not in courses_df.columns:
+            courses_df[c] = ""
+        courses_df[c] = courses_df[c].fillna("").astype(str).str.strip()
+
+    course_hit = courses_df[
+        courses_df["course_id"].astype(str).str.strip() == cid
+    ].copy()
+    if course_hit.empty:
+        result["status"] = "コース不明"
+        result["status_detail"] = "コース不明"
+        return result
+
+    result["course_exists"] = True
+    course_row = course_hit.iloc[-1]
+    genre_id = str(course_row.get("genre_id", "")).strip()
+    course_name = str(course_row.get("course_name", "")).strip()
+
+    # メインコース完了は progress_log.csv の course_done を正とする。
+    try:
+        log_df = log.copy()
+    except Exception:
+        log_df = pd.DataFrame()
+
+    is_course_done = False
+    if not log_df.empty:
+        for c in [
+            "student_id", "curriculum", "item",
+            "status", "note"
+        ]:
+            if c not in log_df.columns:
+                log_df[c] = ""
+            log_df[c] = log_df[c].fillna("").astype(str).str.strip()
+
+        done_mask = (
+            log_df["student_id"].astype(str).str.strip().eq(sid)
+            & log_df["curriculum"].astype(str).str.strip().eq(genre_id)
+            & log_df["item"].astype(str).str.strip().eq(course_name)
+            & log_df["status"].astype(str).str.strip().str.lower().eq("done")
+            & log_df["note"].astype(str).str.strip().eq("course_done")
+        )
+        is_course_done = bool(done_mask.any())
+
+    # 対象生徒に適用される、使用中のメイン課題数
+    try:
+        tasks_df = curr_tasks.copy()
+    except Exception:
+        tasks_df = pd.DataFrame()
+
+    relevant_task_ids = []
+    if not tasks_df.empty:
+        for c in [
+            "course_id", "task_id", "task_name",
+            "order", "is_active", "student_id"
+        ]:
+            if c not in tasks_df.columns:
+                tasks_df[c] = ""
+            tasks_df[c] = tasks_df[c].fillna("").astype(str).str.strip()
+
+        active_task_mask = (
+            tasks_df["is_active"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .replace("", "true")
+            .isin(["true", "1", "yes", "on"])
+        )
+        applicable_student_mask = (
+            tasks_df["student_id"].astype(str).str.strip().eq("")
+            | tasks_df["student_id"].astype(str).str.strip().eq(sid)
+        )
+        relevant_tasks = tasks_df[
+            tasks_df["course_id"].astype(str).str.strip().eq(cid)
+            & active_task_mask
+            & applicable_student_mask
+        ].copy()
+
+        relevant_task_ids = (
+            relevant_tasks["task_id"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+        relevant_task_ids = [
+            x for x in relevant_task_ids.tolist() if x
+        ]
+
+    result["total_count"] = len(set(relevant_task_ids))
+
+    # 完了またはスキップされた課題数
+    try:
+        prog_df = curr_prog.copy()
+    except Exception:
+        prog_df = pd.DataFrame()
+
+    finished_ids = set()
+    if not prog_df.empty:
+        for c in [
+            "student_id", "course_id", "task_id",
+            "is_done", "is_skip", "done_date", "note"
+        ]:
+            if c not in prog_df.columns:
+                prog_df[c] = ""
+            prog_df[c] = prog_df[c].fillna("").astype(str).str.strip()
+
+        target_prog = prog_df[
+            prog_df["student_id"].astype(str).str.strip().eq(sid)
+            & prog_df["course_id"].astype(str).str.strip().eq(cid)
+        ].copy()
+
+        if not target_prog.empty:
+            done_bool = (
+                target_prog["is_done"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin(["true", "1", "yes", "on"])
+            )
+            skip_bool = (
+                target_prog["is_skip"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin(["true", "1", "yes", "on"])
+            )
+            finished_ids = set(
+                target_prog.loc[
+                    done_bool | skip_bool, "task_id"
+                ].astype(str).str.strip()
+            )
+            finished_ids.discard("")
+
+    if relevant_task_ids:
+        finished_ids = finished_ids.intersection(set(relevant_task_ids))
+
+    completed_count = len(finished_ids)
+    total_count = result["total_count"]
+    result["completed_count"] = completed_count
+    result["all_tasks_finished"] = bool(
+        total_count > 0 and completed_count >= total_count
+    )
+
+    if is_course_done:
+        result["status"] = "完了"
+        if total_count > 0:
+            result["status_detail"] = f"完了（{completed_count}/{total_count}）"
+        else:
+            result["status_detail"] = "完了"
+    elif result["all_tasks_finished"]:
+        result["status"] = "進行中"
+        result["status_detail"] = (
+            f"進行中（{completed_count}/{total_count}・完了登録待ち）"
+        )
+    elif completed_count > 0:
+        result["status"] = "進行中"
+        if total_count > 0:
+            result["status_detail"] = f"進行中（{completed_count}/{total_count}）"
+        else:
+            result["status_detail"] = f"進行中（{completed_count}項目）"
+    else:
+        result["status"] = "未着手"
+        if total_count > 0:
+            result["status_detail"] = f"未着手（0/{total_count}）"
+        else:
+            result["status_detail"] = "未着手"
+
+    return result
+
+
+def get_sub_main_course_id(sub_id: str) -> str:
+    """サブ課題に紐づくメインコースIDを返す。"""
+    sid = str(sub_id).strip()
+    if not sid:
+        return ""
+
+    masters = load_sub_curricula()
+    if masters.empty:
+        return ""
+
+    hit = masters[
+        masters["sub_id"].astype(str).str.strip() == sid
+    ].copy()
+    if hit.empty:
+        return ""
+
+    return str(hit.iloc[-1].get("main_course_id", "")).strip()
+
+
+def upsert_student_sub_progress(
+    student_id: str,
+    sub_id: str,
+    current_item_id: str,
+    is_active: bool,
+    note: str = "",
+) -> None:
+    df = load_student_sub_progress()
+    sid = str(student_id).strip()
+
+    if not df.empty:
+        df = df[df["student_id"].astype(str).str.strip() != sid].copy()
+
+    row = {
+        "student_id": sid,
+        "sub_id": str(sub_id).strip(),
+        "current_item_id": str(current_item_id).strip(),
+        "is_active": "true" if is_active else "false",
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "note": str(note).strip(),
+    }
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    save_student_sub_progress(df)
+
+
+
+def complete_and_advance_student_sub_task(student_id: str) -> tuple[bool, str]:
+    """現在のサブ課題を完了記録し、次の項目へ進める。
+
+    最後の項目を完了した場合は、サブ課題進行中をOFFにする。
+    """
+    try:
+        sid = str(student_id).strip()
+        if not sid:
+            return False, "生徒IDが見つかりません。"
+
+        progress = load_student_sub_progress()
+        if progress.empty:
+            return False, "サブ課題の設定がありません。"
+
+        row_df = progress[
+            progress["student_id"].astype(str).str.strip() == sid
+        ].copy()
+        if row_df.empty:
+            return False, "サブ課題の設定がありません。"
+
+        row = row_df.iloc[-1]
+        active = str(row.get("is_active", "")).strip().lower()
+        if active not in ["true", "1", "yes", "on"]:
+            return False, "サブ課題進行中がOFFです。"
+
+        sub_id = str(row.get("sub_id", "")).strip()
+        current_item_id = str(row.get("current_item_id", "")).strip()
+        note = str(row.get("note", "")).strip()
+
+        if not sub_id or not current_item_id:
+            return False, "現在のサブ課題または項目が設定されていません。"
+
+        masters = load_sub_curricula()
+        items = load_sub_curriculum_items()
+
+        sub_name = sub_id
+        if not masters.empty:
+            master_hit = masters[
+                masters["sub_id"].astype(str).str.strip() == sub_id
+            ].copy()
+            if not master_hit.empty:
+                sub_name = (
+                    str(master_hit.iloc[-1].get("sub_name", "")).strip()
+                    or sub_id
+                )
+
+        sub_items = items[
+            items["sub_id"].astype(str).str.strip() == sub_id
+        ].copy() if not items.empty else pd.DataFrame()
+
+        if sub_items.empty:
+            return False, f"{sub_name}に項目が登録されていません。"
+
+        active_mask = (
+            sub_items["is_active"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .replace("", "true")
+            .isin(["true", "1", "yes", "on"])
+        )
+        sub_items = sub_items[active_mask].copy()
+        sub_items["_order_num"] = pd.to_numeric(
+            sub_items["order"], errors="coerce"
+        ).fillna(9999)
+        sub_items = sub_items.sort_values(
+            ["_order_num", "item_name"], na_position="last"
+        ).reset_index(drop=True)
+
+        current_matches = sub_items.index[
+            sub_items["item_id"].astype(str).str.strip() == current_item_id
+        ].tolist()
+        if not current_matches:
+            return False, "現在の項目がサブ課題一覧に見つかりません。"
+
+        current_index = int(current_matches[0])
+        current_name = (
+            str(sub_items.iloc[current_index].get("item_name", "")).strip()
+            or current_item_id
+        )
+
+        # 完了履歴を保存。同じ項目の二重登録は避ける。
+        log_df = load_sub_progress_log()
+        duplicate = False
+        if not log_df.empty:
+            duplicate = bool(
+                (
+                    log_df["student_id"].astype(str).str.strip().eq(sid)
+                    & log_df["sub_id"].astype(str).str.strip().eq(sub_id)
+                    & log_df["item_id"].astype(str).str.strip().eq(current_item_id)
+                ).any()
+            )
+
+        if not duplicate:
+            log_row = {
+                "student_id": sid,
+                "sub_id": sub_id,
+                "item_id": current_item_id,
+                "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "note": "",
+            }
+            log_df = pd.concat(
+                [log_df, pd.DataFrame([log_row])],
+                ignore_index=True,
+            )
+            save_sub_progress_log(log_df)
+
+        # 次の項目があれば進める。
+        if current_index + 1 < len(sub_items):
+            next_row = sub_items.iloc[current_index + 1]
+            next_item_id = str(next_row.get("item_id", "")).strip()
+            next_item_name = (
+                str(next_row.get("item_name", "")).strip()
+                or next_item_id
+            )
+            upsert_student_sub_progress(
+                sid,
+                sub_id,
+                next_item_id,
+                True,
+                note,
+            )
+            return (
+                True,
+                f"{current_name}を完了しました。次は「{next_item_name}」です。",
+            )
+
+        # 最後の項目なら、現在位置を残したまま進行中をOFFにする。
+        upsert_student_sub_progress(
+            sid,
+            sub_id,
+            current_item_id,
+            False,
+            note,
+        )
+        return (
+            True,
+            f"{current_name}を完了しました。{sub_name}は最後まで完了したため停止しました。",
+        )
+
+    except Exception as e:
+        return False, f"サブ課題の更新でエラーが発生しました：{e}"
+
+
+
+def get_student_sub_ui_state(student_id: str) -> dict:
+    """閲覧画面用に、サブ課題の現在位置・本日の登録・直前の完了をまとめる。"""
+    state = {
+        "configured": False,
+        "is_active": False,
+        "sub_id": "",
+        "sub_name": "",
+        "current_item_id": "",
+        "current_item_name": "",
+        "today_count": 0,
+        "today_item_names": [],
+        "latest_item_id": "",
+        "latest_item_name": "",
+        "latest_completed_at": "",
+        "has_latest_completion": False,
+    }
+
+    try:
+        sid = str(student_id).strip()
+        if not sid:
+            return state
+
+        progress = load_student_sub_progress()
+        if progress.empty:
+            return state
+
+        hit = progress[
+            progress["student_id"].astype(str).str.strip() == sid
+        ].copy()
+        if hit.empty:
+            return state
+
+        row = hit.iloc[-1]
+        sub_id = str(row.get("sub_id", "")).strip()
+        current_item_id = str(row.get("current_item_id", "")).strip()
+        if not sub_id:
+            return state
+
+        state["configured"] = True
+        state["sub_id"] = sub_id
+        state["current_item_id"] = current_item_id
+        state["is_active"] = (
+            str(row.get("is_active", "")).strip().lower()
+            in ["true", "1", "yes", "on"]
+        )
+
+        masters = load_sub_curricula()
+        items = load_sub_curriculum_items()
+
+        sub_name = sub_id
+        if not masters.empty:
+            master_hit = masters[
+                masters["sub_id"].astype(str).str.strip() == sub_id
+            ].copy()
+            if not master_hit.empty:
+                sub_name = (
+                    str(master_hit.iloc[-1].get("sub_name", "")).strip()
+                    or sub_id
+                )
+        state["sub_name"] = sub_name
+
+        item_name_map = {}
+        if not items.empty:
+            item_name_map = dict(
+                zip(
+                    items["item_id"].astype(str).str.strip(),
+                    items["item_name"].astype(str).str.strip(),
+                )
+            )
+        state["current_item_name"] = item_name_map.get(
+            current_item_id, current_item_id
+        )
+
+        log_df = load_sub_progress_log()
+        if log_df.empty:
+            return state
+
+        sub_log = log_df[
+            (
+                log_df["student_id"].astype(str).str.strip() == sid
+            )
+            & (
+                log_df["sub_id"].astype(str).str.strip() == sub_id
+            )
+        ].copy()
+        if sub_log.empty:
+            return state
+
+        sub_log["_completed_dt"] = pd.to_datetime(
+            sub_log["completed_at"], errors="coerce"
+        )
+        sub_log["_row_order"] = range(len(sub_log))
+
+        # 本日完了した項目
+        today_iso = date.today().isoformat()
+        today_log = sub_log[
+            sub_log["_completed_dt"].dt.strftime("%Y-%m-%d") == today_iso
+        ].copy()
+        if not today_log.empty:
+            today_log = today_log.sort_values(
+                ["_completed_dt", "_row_order"],
+                na_position="last",
+            )
+            today_names = [
+                item_name_map.get(str(item_id).strip(), str(item_id).strip())
+                for item_id in today_log["item_id"].tolist()
+            ]
+            state["today_count"] = len(today_names)
+            state["today_item_names"] = [x for x in today_names if x]
+
+        # 直前の完了
+        valid_log = sub_log[sub_log["_completed_dt"].notna()].copy()
+        if not valid_log.empty:
+            latest = valid_log.sort_values(
+                ["_completed_dt", "_row_order"]
+            ).iloc[-1]
+        else:
+            latest = sub_log.sort_values("_row_order").iloc[-1]
+
+        latest_item_id = str(latest.get("item_id", "")).strip()
+        latest_completed_at = str(latest.get("completed_at", "")).strip()
+        state["latest_item_id"] = latest_item_id
+        state["latest_item_name"] = item_name_map.get(
+            latest_item_id, latest_item_id
+        )
+        state["latest_completed_at"] = latest_completed_at
+        state["has_latest_completion"] = bool(latest_item_id)
+
+        return state
+
+    except Exception:
+        return state
+
+
+def undo_latest_student_sub_completion(student_id: str) -> tuple[bool, str]:
+    """直前のサブ課題完了を1件削除し、その項目を現在位置へ戻す。"""
+    try:
+        sid = str(student_id).strip()
+        if not sid:
+            return False, "生徒IDが見つかりません。"
+
+        progress = load_student_sub_progress()
+        if progress.empty:
+            return False, "サブ課題の設定がありません。"
+
+        progress_hit = progress[
+            progress["student_id"].astype(str).str.strip() == sid
+        ].copy()
+        if progress_hit.empty:
+            return False, "サブ課題の設定がありません。"
+
+        progress_row = progress_hit.iloc[-1]
+        sub_id = str(progress_row.get("sub_id", "")).strip()
+        note = str(progress_row.get("note", "")).strip()
+        if not sub_id:
+            return False, "サブ課題が設定されていません。"
+
+        log_df = load_sub_progress_log()
+        if log_df.empty:
+            return False, "取り消せる完了記録がありません。"
+
+        mask = (
+            log_df["student_id"].astype(str).str.strip().eq(sid)
+            & log_df["sub_id"].astype(str).str.strip().eq(sub_id)
+        )
+        sub_log = log_df[mask].copy()
+        if sub_log.empty:
+            return False, "取り消せる完了記録がありません。"
+
+        sub_log["_completed_dt"] = pd.to_datetime(
+            sub_log["completed_at"], errors="coerce"
+        )
+        sub_log["_row_order"] = range(len(sub_log))
+
+        valid_log = sub_log[sub_log["_completed_dt"].notna()].copy()
+        if not valid_log.empty:
+            latest_index = valid_log.sort_values(
+                ["_completed_dt", "_row_order"]
+            ).index[-1]
+        else:
+            latest_index = sub_log.sort_values("_row_order").index[-1]
+
+        latest_row = log_df.loc[latest_index]
+        item_id = str(latest_row.get("item_id", "")).strip()
+        completed_at = str(latest_row.get("completed_at", "")).strip()
+        if not item_id:
+            return False, "直前の完了項目を特定できませんでした。"
+
+        items = load_sub_curriculum_items()
+        item_name = item_id
+        if not items.empty:
+            item_hit = items[
+                items["item_id"].astype(str).str.strip() == item_id
+            ].copy()
+            if not item_hit.empty:
+                item_name = (
+                    str(item_hit.iloc[-1].get("item_name", "")).strip()
+                    or item_id
+                )
+
+        # 完了履歴を1件だけ削除
+        log_df = log_df.drop(index=latest_index).reset_index(drop=True)
+        save_sub_progress_log(log_df)
+
+        # 取り消した項目を再び「次にやる項目」にし、進行中をONへ戻す
+        upsert_student_sub_progress(
+            sid,
+            sub_id,
+            item_id,
+            True,
+            note,
+        )
+
+        when = f"（{completed_at}）" if completed_at else ""
+        return True, f"「{item_name}」の完了{when}を取り消し、この項目へ戻しました。"
+
+    except Exception as e:
+        return False, f"完了の取り消しでエラーが発生しました：{e}"
+
+
+def get_student_sub_task_hint(student_id: str) -> str:
+    """進行中のサブ課題があれば「サブ：教材名 / 次の項目」を返す。"""
+    try:
+        sid = str(student_id).strip()
+        if not sid:
+            return ""
+
+        progress = load_student_sub_progress()
+        if progress.empty:
+            return ""
+
+        row_df = progress[
+            progress["student_id"].astype(str).str.strip() == sid
+        ].copy()
+        if row_df.empty:
+            return ""
+
+        row = row_df.iloc[-1]
+        active = str(row.get("is_active", "")).strip().lower()
+        if active not in ["true", "1", "yes", "on"]:
+            return ""
+
+        sub_id = str(row.get("sub_id", "")).strip()
+        item_id = str(row.get("current_item_id", "")).strip()
+        if not sub_id:
+            return ""
+
+        masters = load_sub_curricula()
+        items = load_sub_curriculum_items()
+
+        sub_name = sub_id
+        if not masters.empty:
+            hit = masters[
+                masters["sub_id"].astype(str).str.strip() == sub_id
+            ].copy()
+            if not hit.empty:
+                sub_name = str(hit.iloc[-1].get("sub_name", "")).strip() or sub_id
+
+        sub_items = items[
+            items["sub_id"].astype(str).str.strip() == sub_id
+        ].copy() if not items.empty else pd.DataFrame()
+
+        if sub_items.empty:
+            return f"サブ：{sub_name} / 項目未登録"
+
+        active_mask = (
+            sub_items["is_active"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .replace("", "true")
+            .isin(["true", "1", "yes", "on"])
+        )
+        sub_items = sub_items[active_mask].copy()
+        sub_items["_order_num"] = pd.to_numeric(
+            sub_items["order"], errors="coerce"
+        ).fillna(9999)
+        sub_items = sub_items.sort_values(
+            ["_order_num", "item_name"], na_position="last"
+        )
+
+        item_name = ""
+        if item_id:
+            item_hit = sub_items[
+                sub_items["item_id"].astype(str).str.strip() == item_id
+            ].copy()
+            if not item_hit.empty:
+                item_name = str(item_hit.iloc[0].get("item_name", "")).strip()
+
+        # 保存済みの項目が無い・削除済みの場合は先頭項目を案内する。
+        if not item_name and not sub_items.empty:
+            item_name = str(sub_items.iloc[0].get("item_name", "")).strip()
+            item_id = str(sub_items.iloc[0].get("item_id", "")).strip()
+
+        return f"サブ：{sub_name} / {item_name or item_id or '次の項目未設定'}"
+    except Exception as e:
+        return f"サブ：確認エラー {e}"
+
+
 def upsert_schedule_override_row(
     overrides_df: pd.DataFrame,
     *,
@@ -2154,6 +3161,7 @@ if page == "閲覧":
     if kentei_exam.empty:
         st.caption("検定予定はまだ登録されていません。（data/kentei_exam_schedule.csv を置くと表示されます）")
         today_exam_ids = set()
+        today_exam_grade_map = {}
     else:
         exam_view = kentei_exam.copy()
 
@@ -2188,8 +3196,17 @@ if page == "閲覧":
             columns={"exam_type": "検定", "grade": "級", "note": "メモ"}
         )
 
+        # d286:
+        # 今日が検定日の生徒IDと受験級を、座席表・次に見る候補でも使えるように保持する。
+        _today_exam_rows = exam_tbl[exam_tbl["日付"] == today_str].copy()
+        today_exam_ids = set(_today_exam_rows["student_id"].astype(str).str.strip())
+        today_exam_grade_map = {
+            str(_r.get("student_id", "")).strip(): str(_r.get("級", "")).strip()
+            for _, _r in _today_exam_rows.iterrows()
+            if str(_r.get("student_id", "")).strip()
+        }
+
         # 🔴印（名前そのものの色は変えない）
-        today_exam_ids = set(exam_tbl.loc[exam_tbl["日付"] == today_str, "student_id"].astype(str))
         exam_tbl["生徒"] = exam_tbl.apply(
             lambda r: ("🔴 " + str(r["生徒"]).strip()) if str(r["student_id"]) in today_exam_ids and str(r["日付"]) == today_str else str(r["生徒"]).strip(),
             axis=1,
@@ -3068,19 +4085,10 @@ if page == "閲覧":
         if "display_name" not in next_candidates.columns:
             next_candidates["display_name"] = next_candidates["student_id"].astype(str)
 
-        # d248:
-        # 「次に見る候補」は、先生が次に確認・進捗登録する対象を出す場所。
-        # 自習は基本的に進捗登録不要なので、候補から外す。
-        if "session_type" in next_candidates.columns:
-            _next_session = next_candidates["session_type"].fillna("").astype(str).str.strip().str.lower()
-            next_candidates = next_candidates[
-                ~_next_session.isin(["自習", "self", "selfstudy", "self-study", "自"])
-            ].copy()
-        elif "種別" in next_candidates.columns:
-            _next_session = next_candidates["種別"].fillna("").astype(str).str.strip()
-            next_candidates = next_candidates[
-                ~_next_session.isin(["自習", "🟦 自習", "自"])
-            ].copy()
+        # d284:
+        # 「準備しながら全員を確認したい」という運用に合わせ、
+        # 自習を含む今日の予定全員を残す。
+        # 以前の「確認が必要な授業だけ」という絞り込みは行わない。
 
 
         # 優先度
@@ -3100,8 +4108,9 @@ if page == "閲覧":
         next_candidates["priority"] = next_candidates.apply(calc_priority, axis=1)
 
 
-        # 候補だけ残す
-        next_candidates = next_candidates[next_candidates["priority"] < 2].copy()
+        # d284:
+        # 完了済みも含めて今日の予定全員を表示する。
+        # priority は除外条件ではなく、確認しやすい並び順にだけ使う。
 
 
         # 並び順
@@ -3304,10 +4313,25 @@ if page == "閲覧":
         st.subheader("👀 次に見る候補")
 
 
+        _sub_progress_flash = st.session_state.pop("sub_progress_flash", "")
+        _sub_progress_flash_is_error = st.session_state.pop("sub_progress_flash_is_error", False)
+        if _sub_progress_flash:
+            if _sub_progress_flash_is_error:
+                st.error(_sub_progress_flash)
+            else:
+                st.success(_sub_progress_flash)
+
         if next_candidates.empty:
             st.caption("候補なし")
         else:
-            for i, (_, r) in enumerate(next_candidates.head(5).iterrows(), start=1):
+            # d284:
+            # 今日の予定にいる生徒を、自習・完了済みも含めて全員表示する。
+            st.caption(f"今日の予定：{len(next_candidates)}人（自習・完了済みを含めて全員表示）")
+
+            # 同じ生徒が複数コマにいる場合も、サブ課題の状態・操作は1回だけ表示する。
+            _sub_progress_button_rendered = set()
+
+            for i, (_, r) in enumerate(next_candidates.iterrows(), start=1):
                 name = str(r.get("display_name", "")).strip()
                 sid = str(r.get("student_id", "")).strip()
                 status = str(r.get("状態", "")).strip()
@@ -3327,7 +4351,9 @@ if page == "閲覧":
 
 
                 seat_label = _seat_label_for_today_candidate(sid, slot)
-                st.write(f"{i}. {slot}限 / 席：{seat_label} / {name} / {status}")
+                _today_exam_grade = str(today_exam_grade_map.get(sid, "")).strip()
+                _today_exam_mark = "🎫 " if sid in today_exam_ids else ""
+                st.write(f"{i}. {slot}限 / 席：{seat_label} / {_today_exam_mark}{name} / {status}")
 
                 # d245:
                 # まずは「次に見る候補」に、今日やる候補を1行だけ表示して検証する。
@@ -3665,9 +4691,151 @@ if page == "閲覧":
                     except Exception as _e:
                         return f"今日やる候補確認エラー {_e}"
 
-                task_hint = _today_task_hint(sid)
-                if task_hint:
-                    st.caption(f"今日やる候補：{task_hint}")
+                _candidate_session_type = str(
+                    r.get("session_type", r.get("種別", ""))
+                ).strip().lower()
+                _candidate_is_selfstudy = _candidate_session_type in [
+                    "自習", "🟦 自習", "self", "selfstudy", "self-study", "自"
+                ]
+
+                # d286:
+                # 今日が検定日の生徒は、通常カリキュラムや検定練習課題よりも
+                # 「本日の検定」を最優先で表示する。
+                if sid in today_exam_ids:
+                    if _today_exam_grade:
+                        st.caption(f"今日やる候補：🎫 検定（{_today_exam_grade}級）")
+                    else:
+                        st.caption("今日やる候補：🎫 検定")
+                elif _candidate_is_selfstudy:
+                    st.caption("今日やる候補：自習（通常課題の準備対象外）")
+                else:
+                    task_hint = _today_task_hint(sid)
+                    if task_hint:
+                        st.caption(f"今日やる候補：{task_hint}")
+
+                # d289:
+                # サブ課題の現在位置に加えて、本日の登録状態と取り消し操作を表示する。
+                sub_state = get_student_sub_ui_state(sid)
+                sub_task_hint = get_student_sub_task_hint(sid)
+
+                if sub_task_hint:
+                    st.caption(sub_task_hint)
+                elif (
+                    sub_state.get("configured")
+                    and sub_state.get("today_count", 0) > 0
+                ):
+                    # 最後の項目を完了して自動停止した後も、
+                    # 本日の登録と取り消し操作を確認できるように残す。
+                    _finished_sub_name = str(
+                        sub_state.get("sub_name", "")
+                    ).strip()
+                    st.caption(
+                        f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
+                    )
+
+                _show_sub_controls = bool(
+                    sub_state.get("configured")
+                    and (
+                        sub_state.get("is_active")
+                        or sub_state.get("today_count", 0) > 0
+                    )
+                )
+
+                if (
+                    _show_sub_controls
+                    and sid not in _sub_progress_button_rendered
+                ):
+                    _sub_progress_button_rendered.add(sid)
+
+                    _today_count = int(
+                        sub_state.get("today_count", 0) or 0
+                    )
+                    _today_names = list(
+                        sub_state.get("today_item_names", []) or []
+                    )
+
+                    if _today_count > 0:
+                        _today_items_text = "、".join(_today_names)
+                        st.caption(
+                            f"本日：✅ {_today_count}項目完了"
+                            + (
+                                f"（{_today_items_text}）"
+                                if _today_items_text
+                                else ""
+                            )
+                        )
+                    else:
+                        st.caption("本日：未登録")
+
+                    _confirm_key = f"sub_undo_confirm_{sid}"
+                    _confirming_undo = bool(
+                        st.session_state.get(_confirm_key, False)
+                    )
+
+                    if not _confirming_undo:
+                        _sub_btn1, _sub_btn2 = st.columns(2)
+
+                        with _sub_btn1:
+                            if sub_state.get("is_active"):
+                                if st.button(
+                                    "✅ サブ課題完了 → 次へ",
+                                    key=f"sub_progress_next_{sid}_{slot}_{i}",
+                                    help="現在表示されているサブ課題を完了として記録し、次の項目へ進めます。",
+                                ):
+                                    _ok, _message = complete_and_advance_student_sub_task(sid)
+                                    st.session_state["sub_progress_flash"] = _message
+                                    st.session_state["sub_progress_flash_is_error"] = not _ok
+                                    st.rerun()
+
+                        with _sub_btn2:
+                            if sub_state.get("has_latest_completion"):
+                                if st.button(
+                                    "↩ 直前の完了を取り消す",
+                                    key=f"sub_progress_undo_open_{sid}_{slot}_{i}",
+                                    help="直前に完了したサブ課題を未完了へ戻します。確認後に実行されます。",
+                                ):
+                                    st.session_state[_confirm_key] = True
+                                    st.rerun()
+
+                    else:
+                        _undo_item_name = str(
+                            sub_state.get("latest_item_name", "")
+                        ).strip()
+                        _undo_completed_at = str(
+                            sub_state.get("latest_completed_at", "")
+                        ).strip()
+                        _undo_when = (
+                            f"（登録：{_undo_completed_at}）"
+                            if _undo_completed_at
+                            else ""
+                        )
+
+                        st.warning(
+                            f"「{_undo_item_name}」の完了{_undo_when}を取り消し、"
+                            "この項目へ戻します。"
+                        )
+
+                        _undo_confirm_col, _undo_cancel_col = st.columns(2)
+
+                        with _undo_confirm_col:
+                            if st.button(
+                                "取り消して戻す",
+                                key=f"sub_progress_undo_confirm_{sid}_{slot}_{i}",
+                                type="primary",
+                            ):
+                                _ok, _message = undo_latest_student_sub_completion(sid)
+                                st.session_state[_confirm_key] = False
+                                st.session_state["sub_progress_flash"] = _message
+                                st.session_state["sub_progress_flash_is_error"] = not _ok
+                                st.rerun()
+
+                        with _undo_cancel_col:
+                            if st.button(
+                                "やめる",
+                                key=f"sub_progress_undo_cancel_{sid}_{slot}_{i}",
+                            ):
+                                st.session_state[_confirm_key] = False
+                                st.rerun()
 
                 if memo:
                     st.caption(f"📝 {memo}")
@@ -3960,8 +5128,11 @@ if page == "閲覧":
                 else:
                     _seat_name_map = {}
 
-                # 今日の予定側の状態マップ（取れれば表示する）
+                # d285:
+                # 今日の予定側から「状態」と「授業 / 自習」を取得する。
+                # 座席表では、名前の前に 📘（授業）/ 📝（自習）を付けて見分けやすくする。
                 _today_status_map = {}
+                _today_type_map = {}
                 if "student_id" in today_view.columns and "slot" in today_view.columns:
                     _tmp_tv = today_view.copy()
                     _tmp_tv["student_id"] = _tmp_tv["student_id"].astype(str).str.strip()
@@ -3970,6 +5141,11 @@ if page == "閲覧":
                         _key = (str(_r.get("student_id", "")).strip(), str(_r.get("slot_norm", "")).strip())
                         _today_status_map[_key] = str(_r.get("状態", "")).strip()
 
+                        _session_type = str(_r.get("session_type", "")).strip()
+                        if not _session_type:
+                            _session_type = str(_r.get("種別", "")).strip()
+                        _today_type_map[_key] = "自習" if "自習" in _session_type else "授業"
+
                 for _, _r in seat_mini_src.iterrows():
                     _sid = str(_r.get("student_id", "")).strip()
                     _slot = str(_r.get("slot_norm", "")).strip()
@@ -3977,10 +5153,29 @@ if page == "閲覧":
                     if not _sid or not _seat_no:
                         continue
 
+                    _seat_session_type = _today_type_map.get((_sid, _slot), "")
+                    _seat_type_label = (
+                        "📝 自習" if _seat_session_type == "自習"
+                        else "📘 授業" if _seat_session_type == "授業"
+                        else ""
+                    )
+                    _seat_exam_grade = str(today_exam_grade_map.get(_sid, "")).strip()
+                    _seat_exam_label = (
+                        f"🎫 {_seat_exam_grade}級"
+                        if _sid in today_exam_ids and _seat_exam_grade
+                        else "🎫 検定"
+                        if _sid in today_exam_ids
+                        else ""
+                    )
+
                     seat_mini_rows.append({
                         "コマ": _slot,
                         "席": f"席{_seat_no}",
                         "生徒": _seat_name_map.get(_sid, _sid),
+                        "種別": _seat_type_label,
+                        "検定": _seat_exam_label,
+                        "_session_type": _seat_session_type,
+                        "_exam_grade": _seat_exam_grade if _sid in today_exam_ids else "",
                         "状態": _today_status_map.get((_sid, _slot), ""),
                         "メモ": str(_r.get("note", "")).strip(),
                         "_slot_num": pd.to_numeric(_slot, errors="coerce"),
@@ -3992,7 +5187,7 @@ if page == "閲覧":
             seat_mini = seat_mini.sort_values(by=["_slot_num", "_seat_num", "生徒"], na_position="last")
 
             st.subheader("🪑 今日の座席")
-            st.caption("横＝席、縦＝コマで、どのコマのどの席が空いているか確認できます。")
+            st.caption("横＝席、縦＝コマです。🎫＝検定 / 📘＝授業 / 📝＝自習")
 
             # d223:
             # 席ごとの縦カードではなく、コマ×席の表にする。
@@ -4043,6 +5238,20 @@ if page == "閲覧":
                         names = []
                         for _, _sr in _cell_df.sort_values(by=["生徒"], na_position="last").iterrows():
                             _name = str(_sr.get("生徒", "")).strip()
+                            _session_type = str(_sr.get("_session_type", "")).strip()
+                            _exam_grade = str(_sr.get("_exam_grade", "")).strip()
+
+                            _marks = []
+                            if _exam_grade:
+                                _marks.append("🎫")
+                            if _session_type == "自習":
+                                _marks.append("📝")
+                            elif _session_type == "授業":
+                                _marks.append("📘")
+
+                            if _marks and _name:
+                                _name = f"{' '.join(_marks)} {_name}"
+
                             _note = str(_sr.get("メモ", "")).strip()
                             if _note:
                                 _name = f"{_name}\n({_note})"
@@ -4068,7 +5277,7 @@ if page == "閲覧":
                 )
 
             with st.expander("一覧表で確認", expanded=False):
-                show_mini_cols = ["コマ", "席", "生徒", "状態", "メモ"]
+                show_mini_cols = ["コマ", "席", "生徒", "種別", "検定", "状態", "メモ"]
                 show_mini_cols = [c for c in show_mini_cols if c in seat_mini.columns]
                 st.dataframe(
                     seat_mini[show_mini_cols],
@@ -4657,6 +5866,196 @@ if page == "閲覧":
                             st.markdown(f"- **{label}** ／ {kind_label}" + (f" ／ {rec_memo}" if rec_memo else ""))
 
         # =====================================================
+        # ⌨️ タイピング5分チェック（d296）
+        # -----------------------------------------------------
+        # 出席登録済みの子だけを対象にする。
+        # まだ来ていない子は未完了に出さず、来た子だけ残るようにする。
+        # =====================================================
+        with st.expander("⌨️ タイピング5分チェック", expanded=True):
+            st.caption(
+                "出席登録済みの生徒だけを対象にします。"
+                "終わったら「完了」、今日は不要なら「免除」を押します。"
+            )
+
+            typing_df = load_typing_log()
+            typing_att_df = load_attendance_log()
+
+            typing_student_name_map = {}
+            if not students.empty and {"student_id", "display_name"}.issubset(students.columns):
+                _typing_students = students.copy()
+                _typing_students["student_id"] = (
+                    _typing_students["student_id"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+                _typing_students["display_name"] = (
+                    _typing_students["display_name"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+                typing_student_name_map = dict(
+                    zip(
+                        _typing_students["student_id"],
+                        _typing_students["display_name"],
+                    )
+                )
+
+            # 今日出席登録済みの生徒を抽出
+            typing_att_today = typing_att_df.copy()
+            for _c in ["date", "student_id", "kind", "memo"]:
+                if _c not in typing_att_today.columns:
+                    typing_att_today[_c] = ""
+                typing_att_today[_c] = (
+                    typing_att_today[_c]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
+
+            if not typing_att_today.empty:
+                typing_att_today["kind_norm"] = typing_att_today["kind"].map(
+                    normalize_attendance_kind_for_lock
+                )
+                typing_att_today = typing_att_today[
+                    typing_att_today["date"].astype(str).str.strip().eq(str(today))
+                    & typing_att_today["kind_norm"].isin(["lesson", "selfstudy"])
+                ].copy()
+
+            attended_ids_raw = []
+            if not typing_att_today.empty:
+                for _sid in typing_att_today["student_id"].astype(str).tolist():
+                    _sid = str(_sid).strip()
+                    if _sid and _sid not in attended_ids_raw:
+                        attended_ids_raw.append(_sid)
+
+            # 表示順は、今日の予定表の順番を優先する。
+            planned_order_ids = []
+            if "student_id" in today_view.columns and not today_view.empty:
+                _typing_today_order = today_view.copy()
+                if "slot_num" in _typing_today_order.columns:
+                    _typing_today_order = _typing_today_order.sort_values(
+                        ["slot_num", "display_name"],
+                        na_position="last",
+                    )
+                for _sid in _typing_today_order["student_id"].astype(str).tolist():
+                    _sid = str(_sid).strip()
+                    if _sid and _sid not in planned_order_ids:
+                        planned_order_ids.append(_sid)
+
+            attended_set = set(attended_ids_raw)
+            typing_target_ids = [
+                _sid for _sid in planned_order_ids if _sid in attended_set
+            ]
+            for _sid in attended_ids_raw:
+                if _sid not in typing_target_ids:
+                    typing_target_ids.append(_sid)
+
+            if not typing_target_ids:
+                st.info("出席登録済みの生徒がまだいないため、タイピングチェック対象はありません。")
+            else:
+                typing_pending_ids = []
+                typing_done_rows = []
+                typing_skip_rows = []
+
+                for _sid in typing_target_ids:
+                    _rec = get_typing_today(typing_df, _sid, today)
+                    _status = str((_rec or {}).get("status", "")).strip().lower()
+                    if _status == "done":
+                        typing_done_rows.append((_sid, _rec))
+                    elif _status == "skip":
+                        typing_skip_rows.append((_sid, _rec))
+                    else:
+                        typing_pending_ids.append(_sid)
+
+                if typing_pending_ids:
+                    st.error(f"タイピング未完了：{len(typing_pending_ids)}件")
+                else:
+                    st.success("出席登録済みの生徒は、全員タイピング完了または免除済みです。")
+
+                st.markdown(f"**未完了：{len(typing_pending_ids)}件**")
+
+                if typing_pending_ids:
+                    for _sid in typing_pending_ids:
+                        _name = typing_student_name_map.get(_sid, "")
+                        _label = f"{_sid}｜{_name}" if _name else _sid
+
+                        _att_rec = None
+                        if not typing_att_today.empty:
+                            _hit = typing_att_today[
+                                typing_att_today["student_id"]
+                                .astype(str)
+                                .str.strip()
+                                .eq(_sid)
+                            ].copy()
+                            if not _hit.empty:
+                                _att_rec = _hit.iloc[-1].to_dict()
+
+                        _kind_norm = str((_att_rec or {}).get("kind_norm", "")).strip()
+                        _kind_label = "自習" if _kind_norm == "selfstudy" else "授業"
+
+                        tc1, tc2, tc3 = st.columns([4, 1.5, 1.5])
+                        with tc1:
+                            st.write(f"・**{_label}** ／ {_kind_label}")
+                        with tc2:
+                            if st.button("✅ 完了", key=f"typing_done_{today}_{_sid}"):
+                                typing_df2 = upsert_typing_log(
+                                    typing_df,
+                                    _sid,
+                                    today,
+                                    "done",
+                                    "",
+                                )
+                                save_typing_log(typing_df2)
+                                st.success(f"{_label} のタイピングを完了にしました。")
+                                st.rerun()
+                        with tc3:
+                            if st.button("今日は免除", key=f"typing_skip_{today}_{_sid}"):
+                                typing_df2 = upsert_typing_log(
+                                    typing_df,
+                                    _sid,
+                                    today,
+                                    "skip",
+                                    "今日は免除",
+                                )
+                                save_typing_log(typing_df2)
+                                st.success(f"{_label} を今日は免除にしました。")
+                                st.rerun()
+                else:
+                    st.caption("未完了の生徒はいません。")
+
+                completed_count = len(typing_done_rows) + len(typing_skip_rows)
+                if completed_count:
+                    with st.expander(f"完了・免除済み（{completed_count}件）", expanded=False):
+                        for _sid, _rec in typing_done_rows + typing_skip_rows:
+                            _name = typing_student_name_map.get(_sid, "")
+                            _label = f"{_sid}｜{_name}" if _name else _sid
+                            _status = typing_status_label((_rec or {}).get("status", ""))
+                            _completed_at = str((_rec or {}).get("completed_at", "")).strip()
+                            _note = str((_rec or {}).get("note", "")).strip()
+
+                            tc1, tc2 = st.columns([5, 1.5])
+                            with tc1:
+                                line = f"・**{_label}** ／ {_status}"
+                                if _completed_at:
+                                    line += f" ／ {_completed_at[11:16] if len(_completed_at) >= 16 else _completed_at}"
+                                if _note:
+                                    line += f" ／ {_note}"
+                                st.markdown(line)
+                            with tc2:
+                                if st.button("↩ 未完了へ戻す", key=f"typing_undo_{today}_{_sid}"):
+                                    typing_df2 = delete_typing_log(
+                                        typing_df,
+                                        _sid,
+                                        today,
+                                    )
+                                    save_typing_log(typing_df2)
+                                    st.success(f"{_label} を未完了に戻しました。")
+                                    st.rerun()
+
+
+        # =====================================================
         # =====================================================
         # d237:
         # 閲覧側のワンクリック取消は、カレンダー操作と重複して混乱しやすいため通常非表示。
@@ -4722,12 +6121,24 @@ if page == "閲覧":
                     if cancel_src.empty:
                         st.success("取消できる予定はありません。")
                     else:
+                        # d294:
+                        # 出欠登録済みの予定は、予定側から取消できないようにする。
+                        # 実績登録済み ＞ 予定取消。
+                        _quick_cancel_attended_keys = build_attended_student_date_keys(
+                            load_attendance_log()
+                        )
+
                         for i, r in cancel_src.reset_index(drop=True).iterrows():
                             sid = str(r.get("student_id", "")).strip()
                             name = str(r.get("display_name", "")).strip()
                             slot = str(r.get("slot", "")).strip()
                             start = str(r.get("start", "")).strip()
                             end = str(r.get("end", "")).strip()
+                            _quick_attendance_locked = is_attendance_locked_plan(
+                                _quick_cancel_attended_keys,
+                                sid,
+                                today,
+                            )
 
 
                             c1, c2, c3 = st.columns([4, 2, 2])
@@ -4746,7 +6157,19 @@ if page == "閲覧":
 
 
                             with c3:
-                                if st.button("取消", key=f"quick_cancel_{today}_{sid}_{slot}_{i}"):
+                                if _quick_attendance_locked:
+                                    st.caption("出欠登録済みのため取消不可")
+                                if st.button(
+                                    "取消",
+                                    key=f"quick_cancel_{today}_{sid}_{slot}_{i}",
+                                    disabled=_quick_attendance_locked,
+                                    help=(
+                                        "出欠登録済みの予定は、予定側から取消できません。"
+                                        "先に出欠記録を未登録へ戻してください。"
+                                        if _quick_attendance_locked
+                                        else "この予定を取消します。"
+                                    ),
+                                ):
                                     ov2 = upsert_schedule_override_row(
                                         schedule_overrides,
                                         student_id=sid,
@@ -4801,6 +6224,13 @@ if page == "閲覧":
             )
 
             # 対象日の予定を見ながら、その場で取消できるようにする
+            # d294:
+            # 出欠登録済みの予定は取消不可にする。
+            # 予定取消より、実績である出欠記録を優先する。
+            _ov_attended_keys = build_attended_student_date_keys(
+                load_attendance_log()
+            )
+
             st.markdown("#### 対象日の予定")
             if override_target_view.empty:
                 st.info("対象日の予定はありません。")
@@ -4821,11 +6251,29 @@ if page == "閲覧":
                     _end = str(_r.get("end", "")).strip()
                     _type = str(_r.get("session_type", "")).strip() or "授業"
                     _time = f"{_slot}コマ" + (f"（{_start}〜{_end}）" if (_start or _end) else "")
+                    _ov_attendance_locked = is_attendance_locked_plan(
+                        _ov_attended_keys,
+                        _sid,
+                        picked_override_date,
+                    )
+
                     pc1, pc2 = st.columns([6, 1.5])
                     with pc1:
                         st.write(f"{_time} / {_name} / {_type}")
+                        if _ov_attendance_locked:
+                            st.caption("🔒 出欠登録済みのため、この画面からは取消できません。")
                     with pc2:
-                        if st.button("この予定を取消", key=f"ov_plan_cancel_{picked_override_date_str}_{_sid}_{_slot}_{_i}"):
+                        if st.button(
+                            "この予定を取消",
+                            key=f"ov_plan_cancel_{picked_override_date_str}_{_sid}_{_slot}_{_i}",
+                            disabled=_ov_attendance_locked,
+                            help=(
+                                "出欠登録済みの予定は、予定側から取消できません。"
+                                "先に出欠記録を未登録へ戻してください。"
+                                if _ov_attendance_locked
+                                else "この予定を取消線付きで取消します。"
+                            ),
+                        ):
                             ov2 = upsert_schedule_override_row(
                                 ov_df,
                                 student_id=_sid,
@@ -7056,8 +8504,8 @@ elif page == "管理（入力）":
 
     # d228: 管理（入力）は、よく使う順に並べる。
     # 1) 月スケジュール 2) 検定予定登録 3) その他管理
-    sub_month, sub_kentei, sub_stu, sub_weekly, sub_curr, sub_override, sub_sys, sub_info = st.tabs(
-        ["🗓️ 月スケジュール", "🎫 検定予定登録", "👥 生徒管理", "📅 固定スケジュール（週次）", "📘 カリキュラム管理", "🗓️ スケジュール例外", "🛠 システム設定", "ℹ️ 運用メモ"]
+    sub_month, sub_kentei, sub_stu, sub_weekly, sub_curr, sub_subtask, sub_override, sub_sys, sub_info = st.tabs(
+        ["🗓️ 月スケジュール", "🎫 検定予定登録", "👥 生徒管理", "📅 固定スケジュール（週次）", "📘 カリキュラム管理", "🧩 サブ課題管理", "🗓️ スケジュール例外", "🛠 システム設定", "ℹ️ 運用メモ"]
     )
 
     # ---------------------------
@@ -7652,6 +9100,1128 @@ elif page == "管理（入力）":
                         st.rerun()
 
 
+
+    # ---------------------------
+    # 🧩 サブ課題管理（d287 試作版）
+    # ---------------------------
+    with sub_subtask:
+        st.subheader("🧩 サブ課題管理")
+        st.caption(
+            "HTML Masterなど、通常課題と並行して進める補助教材を登録します。"
+            "生徒1人につき進行中のサブ課題は1つです。閲覧画面から完了登録できます。"
+        )
+
+        sub_master_df = load_sub_curricula()
+        sub_items_df = load_sub_curriculum_items()
+        student_sub_df = load_student_sub_progress()
+
+        # d293:
+        # サブ課題との紐づけに使うメインコース一覧。
+        sub_main_courses_df = curr_courses.copy()
+        for _c in [
+            "course_id", "genre_id", "genre_name",
+            "course_name", "course_order", "is_active"
+        ]:
+            if _c not in sub_main_courses_df.columns:
+                sub_main_courses_df[_c] = ""
+            sub_main_courses_df[_c] = (
+                sub_main_courses_df[_c]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+            )
+
+        if not sub_main_courses_df.empty:
+            sub_main_courses_df["_order_num"] = pd.to_numeric(
+                sub_main_courses_df["course_order"],
+                errors="coerce",
+            ).fillna(9999)
+            sub_main_courses_df = sub_main_courses_df.sort_values(
+                ["_order_num", "genre_name", "course_name"],
+                na_position="last",
+            ).copy()
+
+        sub_main_course_ids = (
+            sub_main_courses_df["course_id"]
+            .astype(str)
+            .str.strip()
+            .tolist()
+            if not sub_main_courses_df.empty
+            else []
+        )
+        sub_main_course_ids = [
+            x for x in sub_main_course_ids if x
+        ]
+        sub_main_course_label_map = {
+            str(r.get("course_id", "")).strip(): get_main_course_label(
+                str(r.get("course_id", "")).strip()
+            )
+            for _, r in sub_main_courses_df.iterrows()
+            if str(r.get("course_id", "")).strip()
+        }
+
+        # ---------------------------------
+        # 1. サブ課題名を登録
+        # ---------------------------------
+        st.markdown("### 1．サブ課題を登録")
+        c_sub1, c_sub2 = st.columns([3, 2])
+        with c_sub1:
+            new_sub_name = st.text_input(
+                "サブ課題名",
+                placeholder="例：HTML Master",
+                key="sub_master_new_name",
+            )
+        with c_sub2:
+            new_sub_note = st.text_input(
+                "メモ（任意）",
+                placeholder="例：HTMLの授業前に1項目",
+                key="sub_master_new_note",
+            )
+
+        new_sub_link_main = st.checkbox(
+            "メイン課題と紐づける",
+            value=True,
+            key="sub_master_new_link_main",
+            help=(
+                "例：HTML MasterをHTMLコースへ紐づけます。"
+                "生徒設定時に、メイン課題の未着手・進行中・完了を確認できます。"
+            ),
+        )
+
+        if new_sub_link_main:
+            if sub_main_course_ids:
+                new_sub_main_course_id = st.selectbox(
+                    "紐づけるメイン課題",
+                    sub_main_course_ids,
+                    format_func=lambda x: sub_main_course_label_map.get(x, x),
+                    key="sub_master_new_main_course",
+                )
+            else:
+                new_sub_main_course_id = ""
+                st.warning(
+                    "紐づけできるメイン課題がありません。"
+                    "先にカリキュラム管理でコースを登録してください。"
+                )
+        else:
+            new_sub_main_course_id = ""
+            st.caption("このサブ課題は、メイン課題と紐づけずに使用します。")
+
+        if st.button("サブ課題を追加", key="sub_master_add_btn"):
+            name = str(new_sub_name).strip()
+            if not name:
+                st.error("サブ課題名を入力してください。")
+            elif new_sub_link_main and not new_sub_main_course_id:
+                st.error("紐づけるメイン課題を選択してください。")
+            elif (
+                not sub_master_df.empty
+                and sub_master_df["sub_name"].astype(str).str.strip().str.lower().eq(name.lower()).any()
+            ):
+                st.warning("同じ名前のサブ課題がすでにあります。")
+            else:
+                sub_id = _next_prefixed_id(
+                    sub_master_df["sub_id"] if "sub_id" in sub_master_df.columns else [],
+                    "SUB",
+                )
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                new_row = {
+                    "sub_id": sub_id,
+                    "sub_name": name,
+                    "main_course_id": (
+                        str(new_sub_main_course_id).strip()
+                        if new_sub_link_main
+                        else ""
+                    ),
+                    "is_active": "true",
+                    "note": str(new_sub_note).strip(),
+                    "created_at": now_str,
+                    "updated_at": now_str,
+                }
+                sub_master_df = pd.concat(
+                    [sub_master_df, pd.DataFrame([new_row])],
+                    ignore_index=True,
+                )
+                save_sub_curricula(sub_master_df)
+                st.success(f"追加しました：{name}")
+                st.rerun()
+
+        if sub_master_df.empty:
+            st.info("最初にサブ課題名を登録してください。")
+        else:
+            sub_master_df = sub_master_df.copy()
+            sub_master_df["sub_id"] = sub_master_df["sub_id"].astype(str).str.strip()
+            sub_master_df["sub_name"] = sub_master_df["sub_name"].astype(str).str.strip()
+            sub_master_df["label"] = (
+                sub_master_df["sub_name"] + "（" + sub_master_df["sub_id"] + "）"
+            )
+            sub_label_to_id = dict(
+                zip(sub_master_df["label"], sub_master_df["sub_id"])
+            )
+            sub_id_to_name = dict(
+                zip(sub_master_df["sub_id"], sub_master_df["sub_name"])
+            )
+            sub_id_to_main_course = dict(
+                zip(
+                    sub_master_df["sub_id"],
+                    sub_master_df["main_course_id"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip(),
+                )
+            )
+
+            st.markdown("#### 🔗 登録済みサブ課題のメイン課題設定")
+            link_edit_sub_id = st.selectbox(
+                "設定するサブ課題",
+                sub_master_df["sub_id"].tolist(),
+                format_func=lambda x: sub_id_to_name.get(x, x),
+                key="sub_master_link_edit_select",
+            )
+            existing_main_course_id = str(
+                sub_id_to_main_course.get(link_edit_sub_id, "")
+            ).strip()
+
+            link_edit_enabled = st.checkbox(
+                "このサブ課題をメイン課題と紐づける",
+                value=bool(existing_main_course_id),
+                key=f"sub_master_link_enabled_{link_edit_sub_id}",
+            )
+
+            if link_edit_enabled:
+                if sub_main_course_ids:
+                    edit_course_options = list(sub_main_course_ids)
+                    if (
+                        existing_main_course_id
+                        and existing_main_course_id not in edit_course_options
+                    ):
+                        edit_course_options.append(existing_main_course_id)
+
+                    edit_course_index = (
+                        edit_course_options.index(existing_main_course_id)
+                        if existing_main_course_id in edit_course_options
+                        else 0
+                    )
+                    link_edit_course_id = st.selectbox(
+                        "紐づけるメイン課題",
+                        edit_course_options,
+                        index=edit_course_index,
+                        format_func=lambda x: sub_main_course_label_map.get(
+                            x, get_main_course_label(x)
+                        ),
+                        key=f"sub_master_link_course_{link_edit_sub_id}",
+                    )
+                else:
+                    link_edit_course_id = ""
+                    st.warning("紐づけできるメイン課題がありません。")
+            else:
+                link_edit_course_id = ""
+                st.caption("メイン課題との紐づけを行いません。")
+
+            if st.button(
+                "メイン課題の設定を保存",
+                key=f"sub_master_link_save_{link_edit_sub_id}",
+            ):
+                if link_edit_enabled and not link_edit_course_id:
+                    st.error("紐づけるメイン課題を選択してください。")
+                else:
+                    link_update_mask = (
+                        sub_master_df["sub_id"]
+                        .astype(str)
+                        .str.strip()
+                        .eq(link_edit_sub_id)
+                    )
+                    sub_master_df.loc[
+                        link_update_mask, "main_course_id"
+                    ] = (
+                        str(link_edit_course_id).strip()
+                        if link_edit_enabled
+                        else ""
+                    )
+                    sub_master_df.loc[
+                        link_update_mask, "updated_at"
+                    ] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    save_sub_curricula(
+                        sub_master_df.drop(
+                            columns=["label"],
+                            errors="ignore",
+                        )
+                    )
+                    st.success("メイン課題との紐づけを保存しました。")
+                    st.rerun()
+
+            link_table = sub_master_df.copy()
+            link_table["メイン課題"] = (
+                link_table["main_course_id"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .map(
+                    lambda x: (
+                        get_main_course_label(x)
+                        if x
+                        else "紐づけなし"
+                    )
+                )
+            )
+            st.dataframe(
+                link_table[
+                    ["sub_name", "メイン課題", "note"]
+                ].rename(
+                    columns={
+                        "sub_name": "サブ課題",
+                        "note": "メモ",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.divider()
+
+            # ---------------------------------
+            # 2. サブ課題の項目を登録・修正
+            # ---------------------------------
+            st.markdown("### 2．項目を登録・修正")
+            selected_sub_label = st.selectbox(
+                "項目を管理するサブ課題",
+                sub_master_df["label"].tolist(),
+                key="sub_item_master_select",
+            )
+            selected_sub_id = sub_label_to_id.get(selected_sub_label, "")
+            selected_sub_name = sub_id_to_name.get(selected_sub_id, selected_sub_id)
+
+            st.caption(
+                "1行につき1項目で、まとめて登録できます。入力した順に並びます。"
+            )
+            bulk_item_text = st.text_area(
+                "追加する項目",
+                placeholder="例：\n1-1 HTMLの基本\n1-2 見出し\n1-3 段落",
+                height=140,
+                key="sub_item_bulk_text",
+            )
+
+            if st.button("項目を追加", key="sub_item_add_btn"):
+                item_names = [
+                    line.strip()
+                    for line in str(bulk_item_text).splitlines()
+                    if line.strip()
+                ]
+                if not item_names:
+                    st.error("追加する項目を入力してください。")
+                else:
+                    existing_for_sub = sub_items_df[
+                        sub_items_df["sub_id"].astype(str).str.strip() == selected_sub_id
+                    ].copy()
+                    existing_names = set(
+                        existing_for_sub["item_name"]
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .tolist()
+                    )
+                    order_nums = pd.to_numeric(
+                        existing_for_sub.get("order", pd.Series(dtype=str)),
+                        errors="coerce",
+                    ).dropna()
+                    next_order = int(order_nums.max()) + 1 if not order_nums.empty else 1
+                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    rows = []
+
+                    for item_name in item_names:
+                        if item_name.lower() in existing_names:
+                            continue
+                        item_id = _next_prefixed_id(
+                            pd.concat(
+                                [
+                                    sub_items_df.get("item_id", pd.Series(dtype=str)),
+                                    pd.Series([r["item_id"] for r in rows], dtype=str),
+                                ],
+                                ignore_index=True,
+                            ),
+                            "ITEM",
+                        )
+                        rows.append({
+                            "sub_id": selected_sub_id,
+                            "item_id": item_id,
+                            "item_name": item_name,
+                            "order": str(next_order),
+                            "is_active": "true",
+                            "created_at": now_str,
+                            "updated_at": now_str,
+                        })
+                        existing_names.add(item_name.lower())
+                        next_order += 1
+
+                    if rows:
+                        sub_items_df = pd.concat(
+                            [sub_items_df, pd.DataFrame(rows)],
+                            ignore_index=True,
+                        )
+                        save_sub_curriculum_items(sub_items_df)
+                        st.success(f"{selected_sub_name}に{len(rows)}項目追加しました。")
+                        st.rerun()
+                    else:
+                        st.warning("新しく追加できる項目がありませんでした。")
+
+            current_items = sub_items_df[
+                sub_items_df["sub_id"].astype(str).str.strip() == selected_sub_id
+            ].copy()
+
+            if current_items.empty:
+                st.caption("このサブ課題には、まだ項目がありません。")
+            else:
+                current_items["_order_num"] = pd.to_numeric(
+                    current_items["order"], errors="coerce"
+                ).fillna(9999)
+                current_items = current_items.sort_values(
+                    ["_order_num", "item_name"], na_position="last"
+                ).copy()
+
+                current_items["状態"] = (
+                    current_items["is_active"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .replace("", "true")
+                    .map(lambda x: "使用中" if x in ["true", "1", "yes", "on"] else "停止中")
+                )
+
+                show_items = current_items[
+                    ["order", "item_name", "状態"]
+                ].rename(
+                    columns={
+                        "order": "順番",
+                        "item_name": "項目",
+                    }
+                )
+                st.dataframe(
+                    show_items,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                st.markdown("#### ✏️ 登録済み項目の修正・削除")
+                st.caption(
+                    "項目名は、生徒の現在位置や過去の完了履歴を保ったまま変更できます。"
+                )
+                st.info(
+                    "【移動先の使い方】4番の項目を3番へ移動すると、"
+                    "元の3番が4番へ移ります。8番を3番へ移動すると、"
+                    "元の3〜7番が1つずつ後ろへずれます。"
+                    "保存後は、このサブ課題内の順番を1、2、3…と自動で振り直します。"
+                )
+
+                current_items["item_id"] = (
+                    current_items["item_id"].fillna("").astype(str).str.strip()
+                )
+                current_items["item_name"] = (
+                    current_items["item_name"].fillna("").astype(str).str.strip()
+                )
+                current_items["order"] = (
+                    current_items["order"].fillna("").astype(str).str.strip()
+                )
+
+                item_ids_for_edit = current_items["item_id"].tolist()
+                item_edit_label_map = {
+                    str(r.get("item_id", "")).strip(): (
+                        f'{str(r.get("order", "")).strip()}｜'
+                        f'{str(r.get("item_name", "")).strip()}'
+                        f'（{str(r.get("状態", "")).strip()}）'
+                    )
+                    for _, r in current_items.iterrows()
+                }
+
+                selected_item_id = st.selectbox(
+                    "修正する項目",
+                    item_ids_for_edit,
+                    format_func=lambda x: item_edit_label_map.get(x, x),
+                    key=f"sub_item_edit_select_{selected_sub_id}",
+                )
+
+                selected_item_hit = current_items[
+                    current_items["item_id"].astype(str).str.strip() == selected_item_id
+                ].copy()
+
+                if not selected_item_hit.empty:
+                    selected_item_row = selected_item_hit.iloc[0]
+                    selected_item_name = str(
+                        selected_item_row.get("item_name", "")
+                    ).strip()
+                    # d292:
+                    # 保存済みのorder値が重複していても、現在画面に並んでいる順を
+                    # 1、2、3…の位置として扱う。
+                    ordered_item_ids = (
+                        current_items["item_id"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .tolist()
+                    )
+                    selected_item_position = (
+                        ordered_item_ids.index(selected_item_id) + 1
+                        if selected_item_id in ordered_item_ids
+                        else 1
+                    )
+                    item_count_for_move = max(1, len(ordered_item_ids))
+
+                    selected_item_active = (
+                        str(selected_item_row.get("is_active", ""))
+                        .strip()
+                        .lower()
+                        in ["true", "1", "yes", "on", ""]
+                    )
+
+                    edit_col1, edit_col2 = st.columns([4, 1])
+                    with edit_col1:
+                        edited_item_name = st.text_input(
+                            "項目名",
+                            value=selected_item_name,
+                            key=f"sub_item_edit_name_{selected_item_id}",
+                        )
+                    with edit_col2:
+                        edited_item_position = st.number_input(
+                            "移動先",
+                            min_value=1,
+                            max_value=item_count_for_move,
+                            step=1,
+                            value=selected_item_position,
+                            key=f"sub_item_edit_position_{selected_item_id}",
+                            help=(
+                                f"1〜{item_count_for_move}の位置を指定します。"
+                                "指定した位置へ項目を移し、間にある項目を自動でずらします。"
+                            ),
+                        )
+
+                    if int(edited_item_position) != selected_item_position:
+                        st.caption(
+                            f"現在の{selected_item_position}番から"
+                            f"{int(edited_item_position)}番へ移動します。"
+                        )
+
+                    edited_item_active = st.checkbox(
+                        "使用中",
+                        value=selected_item_active,
+                        key=f"sub_item_edit_active_{selected_item_id}",
+                        help="停止中にすると、新しい生徒の項目選択や「完了して次へ」の進行対象から外れます。",
+                    )
+
+                    # この項目を現在位置として使っている生徒と、完了履歴を確認する。
+                    latest_student_sub_df = load_student_sub_progress()
+                    latest_sub_log_df = load_sub_progress_log()
+
+                    current_ref_rows = pd.DataFrame()
+                    if not latest_student_sub_df.empty:
+                        current_ref_rows = latest_student_sub_df[
+                            latest_student_sub_df["current_item_id"]
+                            .astype(str)
+                            .str.strip()
+                            .eq(selected_item_id)
+                        ].copy()
+
+                    active_current_ref_rows = pd.DataFrame()
+                    if not current_ref_rows.empty:
+                        active_current_ref_rows = current_ref_rows[
+                            current_ref_rows["is_active"]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                            .str.lower()
+                            .isin(["true", "1", "yes", "on"])
+                        ].copy()
+
+                    log_ref_rows = pd.DataFrame()
+                    if not latest_sub_log_df.empty:
+                        log_ref_rows = latest_sub_log_df[
+                            latest_sub_log_df["item_id"]
+                            .astype(str)
+                            .str.strip()
+                            .eq(selected_item_id)
+                        ].copy()
+
+                    current_ref_count = len(current_ref_rows)
+                    active_current_ref_count = len(active_current_ref_rows)
+                    log_ref_count = len(log_ref_rows)
+
+                    if current_ref_count or log_ref_count:
+                        st.caption(
+                            f"参照状況：現在位置 {current_ref_count}人"
+                            f"（進行中 {active_current_ref_count}人）／"
+                            f"完了履歴 {log_ref_count}件"
+                        )
+                    else:
+                        st.caption("参照状況：現在位置・完了履歴ともにありません。")
+
+                    if st.button(
+                        "変更を保存",
+                        key=f"sub_item_edit_save_{selected_item_id}",
+                    ):
+                        new_name = str(edited_item_name).strip()
+                        target_position = int(edited_item_position)
+                        turning_off = selected_item_active and not edited_item_active
+
+                        duplicate_name = bool(
+                            (
+                                sub_items_df["sub_id"]
+                                .astype(str)
+                                .str.strip()
+                                .eq(selected_sub_id)
+                                & sub_items_df["item_name"]
+                                .astype(str)
+                                .str.strip()
+                                .str.lower()
+                                .eq(new_name.lower())
+                                & ~sub_items_df["item_id"]
+                                .astype(str)
+                                .str.strip()
+                                .eq(selected_item_id)
+                            ).any()
+                        )
+
+                        if not new_name:
+                            st.error("項目名を入力してください。")
+                        elif duplicate_name:
+                            st.error("同じサブ課題内に、同じ項目名がすでにあります。")
+                        elif turning_off and active_current_ref_count > 0:
+                            st.error(
+                                f"この項目を進行中の生徒が{active_current_ref_count}人いるため、"
+                                "停止できません。先に生徒の「次にやる項目」を変更してください。"
+                            )
+                        else:
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            update_mask = (
+                                sub_items_df["item_id"]
+                                .astype(str)
+                                .str.strip()
+                                .eq(selected_item_id)
+                            )
+
+                            # 項目名・使用状態は内部IDを変えずに更新する。
+                            sub_items_df.loc[update_mask, "item_name"] = new_name
+                            sub_items_df.loc[update_mask, "is_active"] = (
+                                "true" if edited_item_active else "false"
+                            )
+                            sub_items_df.loc[update_mask, "updated_at"] = now_str
+
+                            # d292:
+                            # 現在の表示順から選択項目を一度外し、
+                            # 指定された移動先へ差し込む。
+                            reordered_ids = list(ordered_item_ids)
+                            if selected_item_id in reordered_ids:
+                                reordered_ids.remove(selected_item_id)
+
+                            safe_target_index = max(
+                                0,
+                                min(target_position - 1, len(reordered_ids)),
+                            )
+                            reordered_ids.insert(
+                                safe_target_index,
+                                selected_item_id,
+                            )
+
+                            # 同じサブ課題内を1、2、3…と連番で振り直す。
+                            for new_position, item_id_for_order in enumerate(
+                                reordered_ids,
+                                start=1,
+                            ):
+                                order_mask = (
+                                    sub_items_df["item_id"]
+                                    .astype(str)
+                                    .str.strip()
+                                    .eq(item_id_for_order)
+                                )
+                                sub_items_df.loc[
+                                    order_mask, "order"
+                                ] = str(new_position)
+
+                                # 順番が変わった項目にも更新時刻を記録する。
+                                if new_position != (
+                                    ordered_item_ids.index(item_id_for_order) + 1
+                                ):
+                                    sub_items_df.loc[
+                                        order_mask, "updated_at"
+                                    ] = now_str
+
+                            save_sub_curriculum_items(sub_items_df)
+
+                            if target_position == selected_item_position:
+                                st.success(
+                                    "サブ項目を変更し、順番を1から連番に整えました。"
+                                )
+                            else:
+                                st.success(
+                                    f"サブ項目を{selected_item_position}番から"
+                                    f"{target_position}番へ移動しました。"
+                                )
+                            st.rerun()
+
+                    st.markdown("##### 完全削除")
+                    if current_ref_count > 0 or log_ref_count > 0:
+                        st.warning(
+                            "この項目は生徒の現在位置または完了履歴から参照されているため、"
+                            "完全削除できません。項目名の修正、または使用停止を利用してください。"
+                        )
+                    else:
+                        delete_confirm_key = (
+                            f"sub_item_delete_confirm_{selected_item_id}"
+                        )
+                        delete_confirming = bool(
+                            st.session_state.get(delete_confirm_key, False)
+                        )
+
+                        if not delete_confirming:
+                            if st.button(
+                                "🗑️ この項目を完全削除",
+                                key=f"sub_item_delete_open_{selected_item_id}",
+                            ):
+                                st.session_state[delete_confirm_key] = True
+                                st.rerun()
+                        else:
+                            st.warning(
+                                f"「{selected_item_name}」を完全削除します。"
+                                "この操作は取り消せません。"
+                            )
+                            delete_col1, delete_col2 = st.columns(2)
+
+                            with delete_col1:
+                                if st.button(
+                                    "完全削除する",
+                                    type="primary",
+                                    key=f"sub_item_delete_do_{selected_item_id}",
+                                ):
+                                    delete_mask = (
+                                        sub_items_df["item_id"]
+                                        .astype(str)
+                                        .str.strip()
+                                        .eq(selected_item_id)
+                                    )
+                                    sub_items_df = sub_items_df[
+                                        ~delete_mask
+                                    ].copy()
+
+                                    # d292:
+                                    # 削除後に同じサブ課題の順番を詰め直す。
+                                    remaining_same_sub = sub_items_df[
+                                        sub_items_df["sub_id"]
+                                        .astype(str)
+                                        .str.strip()
+                                        .eq(selected_sub_id)
+                                    ].copy()
+                                    remaining_same_sub["_order_num"] = pd.to_numeric(
+                                        remaining_same_sub["order"],
+                                        errors="coerce",
+                                    ).fillna(9999)
+                                    remaining_same_sub = remaining_same_sub.sort_values(
+                                        ["_order_num", "item_name"],
+                                        na_position="last",
+                                    )
+
+                                    delete_now_str = datetime.now().strftime(
+                                        "%Y-%m-%d %H:%M:%S"
+                                    )
+                                    for new_position, remaining_item_id in enumerate(
+                                        remaining_same_sub["item_id"]
+                                        .astype(str)
+                                        .str.strip()
+                                        .tolist(),
+                                        start=1,
+                                    ):
+                                        remaining_mask = (
+                                            sub_items_df["item_id"]
+                                            .astype(str)
+                                            .str.strip()
+                                            .eq(remaining_item_id)
+                                        )
+                                        sub_items_df.loc[
+                                            remaining_mask, "order"
+                                        ] = str(new_position)
+                                        sub_items_df.loc[
+                                            remaining_mask, "updated_at"
+                                        ] = delete_now_str
+
+                                    save_sub_curriculum_items(sub_items_df)
+
+                                    st.session_state.pop(delete_confirm_key, None)
+                                    st.session_state.pop(
+                                        f"sub_item_edit_select_{selected_sub_id}",
+                                        None,
+                                    )
+                                    st.success("サブ項目を完全削除しました。")
+                                    st.rerun()
+
+                            with delete_col2:
+                                if st.button(
+                                    "やめる",
+                                    key=f"sub_item_delete_cancel_{selected_item_id}",
+                                ):
+                                    st.session_state[delete_confirm_key] = False
+                                    st.rerun()
+
+            st.divider()
+
+            # ---------------------------------
+            # 3. 生徒へ設定
+            # ---------------------------------
+            st.markdown("### 3．生徒に設定")
+            st.caption(
+                "「サブ課題進行中」がONの生徒だけ、「次に見る候補」にサブ課題が表示されます。"
+            )
+
+            sub_students = admin_students_for_pick.copy()
+            if sub_students.empty:
+                st.info("設定できる生徒がいません。")
+            else:
+                for c in ["student_id", "display_name"]:
+                    if c not in sub_students.columns:
+                        sub_students[c] = ""
+                    sub_students[c] = sub_students[c].fillna("").astype(str).str.strip()
+                sub_students["label"] = (
+                    sub_students["student_id"] + " | " + sub_students["display_name"]
+                )
+
+                selected_student_label = st.selectbox(
+                    "生徒を選択",
+                    sub_students["label"].tolist(),
+                    key="student_sub_student_select",
+                )
+                selected_student_id = selected_student_label.split("|", 1)[0].strip()
+
+                existing_progress = student_sub_df[
+                    student_sub_df["student_id"].astype(str).str.strip()
+                    == selected_student_id
+                ].copy()
+
+                existing_sub_id = ""
+                existing_item_id = ""
+                existing_active = False
+                existing_note = ""
+                if not existing_progress.empty:
+                    erow = existing_progress.iloc[-1]
+                    existing_sub_id = str(erow.get("sub_id", "")).strip()
+                    existing_item_id = str(erow.get("current_item_id", "")).strip()
+                    existing_active = (
+                        str(erow.get("is_active", "")).strip().lower()
+                        in ["true", "1", "yes", "on"]
+                    )
+                    existing_note = str(erow.get("note", "")).strip()
+
+                sub_id_options = sub_master_df["sub_id"].tolist()
+                default_sub_index = (
+                    sub_id_options.index(existing_sub_id)
+                    if existing_sub_id in sub_id_options
+                    else 0
+                )
+
+                chosen_sub_id = st.selectbox(
+                    "サブ課題",
+                    sub_id_options,
+                    index=default_sub_index,
+                    format_func=lambda x: sub_id_to_name.get(x, x),
+                    key=f"student_sub_master_{selected_student_id}",
+                )
+
+                chosen_main_course_id = str(
+                    sub_id_to_main_course.get(chosen_sub_id, "")
+                ).strip()
+                chosen_main_state = get_student_main_course_status(
+                    selected_student_id,
+                    chosen_main_course_id,
+                )
+
+                if not chosen_main_course_id:
+                    st.caption("メイン課題：紐づけなし")
+                elif not chosen_main_state.get("course_exists"):
+                    st.warning(
+                        "⚠ 紐づけ先のメイン課題が見つかりません："
+                        f"{chosen_main_state.get('course_name', chosen_main_course_id)}"
+                    )
+                elif chosen_main_state.get("status") == "完了":
+                    st.success(
+                        "メイン課題："
+                        f"{chosen_main_state.get('course_name', '')} / "
+                        f"{chosen_main_state.get('status_detail', '完了')}"
+                    )
+                elif chosen_main_state.get("status") == "進行中":
+                    if chosen_main_state.get("all_tasks_finished"):
+                        st.warning(
+                            "メイン課題："
+                            f"{chosen_main_state.get('course_name', '')} / "
+                            f"{chosen_main_state.get('status_detail', '進行中')}"
+                        )
+                    else:
+                        st.info(
+                            "メイン課題："
+                            f"{chosen_main_state.get('course_name', '')} / "
+                            f"{chosen_main_state.get('status_detail', '進行中')}"
+                        )
+                else:
+                    st.warning(
+                        "⚠ この生徒は、紐づいているメイン課題が未着手です："
+                        f"{chosen_main_state.get('course_name', '')} / "
+                        f"{chosen_main_state.get('status_detail', '未着手')}"
+                    )
+
+                chosen_items_all = sub_items_df[
+                    sub_items_df["sub_id"].astype(str).str.strip() == chosen_sub_id
+                ].copy()
+
+                if not chosen_items_all.empty:
+                    chosen_items_all["_active_bool"] = (
+                        chosen_items_all["is_active"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                        .str.lower()
+                        .replace("", "true")
+                        .isin(["true", "1", "yes", "on"])
+                    )
+
+                    # 新規選択は使用中項目だけ。
+                    # 既存設定が停止中項目を指している場合だけ、その項目も表示する。
+                    chosen_items = chosen_items_all[
+                        chosen_items_all["_active_bool"]
+                    ].copy()
+                    if (
+                        existing_sub_id == chosen_sub_id
+                        and existing_item_id
+                        and existing_item_id
+                        not in chosen_items["item_id"].astype(str).str.strip().tolist()
+                    ):
+                        existing_inactive_hit = chosen_items_all[
+                            chosen_items_all["item_id"]
+                            .astype(str)
+                            .str.strip()
+                            .eq(existing_item_id)
+                        ].copy()
+                        if not existing_inactive_hit.empty:
+                            chosen_items = pd.concat(
+                                [chosen_items, existing_inactive_hit],
+                                ignore_index=True,
+                            )
+
+                    chosen_items["_order_num"] = pd.to_numeric(
+                        chosen_items["order"], errors="coerce"
+                    ).fillna(9999)
+                    chosen_items = chosen_items.sort_values(
+                        ["_order_num", "item_name"], na_position="last"
+                    )
+                    chosen_item_ids = (
+                        chosen_items["item_id"].astype(str).str.strip().tolist()
+                    )
+                    item_name_map = dict(
+                        zip(
+                            chosen_items["item_id"].astype(str).str.strip(),
+                            chosen_items["item_name"].astype(str).str.strip(),
+                        )
+                    )
+                    inactive_item_ids = set(
+                        chosen_items_all.loc[
+                            ~chosen_items_all["_active_bool"], "item_id"
+                        ].astype(str).str.strip()
+                    )
+                else:
+                    chosen_item_ids = [""]
+                    item_name_map = {"": "項目未登録"}
+                    inactive_item_ids = set()
+
+                default_item_index = (
+                    chosen_item_ids.index(existing_item_id)
+                    if existing_sub_id == chosen_sub_id
+                    and existing_item_id in chosen_item_ids
+                    else 0
+                )
+
+                chosen_item_id = st.selectbox(
+                    "次にやる項目",
+                    chosen_item_ids,
+                    index=default_item_index,
+                    format_func=lambda x: (
+                        (
+                            item_name_map.get(x, x or "項目未登録")
+                            + "（停止中）"
+                        )
+                        if x in inactive_item_ids
+                        else item_name_map.get(x, x or "項目未登録")
+                    ),
+                    key=f"student_sub_item_{selected_student_id}_{chosen_sub_id}",
+                )
+                chosen_active = st.checkbox(
+                    "サブ課題進行中",
+                    value=existing_active,
+                    key=f"student_sub_active_{selected_student_id}",
+                )
+                chosen_note = st.text_input(
+                    "生徒別メモ（任意）",
+                    value=existing_note,
+                    key=f"student_sub_note_{selected_student_id}",
+                )
+
+                main_course_needs_confirmation = bool(
+                    chosen_main_course_id
+                    and (
+                        not chosen_main_state.get("course_exists")
+                        or chosen_main_state.get("status") == "未着手"
+                    )
+                )
+                allow_unstarted_main = False
+                if chosen_active and main_course_needs_confirmation:
+                    allow_unstarted_main = st.checkbox(
+                        "メイン課題の状態を確認したうえで、このまま設定する",
+                        value=False,
+                        key=(
+                            f"student_sub_main_override_"
+                            f"{selected_student_id}_{chosen_sub_id}"
+                        ),
+                    )
+
+                if st.button(
+                    "生徒のサブ課題設定を保存",
+                    key=f"student_sub_save_{selected_student_id}",
+                ):
+                    if chosen_active and not chosen_sub_id:
+                        st.error("サブ課題を選択してください。")
+                    elif chosen_active and not chosen_item_id:
+                        st.error("進行中にする前に、項目を1つ以上登録してください。")
+                    elif chosen_active and chosen_item_id in inactive_item_ids:
+                        st.error(
+                            "停止中の項目は進行中として設定できません。"
+                            "使用中の項目を選ぶか、項目管理で再開してください。"
+                        )
+                    elif (
+                        chosen_active
+                        and main_course_needs_confirmation
+                        and not allow_unstarted_main
+                    ):
+                        st.error(
+                            "紐づいているメイン課題が未着手、"
+                            "または紐づけ先が見つかりません。"
+                            "状態を確認してから確認欄をONにしてください。"
+                        )
+                    else:
+                        upsert_student_sub_progress(
+                            selected_student_id,
+                            chosen_sub_id,
+                            chosen_item_id,
+                            chosen_active,
+                            chosen_note,
+                        )
+                        state_label = "進行中" if chosen_active else "停止中"
+                        st.success(
+                            f"保存しました：{sub_id_to_name.get(chosen_sub_id, chosen_sub_id)} / {state_label}"
+                        )
+                        st.rerun()
+
+            # 現在の設定一覧
+            st.divider()
+            st.markdown("### 現在の設定")
+            current_progress = load_student_sub_progress()
+            if current_progress.empty:
+                st.caption("生徒への設定はまだありません。")
+            else:
+                student_name_map = dict(
+                    zip(
+                        students["student_id"].astype(str).str.strip(),
+                        students["display_name"].astype(str).str.strip(),
+                    )
+                )
+                item_name_all_map = dict(
+                    zip(
+                        sub_items_df["item_id"].astype(str).str.strip(),
+                        sub_items_df["item_name"].astype(str).str.strip(),
+                    )
+                )
+                current_progress = current_progress.copy()
+                current_progress["生徒"] = current_progress["student_id"].astype(str).str.strip().map(
+                    student_name_map
+                ).fillna(current_progress["student_id"])
+                current_progress["サブ課題"] = current_progress["sub_id"].astype(str).str.strip().map(
+                    sub_id_to_name
+                ).fillna(current_progress["sub_id"])
+                current_progress["次にやる項目"] = current_progress["current_item_id"].astype(str).str.strip().map(
+                    item_name_all_map
+                ).fillna(current_progress["current_item_id"])
+                current_progress["サブ状況"] = current_progress["is_active"].astype(str).str.strip().str.lower().map(
+                    lambda x: "進行中" if x in ["true", "1", "yes", "on"] else "停止中"
+                )
+
+                main_course_names = []
+                main_course_statuses = []
+                main_course_checks = []
+
+                for _, progress_row in current_progress.iterrows():
+                    row_sid = str(
+                        progress_row.get("student_id", "")
+                    ).strip()
+                    row_sub_id = str(
+                        progress_row.get("sub_id", "")
+                    ).strip()
+                    row_sub_active = (
+                        str(progress_row.get("is_active", ""))
+                        .strip()
+                        .lower()
+                        in ["true", "1", "yes", "on"]
+                    )
+                    row_main_course_id = str(
+                        sub_id_to_main_course.get(row_sub_id, "")
+                    ).strip()
+                    row_main_state = get_student_main_course_status(
+                        row_sid,
+                        row_main_course_id,
+                    )
+
+                    if not row_main_course_id:
+                        main_course_names.append("紐づけなし")
+                        main_course_statuses.append("－")
+                        main_course_checks.append("－")
+                    else:
+                        main_course_names.append(
+                            str(
+                                row_main_state.get(
+                                    "course_name",
+                                    row_main_course_id,
+                                )
+                            )
+                        )
+                        main_course_statuses.append(
+                            str(
+                                row_main_state.get(
+                                    "status_detail",
+                                    row_main_state.get("status", ""),
+                                )
+                            )
+                        )
+
+                        if not row_main_state.get("course_exists"):
+                            main_course_checks.append("⚠ 紐づけ先不明")
+                        elif (
+                            row_sub_active
+                            and row_main_state.get("status") == "未着手"
+                        ):
+                            main_course_checks.append("⚠ 要確認")
+                        elif (
+                            row_main_state.get("all_tasks_finished")
+                            and row_main_state.get("status") != "完了"
+                        ):
+                            main_course_checks.append("⚠ メイン完了登録待ち")
+                        else:
+                            main_course_checks.append("OK")
+
+                current_progress["メイン課題"] = main_course_names
+                current_progress["メイン状況"] = main_course_statuses
+                current_progress["確認"] = main_course_checks
+
+                st.dataframe(
+                    current_progress[
+                        [
+                            "生徒", "サブ課題", "メイン課題",
+                            "メイン状況", "サブ状況",
+                            "次にやる項目", "確認", "note"
+                        ]
+                    ].rename(columns={"note": "メモ"}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+
         # ---------------------------
         # 📘 カリキュラム管理（追加・編集・削除）
         #   - curriculum_courses.csv
@@ -8196,7 +10766,27 @@ elif page == "管理（入力）":
 
                 t_order = 0
             else:
-                t_order = st.number_input("order（並び順）", min_value=0, value=0, step=1, key="t_add_order")
+                # d297:
+                # 「最後に追加」を選んだ時は、order入力値に頼らず、
+                # 同じコース内の最大order+1を自動採番する。
+                # 以前は初期値0のまま保存され、先頭に並ぶことがあった。
+                _same_course_for_last = tasks[
+                    tasks["course_id"].astype(str).str.strip() == str(t_course_id).strip()
+                ].copy()
+
+                if _same_course_for_last.empty:
+                    t_order = 1
+                else:
+                    _last_order_num = pd.to_numeric(
+                        _same_course_for_last.get("order", pd.Series(dtype=str)),
+                        errors="coerce",
+                    ).dropna()
+                    if _last_order_num.empty:
+                        t_order = 1
+                    else:
+                        t_order = int(_last_order_num.max()) + 1
+
+                st.caption(f"保存時：新しい課題は order {t_order} で最後に追加されます。")
 
             if course_ids and t_course_id and not t_task_id.strip():
                 if t_add_mode == "選択した課題の次に挿入" and insert_after_tid:
@@ -8245,6 +10835,8 @@ elif page == "管理（入力）":
                                 _order_num.loc[_shift_mask].fillna(new_order).astype(int) + 1
                             ).astype(str)
                         else:
+                            # d297:
+                            # 「最後に追加」は、画面上で算出した最大order+1を使う。
                             new_order = int(t_order)
 
                         new_row = {
@@ -9774,9 +12366,21 @@ elif page == "管理（入力）":
                 # -------------------------
                 st.markdown("#### ➕ 予定を追加")
 
+                # d290:
+                # 表示中が今月なら今日を初期値にする。
+                # 別の月を開いている時は、その月の1日を初期値にする。
+                _monthly_add_default_date = (
+                    date.today()
+                    if (
+                        target_year == date.today().year
+                        and target_month == date.today().month
+                    )
+                    else month_start
+                )
+
                 cal_add_date = st.date_input(
                     "追加する日付",
-                    value=month_start,
+                    value=_monthly_add_default_date,
                     min_value=month_start,
                     max_value=month_end,
                     key=f"monthly_sidebar_add_date_{target_year}_{target_month}",
@@ -10346,7 +12950,7 @@ elif page == "管理（入力）":
                 with add_col1:
                     add_date = st.date_input(
                         "日付",
-                        value=month_start,
+                        value=_monthly_add_default_date,
                         min_value=month_start,
                         max_value=month_end,
                         key=f"monthly_add_date_{target_year}_{target_month}",
