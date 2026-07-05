@@ -1686,6 +1686,10 @@ SUB_CURRICULUM_ITEMS_CSV = DATA_DIR / "sub_curriculum_items.csv"
 STUDENT_SUB_PROGRESS_CSV = DATA_DIR / "student_sub_progress.csv"
 SUB_PROGRESS_LOG_CSV = DATA_DIR / "sub_progress_log.csv"
 
+# d300:
+# 出席した日にサブ課題の完了確認を押し忘れても、翌日以降に残る日別確認ログ。
+SUB_DAILY_CHECK_CSV = DATA_DIR / "sub_daily_check.csv"
+
 SUB_CURRICULA_COLS = [
     "sub_id", "sub_name", "main_course_id",
     "is_active", "note", "created_at", "updated_at"
@@ -1698,6 +1702,10 @@ STUDENT_SUB_PROGRESS_COLS = [
 ]
 SUB_PROGRESS_LOG_COLS = [
     "student_id", "sub_id", "item_id", "completed_at", "note"
+]
+SUB_DAILY_CHECK_COLS = [
+    "date", "student_id", "sub_id", "item_id",
+    "status", "checked_at", "note"
 ]
 
 
@@ -1758,6 +1766,389 @@ def load_sub_progress_log() -> pd.DataFrame:
 
 def save_sub_progress_log(df: pd.DataFrame) -> None:
     _save_sub_csv(df, SUB_PROGRESS_LOG_CSV, SUB_PROGRESS_LOG_COLS)
+
+
+def load_sub_daily_check() -> pd.DataFrame:
+    return _load_or_empty_csv(SUB_DAILY_CHECK_CSV, SUB_DAILY_CHECK_COLS)
+
+
+def save_sub_daily_check(df: pd.DataFrame) -> None:
+    _save_sub_csv(df, SUB_DAILY_CHECK_CSV, SUB_DAILY_CHECK_COLS)
+
+
+def _sub_check_date_str(d) -> str:
+    ts = pd.to_datetime(d, errors="coerce")
+    if pd.isna(ts):
+        return str(d).strip()
+    return ts.strftime("%Y-%m-%d")
+
+
+def _active_sub_snapshot(student_id: str) -> dict:
+    """進行中サブ課題の現在位置を日別確認用に返す。"""
+    sid = str(student_id).strip()
+    state = {
+        "student_id": sid,
+        "sub_id": "",
+        "item_id": "",
+        "is_active": False,
+    }
+    if not sid:
+        return state
+
+    progress = load_student_sub_progress()
+    if progress.empty:
+        return state
+
+    hit = progress[
+        progress["student_id"].astype(str).str.strip().eq(sid)
+    ].copy()
+    if hit.empty:
+        return state
+
+    row = hit.iloc[-1]
+    state["sub_id"] = str(row.get("sub_id", "")).strip()
+    state["item_id"] = str(row.get("current_item_id", "")).strip()
+    state["is_active"] = (
+        str(row.get("is_active", "")).strip().lower()
+        in ["true", "1", "yes", "on"]
+    )
+    return state
+
+
+def get_sub_daily_check_row(student_id: str, d) -> dict:
+    """date×student_id の日別確認を1件返す。"""
+    sid = str(student_id).strip()
+    dstr = _sub_check_date_str(d)
+    df = load_sub_daily_check()
+    if df.empty:
+        return {}
+
+    hit = df[
+        df["date"].astype(str).str.strip().eq(dstr)
+        & df["student_id"].astype(str).str.strip().eq(sid)
+    ].copy()
+    if hit.empty:
+        return {}
+    return hit.iloc[-1].to_dict()
+
+
+def upsert_sub_daily_check(
+    student_id: str,
+    d,
+    status: str,
+    *,
+    sub_id: str = "",
+    item_id: str = "",
+    note: str = "",
+) -> None:
+    """サブ課題の日別確認を date×student_id で1件保存する。"""
+    sid = str(student_id).strip()
+    dstr = _sub_check_date_str(d)
+    status_norm = str(status).strip().lower()
+    if status_norm not in ["pending", "done", "skip"]:
+        status_norm = "pending"
+
+    snapshot = _active_sub_snapshot(sid)
+    sub_id = str(sub_id).strip() or str(snapshot.get("sub_id", "")).strip()
+    item_id = str(item_id).strip() or str(snapshot.get("item_id", "")).strip()
+
+    df = load_sub_daily_check()
+    if df.empty:
+        df = pd.DataFrame(columns=SUB_DAILY_CHECK_COLS)
+
+    mask = (
+        df["date"].astype(str).str.strip().eq(dstr)
+        & df["student_id"].astype(str).str.strip().eq(sid)
+    )
+    df = df[~mask].copy()
+
+    row = {
+        "date": dstr,
+        "student_id": sid,
+        "sub_id": sub_id,
+        "item_id": item_id,
+        "status": status_norm,
+        "checked_at": (
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if status_norm in ["done", "skip"]
+            else ""
+        ),
+        "note": str(note).strip(),
+    }
+    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    save_sub_daily_check(df)
+
+
+def _completion_exists_for_sub_check(
+    log_df: pd.DataFrame,
+    *,
+    student_id: str,
+    d,
+    sub_id: str = "",
+    item_id: str = "",
+) -> bool:
+    """指定日に対応するサブ課題完了ログがあるか確認する。"""
+    if log_df is None or log_df.empty:
+        return False
+
+    sid = str(student_id).strip()
+    dstr = _sub_check_date_str(d)
+    df = log_df.copy()
+    for c in ["student_id", "sub_id", "item_id", "completed_at"]:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str).str.strip()
+
+    completed_date = pd.to_datetime(
+        df["completed_at"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
+
+    mask = (
+        df["student_id"].eq(sid)
+        & completed_date.eq(dstr)
+    )
+    if str(sub_id).strip():
+        mask = mask & df["sub_id"].eq(str(sub_id).strip())
+    if str(item_id).strip():
+        mask = mask & df["item_id"].eq(str(item_id).strip())
+    return bool(mask.any())
+
+
+def sync_sub_daily_pending_for_date(
+    attendance_df: pd.DataFrame,
+    d,
+) -> int:
+    """出席済み＋進行中サブ課題の生徒へ、未確認行を自動作成する。
+
+    完了ログが同日に存在する場合は、自動的にdoneへ合わせる。
+    過去日を一括生成せず、対象日だけを同期するため、導入前の誤警告を防ぐ。
+    """
+    dstr = _sub_check_date_str(d)
+    if attendance_df is None or attendance_df.empty:
+        return 0
+
+    att = attendance_df.copy()
+    for c in ["date", "student_id", "kind"]:
+        if c not in att.columns:
+            att[c] = ""
+        att[c] = att[c].fillna("").astype(str).str.strip()
+
+    att["kind_norm"] = att["kind"].map(normalize_attendance_kind_for_lock)
+    attended_ids = (
+        att[
+            att["date"].eq(dstr)
+            & att["kind_norm"].isin(["lesson", "selfstudy"])
+        ]["student_id"]
+        .astype(str)
+        .str.strip()
+        .drop_duplicates()
+        .tolist()
+    )
+    if not attended_ids:
+        return 0
+
+    checks = load_sub_daily_check()
+    if checks.empty:
+        checks = pd.DataFrame(columns=SUB_DAILY_CHECK_COLS)
+
+    completion_log = load_sub_progress_log()
+    changed = False
+
+    for sid in attended_ids:
+        snapshot = _active_sub_snapshot(sid)
+        if (
+            not snapshot.get("is_active")
+            or not str(snapshot.get("sub_id", "")).strip()
+            or not str(snapshot.get("item_id", "")).strip()
+        ):
+            continue
+
+        mask = (
+            checks["date"].astype(str).str.strip().eq(dstr)
+            & checks["student_id"].astype(str).str.strip().eq(sid)
+        )
+        if mask.any():
+            idx = checks[mask].index[-1]
+            existing_status = str(checks.loc[idx, "status"]).strip().lower()
+            if (
+                existing_status == "pending"
+                and _completion_exists_for_sub_check(
+                    completion_log,
+                    student_id=sid,
+                    d=dstr,
+                    sub_id=str(checks.loc[idx, "sub_id"]).strip(),
+                    item_id=str(checks.loc[idx, "item_id"]).strip(),
+                )
+            ):
+                checks.loc[idx, "status"] = "done"
+                checks.loc[idx, "checked_at"] = datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                checks.loc[idx, "note"] = "完了ログから自動確認"
+                changed = True
+            continue
+
+        completed = _completion_exists_for_sub_check(
+            completion_log,
+            student_id=sid,
+            d=dstr,
+            sub_id=str(snapshot.get("sub_id", "")).strip(),
+            item_id=str(snapshot.get("item_id", "")).strip(),
+        )
+        checks = pd.concat(
+            [
+                checks,
+                pd.DataFrame([{
+                    "date": dstr,
+                    "student_id": sid,
+                    "sub_id": str(snapshot.get("sub_id", "")).strip(),
+                    "item_id": str(snapshot.get("item_id", "")).strip(),
+                    "status": "done" if completed else "pending",
+                    "checked_at": (
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if completed else ""
+                    ),
+                    "note": "完了ログから自動確認" if completed else "",
+                }]),
+            ],
+            ignore_index=True,
+        )
+        changed = True
+
+    if changed:
+        save_sub_daily_check(checks)
+
+    latest = load_sub_daily_check()
+    if latest.empty:
+        return 0
+    return int(
+        (
+            latest["date"].astype(str).str.strip().eq(dstr)
+            & latest["status"].astype(str).str.strip().str.lower().eq("pending")
+        ).sum()
+    )
+
+
+def complete_and_confirm_sub_daily(
+    student_id: str,
+    d,
+) -> tuple[bool, str]:
+    """サブ課題を完了して次へ進め、日別確認もdoneにする。"""
+    sid = str(student_id).strip()
+    dstr = _sub_check_date_str(d)
+    daily_row = get_sub_daily_check_row(sid, dstr)
+    snapshot = _active_sub_snapshot(sid)
+
+    if not snapshot.get("is_active"):
+        return False, "サブ課題進行中がOFFです。"
+
+    current_sub = str(snapshot.get("sub_id", "")).strip()
+    current_item = str(snapshot.get("item_id", "")).strip()
+    saved_status = str(daily_row.get("status", "")).strip().lower()
+    saved_sub = str(daily_row.get("sub_id", "")).strip()
+    saved_item = str(daily_row.get("item_id", "")).strip()
+
+    # 昨日以前の未確認は、当時の項目と現在位置が一致する時だけ自動完了する。
+    if (
+        daily_row
+        and saved_status == "pending"
+        and dstr < date.today().isoformat()
+        and (saved_sub != current_sub or saved_item != current_item)
+    ):
+        return (
+            False,
+            "当時のサブ課題と現在位置が異なるため、自動完了できません。"
+            "内容を確認し、必要なら「実施なしで確認」で未確認を閉じてください。",
+        )
+
+    before_sub = current_sub
+    before_item = current_item
+    ok, message = complete_and_advance_student_sub_task(sid)
+    if ok:
+        upsert_sub_daily_check(
+            sid,
+            dstr,
+            "done",
+            sub_id=before_sub,
+            item_id=before_item,
+            note="サブ課題完了登録",
+        )
+    return ok, message
+
+
+def mark_sub_daily_skip(student_id: str, d) -> tuple[bool, str]:
+    """対象日はサブ課題を実施しなかったことを確認済みにする。"""
+    sid = str(student_id).strip()
+    row = get_sub_daily_check_row(sid, d)
+    snapshot = _active_sub_snapshot(sid)
+    sub_id = str(row.get("sub_id", "")).strip() or str(snapshot.get("sub_id", "")).strip()
+    item_id = str(row.get("item_id", "")).strip() or str(snapshot.get("item_id", "")).strip()
+
+    if not sid or not sub_id:
+        return False, "サブ課題の設定が見つかりません。"
+
+    upsert_sub_daily_check(
+        sid,
+        d,
+        "skip",
+        sub_id=sub_id,
+        item_id=item_id,
+        note="この日はサブ課題を実施しない",
+    )
+    return True, "サブ課題を「実施なし」で確認済みにしました。"
+
+
+def reconcile_sub_daily_after_undo(student_id: str, d) -> None:
+    """完了取消後、同日の残り完了ログに合わせて日別確認を再判定する。"""
+    sid = str(student_id).strip()
+    dstr = _sub_check_date_str(d)
+    row = get_sub_daily_check_row(sid, dstr)
+    snapshot = _active_sub_snapshot(sid)
+    sub_id = str(snapshot.get("sub_id", "")).strip() or str(row.get("sub_id", "")).strip()
+    item_id = str(snapshot.get("item_id", "")).strip() or str(row.get("item_id", "")).strip()
+
+    completion_log = load_sub_progress_log()
+    if _completion_exists_for_sub_check(
+        completion_log,
+        student_id=sid,
+        d=dstr,
+    ):
+        upsert_sub_daily_check(
+            sid,
+            dstr,
+            "done",
+            sub_id=sub_id,
+            item_id=item_id,
+            note="残っている完了ログから確認済み",
+        )
+        return
+
+    att = load_attendance_log()
+    attended = False
+    if not att.empty:
+        att2 = att.copy()
+        for c in ["date", "student_id", "kind"]:
+            if c not in att2.columns:
+                att2[c] = ""
+            att2[c] = att2[c].fillna("").astype(str).str.strip()
+        att2["kind_norm"] = att2["kind"].map(normalize_attendance_kind_for_lock)
+        attended = bool(
+            (
+                att2["date"].eq(dstr)
+                & att2["student_id"].eq(sid)
+                & att2["kind_norm"].isin(["lesson", "selfstudy"])
+            ).any()
+        )
+
+    if attended and snapshot.get("is_active"):
+        upsert_sub_daily_check(
+            sid,
+            dstr,
+            "pending",
+            sub_id=sub_id,
+            item_id=item_id,
+            note="完了取消により未確認へ戻す",
+        )
 
 
 def _next_prefixed_id(existing_values, prefix: str, width: int = 3) -> str:
@@ -2906,6 +3297,44 @@ else:
     default_seats["default_seat_no"] = default_seats["default_seat_no"].astype(str).str.strip()
     default_seats["note"] = default_seats["note"].astype(str).str.strip()
 
+# d300:
+# 退会済み生徒が過去に基本席へ残っていても、自動配置や座席確認へ混ざらないよう整理する。
+_active_ids_for_default_seat = set()
+_can_cleanup_default_seats = (
+    not students.empty and "student_id" in students.columns
+)
+if _can_cleanup_default_seats:
+    _active_students_for_default_seat = students.copy()
+    if "is_active" in _active_students_for_default_seat.columns:
+        _active_students_for_default_seat = _active_students_for_default_seat[
+            _active_students_for_default_seat["is_active"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .replace("", "true")
+            .isin(["true", "1", "yes"])
+        ].copy()
+    _active_ids_for_default_seat = set(
+        _active_students_for_default_seat["student_id"]
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+
+if _can_cleanup_default_seats and not default_seats.empty:
+    _default_before_count = len(default_seats)
+    default_seats = default_seats[
+        default_seats["student_id"].astype(str).str.strip().isin(
+            _active_ids_for_default_seat
+        )
+    ].copy()
+    if len(default_seats) != _default_before_count:
+        write_csv_atomic(
+            default_seats[DEFAULT_SEAT_COLS].fillna(""),
+            DEFAULT_SEATS_CSV,
+        )
+
 
 if seat_assignments.empty:
     seat_assignments = pd.DataFrame(columns=SEAT_ASSIGNMENT_COLS)
@@ -3455,6 +3884,11 @@ if page == "閲覧":
     att_df_check = load_attendance_log().copy()
     prog_skip_df = load_progress_skip_ok().copy()
 
+    # d300:
+    # 今日出席済みで進行中サブ課題がある生徒には、日別の未確認行を自動作成する。
+    # 何も押さずに閉じても、このpending行が翌日以降に残る。
+    sync_sub_daily_pending_for_date(att_df_check, today)
+
     # 出席ログ正規化
     if att_df_check.empty:
         att_df_check = pd.DataFrame(columns=["date", "student_id", "kind", "memo"])
@@ -3835,6 +4269,9 @@ if page == "閲覧":
                             memo="未完了タスクから登録"
                         )
                         save_attendance_log(att_df)
+                        # d300:
+                        # 過去日の出欠を後から登録した場合も、その日のサブ課題確認を作る。
+                        sync_sub_daily_pending_for_date(att_df, d_obj.date())
                         st.success(f"{name} を授業で記録しました。")
                         st.rerun()
                     else:
@@ -3858,6 +4295,9 @@ if page == "閲覧":
                             memo="未完了タスクから登録"
                         )
                         save_attendance_log(att_df)
+                        # d300:
+                        # 過去日の自習登録でも、進行中サブ課題があれば確認対象として残す。
+                        sync_sub_daily_pending_for_date(att_df, d_obj.date())
                         st.success(f"{name} を自習で記録しました。")
                         st.rerun()
                     else:
@@ -4078,6 +4518,165 @@ if page == "閲覧":
         render_unfinished_section("🚨 未完了タスク（昨日以前）", overdue_df, "overdue")
     else:
         st.success("✅ 未完了タスク（昨日以前）はありません")
+
+    st.divider()
+
+    # =====================================================
+    # 🧩 サブ課題の日別確認（d300）
+    # -----------------------------------------------------
+    # 出席済みの日に「完了」または「実施なし」が押されなければpendingが残る。
+    # 翌日以降もここへ表示し、登録忘れを見える化する。
+    # =====================================================
+    _sub_daily_flash = st.session_state.pop("sub_daily_flash", "")
+    _sub_daily_flash_is_error = st.session_state.pop(
+        "sub_daily_flash_is_error", False
+    )
+    if _sub_daily_flash:
+        if _sub_daily_flash_is_error:
+            st.error(_sub_daily_flash)
+        else:
+            st.success(_sub_daily_flash)
+
+    sub_daily_df = load_sub_daily_check()
+    pending_sub_daily = pd.DataFrame(columns=SUB_DAILY_CHECK_COLS)
+
+    if not sub_daily_df.empty:
+        sub_daily_df = sub_daily_df.copy()
+        for _c in SUB_DAILY_CHECK_COLS:
+            if _c not in sub_daily_df.columns:
+                sub_daily_df[_c] = ""
+            sub_daily_df[_c] = (
+                sub_daily_df[_c].fillna("").astype(str).str.strip()
+            )
+
+        _active_ids_for_sub_daily = set()
+        if not students.empty and "student_id" in students.columns:
+            _active_sub_students = students.copy()
+            if "is_active" in _active_sub_students.columns:
+                _active_sub_students = _active_sub_students[
+                    _active_sub_students["is_active"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .replace("", "true")
+                    .isin(["true", "1", "yes"])
+                ].copy()
+            _active_ids_for_sub_daily = set(
+                _active_sub_students["student_id"]
+                .astype(str)
+                .str.strip()
+                .tolist()
+            )
+
+        pending_sub_daily = sub_daily_df[
+            sub_daily_df["status"].str.lower().eq("pending")
+            & sub_daily_df["student_id"].isin(_active_ids_for_sub_daily)
+        ].copy()
+
+    if pending_sub_daily.empty:
+        st.success("✅ サブ課題の確認漏れはありません")
+    else:
+        _student_name_for_sub_daily = dict(
+            zip(
+                students["student_id"].astype(str).str.strip(),
+                students["display_name"].fillna("").astype(str).str.strip(),
+            )
+        ) if not students.empty else {}
+        _sub_master_daily_df = load_sub_curricula()
+        _sub_items_daily_df = load_sub_curriculum_items()
+        _sub_name_for_daily = dict(
+            zip(
+                _sub_master_daily_df["sub_id"].astype(str).str.strip(),
+                _sub_master_daily_df["sub_name"].astype(str).str.strip(),
+            )
+        ) if not _sub_master_daily_df.empty else {}
+        _item_name_for_daily = dict(
+            zip(
+                _sub_items_daily_df["item_id"].astype(str).str.strip(),
+                _sub_items_daily_df["item_name"].astype(str).str.strip(),
+            )
+        ) if not _sub_items_daily_df.empty else {}
+
+        pending_sub_daily["_date_dt"] = pd.to_datetime(
+            pending_sub_daily["date"], errors="coerce"
+        )
+        pending_sub_daily = pending_sub_daily.sort_values(
+            ["_date_dt", "student_id"],
+            na_position="last",
+        )
+
+        _today_sub_pending_count = int(
+            pending_sub_daily["date"].eq(str(today)).sum()
+        )
+        _past_sub_pending_count = int(
+            (pending_sub_daily["date"] < str(today)).sum()
+        )
+
+        if _past_sub_pending_count:
+            st.error(
+                f"🚨 サブ課題確認未（昨日以前）："
+                f"{_past_sub_pending_count}件あります"
+            )
+        if _today_sub_pending_count:
+            st.warning(
+                f"⚠ サブ課題確認未（今日）："
+                f"{_today_sub_pending_count}件あります"
+            )
+
+        with st.expander(
+            f"🧩 サブ課題確認未（{len(pending_sub_daily)}件）",
+            expanded=bool(_past_sub_pending_count),
+        ):
+            st.caption(
+                "実際に終わっている場合は「完了登録」、"
+                "その日は取り組まなかった場合は「実施なし」で確認してください。"
+            )
+
+            for _idx, _row in pending_sub_daily.reset_index(drop=True).iterrows():
+                _d = str(_row.get("date", "")).strip()
+                _sid = str(_row.get("student_id", "")).strip()
+                _sub_id = str(_row.get("sub_id", "")).strip()
+                _item_id = str(_row.get("item_id", "")).strip()
+                _student_label = _student_name_for_sub_daily.get(_sid, _sid)
+                _sub_label = _sub_name_for_daily.get(_sub_id, _sub_id)
+                _item_label = _item_name_for_daily.get(_item_id, _item_id)
+
+                _sc1, _sc2, _sc3 = st.columns([5, 1.6, 1.6])
+                with _sc1:
+                    st.markdown(
+                        f"**{_d}｜{_student_label}**  \n"
+                        f"{_sub_label} / {_item_label}"
+                    )
+                with _sc2:
+                    if st.button(
+                        "✅ 完了登録",
+                        key=f"sub_daily_done_{_d}_{_sid}_{_idx}",
+                    ):
+                        _ok, _message = complete_and_confirm_sub_daily(
+                            _sid, _d
+                        )
+                        st.session_state["sub_daily_flash"] = _message
+                        st.session_state[
+                            "sub_daily_flash_is_error"
+                        ] = not _ok
+                        st.rerun()
+                with _sc3:
+                    _skip_label = (
+                        "今日は実施なし"
+                        if _d == str(today)
+                        else "実施なしで確認"
+                    )
+                    if st.button(
+                        _skip_label,
+                        key=f"sub_daily_skip_{_d}_{_sid}_{_idx}",
+                    ):
+                        _ok, _message = mark_sub_daily_skip(_sid, _d)
+                        st.session_state["sub_daily_flash"] = _message
+                        st.session_state[
+                            "sub_daily_flash_is_error"
+                        ] = not _ok
+                        st.rerun()
 
     st.divider()
 
@@ -4840,10 +5439,14 @@ if page == "閲覧":
                     if task_hint:
                         st.caption(f"今日やる候補：{task_hint}")
 
-                # d289:
-                # サブ課題の現在位置に加えて、本日の登録状態と取り消し操作を表示する。
+                # d300:
+                # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
                 sub_state = get_student_sub_ui_state(sid)
                 sub_task_hint = get_student_sub_task_hint(sid)
+                sub_daily_state = get_sub_daily_check_row(sid, today)
+                sub_daily_status = str(
+                    sub_daily_state.get("status", "")
+                ).strip().lower()
 
                 if sub_task_hint:
                     st.caption(sub_task_hint)
@@ -4881,18 +5484,22 @@ if page == "閲覧":
                         sub_state.get("today_item_names", []) or []
                     )
 
-                    if _today_count > 0:
+                    if sub_daily_status == "skip":
+                        st.caption("本日：－ サブ課題は実施なしで確認済み")
+                    elif _today_count > 0 or sub_daily_status == "done":
                         _today_items_text = "、".join(_today_names)
                         st.caption(
-                            f"本日：✅ {_today_count}項目完了"
+                            f"本日：✅ {_today_count or 1}項目確認済み"
                             + (
                                 f"（{_today_items_text}）"
                                 if _today_items_text
                                 else ""
                             )
                         )
+                    elif sub_daily_status == "pending":
+                        st.warning("本日：⚠ サブ課題確認未")
                     else:
-                        st.caption("本日：未登録")
+                        st.caption("本日：出欠登録後に確認対象")
 
                     _confirm_key = f"sub_undo_confirm_{sid}"
                     _confirming_undo = bool(
@@ -4900,21 +5507,40 @@ if page == "閲覧":
                     )
 
                     if not _confirming_undo:
-                        _sub_btn1, _sub_btn2 = st.columns(2)
+                        _sub_btn1, _sub_btn2, _sub_btn3 = st.columns(3)
 
                         with _sub_btn1:
                             if sub_state.get("is_active"):
                                 if st.button(
                                     "✅ サブ課題完了 → 次へ",
                                     key=f"sub_progress_next_{sid}_{slot}_{i}",
-                                    help="現在表示されているサブ課題を完了として記録し、次の項目へ進めます。",
+                                    help="現在表示されているサブ課題を完了として記録し、日別確認も完了にします。",
                                 ):
-                                    _ok, _message = complete_and_advance_student_sub_task(sid)
+                                    _ok, _message = complete_and_confirm_sub_daily(
+                                        sid, today
+                                    )
                                     st.session_state["sub_progress_flash"] = _message
                                     st.session_state["sub_progress_flash_is_error"] = not _ok
                                     st.rerun()
 
                         with _sub_btn2:
+                            if (
+                                sub_state.get("is_active")
+                                and sub_daily_status == "pending"
+                            ):
+                                if st.button(
+                                    "今日は実施なし",
+                                    key=f"sub_progress_skip_today_{sid}_{slot}_{i}",
+                                    help="今日はサブ課題を行わなかったことを確認済みにします。",
+                                ):
+                                    _ok, _message = mark_sub_daily_skip(
+                                        sid, today
+                                    )
+                                    st.session_state["sub_progress_flash"] = _message
+                                    st.session_state["sub_progress_flash_is_error"] = not _ok
+                                    st.rerun()
+
+                        with _sub_btn3:
                             if sub_state.get("has_latest_completion"):
                                 if st.button(
                                     "↩ 直前の完了を取り消す",
@@ -4950,7 +5576,20 @@ if page == "閲覧":
                                 key=f"sub_progress_undo_confirm_{sid}_{slot}_{i}",
                                 type="primary",
                             ):
+                                _latest_completed_at_before_undo = str(
+                                    sub_state.get("latest_completed_at", "")
+                                ).strip()
                                 _ok, _message = undo_latest_student_sub_completion(sid)
+                                if _ok and _latest_completed_at_before_undo:
+                                    _undo_date = pd.to_datetime(
+                                        _latest_completed_at_before_undo,
+                                        errors="coerce",
+                                    )
+                                    if pd.notna(_undo_date):
+                                        reconcile_sub_daily_after_undo(
+                                            sid,
+                                            _undo_date.strftime("%Y-%m-%d"),
+                                        )
                                 st.session_state[_confirm_key] = False
                                 st.session_state["sub_progress_flash"] = _message
                                 st.session_state["sub_progress_flash_is_error"] = not _ok
@@ -8976,7 +9615,34 @@ elif page == "管理（入力）":
                 students.loc[mask, "memo"] = str(e_memo).strip()
 
                 write_csv(students, STUDENTS_CSV)  # noqa: F821
-                st.success(f"更新しました: {sel_id}")
+
+                _default_seat_removed = False
+                if not bool(e_active):
+                    _default_df = safe_read_csv(
+                        DEFAULT_SEATS_CSV,
+                        DEFAULT_SEAT_COLS,
+                        stop_on_missing=False,
+                        show_message=False,
+                    )
+                    if not _default_df.empty:
+                        _default_before = len(_default_df)
+                        _default_df = _default_df[
+                            ~_default_df["student_id"]
+                            .astype(str)
+                            .str.strip()
+                            .eq(str(sel_id).strip())
+                        ].copy()
+                        if len(_default_df) != _default_before:
+                            write_csv_atomic(
+                                _default_df[DEFAULT_SEAT_COLS].fillna(""),
+                                DEFAULT_SEATS_CSV,
+                            )
+                            _default_seat_removed = True
+
+                if _default_seat_removed:
+                    st.success(f"更新しました: {sel_id}（基本席も解除しました）")
+                else:
+                    st.success(f"更新しました: {sel_id}")
 
 
         # (週次スケジュールUIは『📅 固定スケジュール（週次）』タブへ移動しました)
@@ -13805,9 +14471,35 @@ elif page == "座席":
     )
 
 
+    _seat_page_active_ids = set()
+    if not students.empty and "student_id" in students.columns:
+        _seat_page_active_students = students.copy()
+        if "is_active" in _seat_page_active_students.columns:
+            _seat_page_active_students = _seat_page_active_students[
+                _seat_page_active_students["is_active"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .replace("", "true")
+                .isin(["true", "1", "yes"])
+            ].copy()
+        _seat_page_active_ids = set(
+            _seat_page_active_students["student_id"]
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
+
     today_seats = seat_assignments[
         (seat_assignments["date"].astype(str).str.strip() == today)
         & (seat_assignments["slot"].astype(str).str.strip() == str(seat_slot_sel).strip())
+        & (
+            seat_assignments["student_id"]
+            .astype(str)
+            .str.strip()
+            .isin(_seat_page_active_ids)
+        )
     ].copy()
 
 
@@ -14471,6 +15163,10 @@ elif page == "座席":
         _sid = str(_sid).strip()
         _slot = normalize_slot(_slot)
         if not _sid or not _slot:
+            return
+        # d300:
+        # 月スケジュール・例外追加の補足表示経路でも、退会済みは座席確認へ戻さない。
+        if _sid not in active_student_ids_for_seat:
             return
         _key = (_sid, _slot)
         if _key in existing_seat_today_keys:
