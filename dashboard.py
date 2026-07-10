@@ -7579,6 +7579,7 @@ if page == "閲覧":
         st.caption("※ ここは『進捗チェック』です。課題そのものの登録/編集/削除は 管理（入力） → 📘 カリキュラム管理 で行います。")
         if st.button("📘 課題を登録・編集する（管理へ移動）", key="goto_admin_curr_from_view"):
             st.session_state["pending_page"] = "管理（入力）"
+            st.session_state["pending_admin_section"] = "📘 カリキュラム管理"
             st.rerun()
 
         if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
@@ -9349,16 +9350,48 @@ elif page == "管理（入力）":
     st.header("管理（入力）")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
 
-    # d228: 管理（入力）は、よく使う順に並べる。
-    # 1) 月スケジュール 2) 検定予定登録 3) その他管理
-    sub_month, sub_kentei, sub_stu, sub_weekly, sub_curr, sub_subtask, sub_override, sub_sys, sub_info = st.tabs(
-        ["🗓️ 月スケジュール", "🎫 検定予定登録", "👥 生徒管理", "📅 固定スケジュール（週次）", "📘 カリキュラム管理", "🧩 サブ課題管理", "🗓️ スケジュール例外", "🛠 システム設定", "ℹ️ 運用メモ"]
+    # d303:
+    # st.tabs は、選択していないタブの中身も実行される。
+    # 管理メニューを1つだけ選ぶ方式にし、選択中の画面だけ処理する。
+    admin_section_options = [
+        "🗓️ 月スケジュール",
+        "🎫 検定予定登録",
+        "👥 生徒管理",
+        "📅 固定スケジュール（週次）",
+        "📘 カリキュラム管理",
+        "🧩 サブ課題管理",
+        "🗓️ スケジュール例外",
+        "🛠 システム設定",
+        "ℹ️ 運用メモ",
+    ]
+
+    if "pending_admin_section" in st.session_state:
+        _pending_admin_section = str(
+            st.session_state.pop("pending_admin_section", "")
+        ).strip()
+        if _pending_admin_section in admin_section_options:
+            st.session_state["admin_section_selector"] = (
+                _pending_admin_section
+            )
+
+    admin_section = st.selectbox(
+        "管理メニュー",
+        admin_section_options,
+        key="admin_section_selector",
+        help=(
+            "選択した管理画面だけを読み込みます。"
+            "以前のタブ方式より、再読み込み時の処理を減らします。"
+        ),
+    )
+    st.caption(
+        "選択中の管理画面だけを実行しています。"
+        "別の管理画面を開く時は、このメニューから切り替えます。"
     )
 
     # ---------------------------
     # 👥 生徒管理（追加・編集・退会）
     # ---------------------------
-    with sub_stu:
+    if admin_section == "👥 生徒管理":
         students = safe_read_csv(STUDENTS_CSV, required_cols=["student_id", "display_name"])
 
         # 次のID（S001形式）を自動提案
@@ -9650,7 +9683,7 @@ elif page == "管理（入力）":
     # ---------------------------
     # 📅 固定スケジュール（週次）
     # ---------------------------
-    with sub_weekly:
+    if admin_section == "📅 固定スケジュール（週次）":
         st.subheader("固定スケジュール（週次）")
         st.caption("週1回/週2回（例：月8回）など、毎週ほぼ固定で来る子はここに登録します。月2回など月ごと調整の子は基本的に入れません。")
 
@@ -9763,7 +9796,7 @@ elif page == "管理（入力）":
     # ---------------------------
     # 🎫 検定予定登録（kentei_schedule.csv）
     # ---------------------------
-    with sub_kentei:
+    if admin_section == "🎫 検定予定登録":
         st.subheader("検定予定 登録")
         
         students_k = admin_students_for_pick.copy()
@@ -9978,7 +10011,7 @@ elif page == "管理（入力）":
     # ---------------------------
     # 🧩 サブ課題管理（d287 試作版）
     # ---------------------------
-    with sub_subtask:
+    if admin_section == "🧩 サブ課題管理":
         st.subheader("🧩 サブ課題管理")
         st.caption(
             "HTML Masterなど、通常課題と並行して進める補助教材を登録します。"
@@ -11101,7 +11134,7 @@ elif page == "管理（入力）":
         #   - curriculum_courses.csv
         #   - curriculum_tasks.csv
         # ---------------------------
-    with sub_curr:
+    if admin_section == "📘 カリキュラム管理":
         st.subheader("📘 カリキュラム / 課題 管理")
         st.caption("カリキュラム（コース）と課題（タスク）を、CSVを直接触らずにUIから編集できます。保存時に自動バックアップも作ります。")
         
@@ -11860,7 +11893,7 @@ elif page == "管理（入力）":
     # ---------------------------
     # 🗓️ 月スケジュール（monthly_schedule.csv）
     # ---------------------------
-    with sub_month:
+    if admin_section == "🗓️ 月スケジュール":
         st.subheader("🗓️ 月スケジュール")
         st.caption("保存済みの月スケジュールを、カレンダー中心に確認・変更します。固定スケジュールからの生成機能は整理候補として下に残しています。")
 
@@ -12870,25 +12903,13 @@ elif page == "管理（入力）":
                 except Exception:
                     pass
 
-            _compact_pref_key = "monthly_calendar_compact_mode"
-            _compact_widget_key = f"monthly_calendar_compact_mode_{target_year}_{target_month}"
-
-            if _compact_widget_key not in st.session_state:
-                st.session_state[_compact_widget_key] = _load_ui_pref_bool(_compact_pref_key, default=False)
-
-            compact_calendar_mode = st.checkbox(
-                "iPad用コンパクト表示",
-                key=_compact_widget_key,
-                help="ON/OFF状態を保存します。d273ではカレンダー内の修正ボタンを整理し、予定カードは選択だけにしています。",
+            # d309:
+            # iPad用コンパクト表示は、現在の統一レイアウトと差がなくなったため廃止。
+            # 端末に関係なく、同じカレンダー表示を使用する。
+            st.caption(
+                "予定ボタンを押すと操作パネルに反映されます。"
+                "変更・取消線・削除は操作パネルで行います。"
             )
-
-            if bool(compact_calendar_mode) != _load_ui_pref_bool(_compact_pref_key, default=False):
-                _save_ui_pref_bool(_compact_pref_key, bool(compact_calendar_mode))
-
-            if compact_calendar_mode:
-                st.caption("コンパクト表示中：カレンダー内は予定を選択するだけです。変更・取消線・削除は操作パネルで行います。")
-            else:
-                st.caption("予定ボタンを押すと操作パネルに反映されます。変更・取消線・削除は操作パネルで行います。")
 
             # d242:
             # 土日など予定が多い月はカレンダーが長くなるため、週ごとに折りたたむ。
@@ -12974,13 +12995,21 @@ elif page == "管理（入力）":
                             day_bg = "#fffbe6" if (is_target_month and is_today_in_calendar) else ("#ffffff" if is_target_month else "#f3f3f3")
                             day_color = "#111" if (is_target_month and is_today_in_calendar) else ("#222" if is_target_month else "#aaa")
                             day_border = "2px solid #f59e0b" if (is_target_month and is_today_in_calendar) else "1px solid #ddd"
-                            today_anchor_html = (
-                                f'<a id="monthly_today_{target_year}_{target_month}"></a>'
-                                if (is_target_month and is_today_in_calendar) else ""
+                            # d305:
+                            # 今日カードだけ下へずれる原因になる単独アンカーを廃止し、
+                            # カード本体へ id を付ける。
+                            today_anchor_attr = (
+                                f'id="monthly_today_{target_year}_{target_month}"'
+                                if (is_target_month and is_today_in_calendar)
+                                else ""
                             )
                             today_badge_html = (
-                                '<span style="font-size:10px;background:#f59e0b;color:white;'
-                                'border-radius:999px;padding:1px 6px;margin-left:4px;font-weight:800;">今日</span>'
+                                '<span style="'
+                                'display:inline-flex;align-items:center;height:18px;'
+                                'font-size:9px;background:#f59e0b;color:white;'
+                                'border-radius:999px;padding:0 6px;margin-left:4px;'
+                                'font-weight:800;line-height:1;'
+                                '">今日</span>'
                                 if (is_target_month and is_today_in_calendar) else ""
                             )
 
@@ -13012,18 +13041,61 @@ elif page == "管理（入力）":
                                     ].copy()
                                 selected_day_count = int((_selected_day_rows["student_id"].astype(str).str.strip() == selected_highlight_sid).sum())
 
+                            # d304:
+                            # 日付カード内の文字数で高さや見た目が崩れないように、
+                            # 人数表示を短い固定表記にし、カード高を統一する。
                             count_html = ""
-                            if is_target_month and (lesson_count > 0 or self_count > 0):
-                                count_html = f'<div style="font-size:11px;color:#555;margin-top:3px;">授業{lesson_count}人 / 自習{self_count}人</div>'
+                            if is_target_month:
+                                count_html = (
+                                    '<div style="'
+                                    'display:flex;align-items:center;justify-content:flex-start;'
+                                    'gap:5px;margin-top:6px;white-space:nowrap;'
+                                    'font-size:clamp(9px,1.15vw,12px);line-height:1.1;'
+                                    'overflow:hidden;text-overflow:clip;'
+                                    '">'
+                                    f'<span style="color:#2563a6;font-weight:700;">授 {lesson_count}</span>'
+                                    '<span style="color:#777;">｜</span>'
+                                    f'<span style="color:#2f7d32;font-weight:700;">自 {self_count}</span>'
+                                    '</div>'
+                                )
+
+                            selected_html = ""
                             if is_target_month and selected_day_count > 0:
-                                count_html += f'<div style="font-size:11px;color:#111;font-weight:700;margin-top:2px;">★ {selected_highlight_name} {selected_day_count}件</div>'
+                                selected_html = (
+                                    '<div style="'
+                                    'margin-top:4px;font-size:clamp(8px,1vw,10px);'
+                                    'color:#111;font-weight:700;white-space:nowrap;'
+                                    'overflow:hidden;text-overflow:ellipsis;'
+                                    '">'
+                                    f'★ {selected_highlight_name} {selected_day_count}件'
+                                    '</div>'
+                                )
 
                             st.markdown(
                                 f"""
-                                {today_anchor_html}
-                                <div style="min-height:52px;background:{day_bg};border:{day_border};border-radius:8px;padding:6px;">
-                                    <div style="font-weight:800;color:{day_color};">{day_date.day}{today_badge_html}</div>
+                                <div {today_anchor_attr} style="
+                                    height:78px;
+                                    box-sizing:border-box;
+                                    background:{day_bg};
+                                    border:{day_border};
+                                    border-radius:8px;
+                                    padding:7px 7px 6px 7px;
+                                    overflow:hidden;
+                                ">
+                                    <div style="
+                                        height:22px;
+                                        display:flex;
+                                        align-items:flex-start;
+                                        justify-content:flex-start;
+                                        white-space:nowrap;
+                                        font-weight:800;
+                                        color:{day_color};
+                                        line-height:1;
+                                    ">
+                                        <span>{day_date.day}</span>{today_badge_html}
+                                    </div>
                                     {count_html}
+                                    {selected_html}
                                 </div>
                                 """,
                                 unsafe_allow_html=True,
@@ -13137,17 +13209,48 @@ elif page == "管理（入力）":
                                             f'{_slot_badge_text}</span>'
                                         )
 
+                                        # d307:
+                                        # コマ固定レーンは使わず、予定は上から順に詰めて表示する。
+                                        # 生徒名だけ最大3行分の高さを確保し、できるだけフルネームが見えるようにする。
                                         item_html = (
-                                            f'<div style="background:{item_bg};{highlight_style}'
+                                            f'<div title="{slot}コマ｜{name}｜{typ}{reason_part}" '
+                                            f'style="background:{item_bg};{highlight_style}'
                                             f'border-radius:6px;padding:4px 6px;margin:4px 0 2px 0;'
-                                            f'font-size:{item_font_size};line-height:1.35;font-weight:{item_weight};'
+                                            f'height:72px;box-sizing:border-box;'
                                             f'opacity:{opacity};{text_style}">'
-                                            f'{item_icon} {slot_badge_html}{slot}コマ｜{name}｜{typ}{reason_part}'
+                                            f'<div style="display:flex;align-items:flex-start;min-width:0;">'
+                                            f'<span style="flex:0 0 auto;margin-right:2px;">{item_icon}</span>'
+                                            f'{slot_badge_html}'
+                                            f'<span style="'
+                                            f'display:-webkit-box;'
+                                            f'-webkit-line-clamp:3;'
+                                            f'-webkit-box-orient:vertical;'
+                                            f'overflow:hidden;'
+                                            f'word-break:break-word;'
+                                            f'line-height:1.25;'
+                                            f'max-height:3.8em;'
+                                            f'font-size:{item_font_size};'
+                                            f'font-weight:{item_weight};'
+                                            f'color:#111;'
+                                            f'">{name}</span>'
+                                            f'</div>'
+                                            f'<div style="'
+                                            f'margin-top:4px;'
+                                            f'padding-left:2px;'
+                                            f'white-space:nowrap;'
+                                            f'overflow:hidden;'
+                                            f'text-overflow:ellipsis;'
+                                            f'font-size:10px;'
+                                            f'line-height:1.2;'
+                                            f'color:#555;'
+                                            f'">{slot}コマ｜{typ}{reason_part}</div>'
                                             f'</div>'
                                         )
                                         st.markdown(item_html, unsafe_allow_html=True)
 
-                                        btn_label = f"選択：{name}"
+                                        # d305:
+                                        # 名前の長さでボタンが2行にならないよう、ラベルを固定する。
+                                        btn_label = "選択"
 
                                         def _pick_current_monthly_calendar_item():
                                             st.session_state[f"monthly_sidebar_edit_date_{target_year}_{target_month}"] = day_date
@@ -13205,10 +13308,30 @@ elif page == "管理（入力）":
                                         # d273:
                                         # カレンダー内は「予定を選択するだけ」にする。
                                         # 取消線・解除・削除などの修正操作は、右/左の操作パネルへ集約して誤操作を減らす。
+                                        st.markdown(
+                                            """
+                                            <style>
+                                            div[data-testid="stButton"] > button {
+                                                min-height: 38px;
+                                                height: 38px;
+                                                padding-top: 0;
+                                                padding-bottom: 0;
+                                                white-space: nowrap;
+                                            }
+                                            div[data-testid="stButton"] > button p {
+                                                white-space: nowrap;
+                                                overflow: hidden;
+                                                text-overflow: ellipsis;
+                                            }
+                                            </style>
+                                            """,
+                                            unsafe_allow_html=True,
+                                        )
                                         if st.button(
                                             btn_label,
                                             key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
                                             use_container_width=True,
+                                            help=f"{name}の予定を選択",
                                         ):
                                             _pick_current_monthly_calendar_item()
 
@@ -13252,100 +13375,194 @@ elif page == "管理（入力）":
                     else month_start
                 )
 
-                cal_add_date = st.date_input(
-                    "追加する日付",
-                    value=_monthly_add_default_date,
-                    min_value=month_start,
-                    max_value=month_end,
-                    key=f"monthly_sidebar_add_date_{target_year}_{target_month}",
+                # d302:
+                # 「予定を追加」もフォーム化する。
+                # 日付・コマ・生徒・種別・回数区分・メモを変更している途中は
+                # Streamlit全体を再実行せず、「この予定を追加」を押した時だけ保存する。
+                st.caption(
+                    "入力途中は再読み込みしません。"
+                    "内容をまとめて選び、最後に「この予定を追加」を押してください。"
                 )
 
-                cal_add_slot = st.selectbox(
-                    "追加するコマ",
-                    monthly_slot_options,
-                    key=f"monthly_sidebar_add_slot_{target_year}_{target_month}",
-                    format_func=lambda x: format_slot_label(x, monthly_slot_label_map),
+                _add_form_key = (
+                    f"monthly_sidebar_add_form_"
+                    f"{target_year}_{target_month}"
                 )
 
-                add_sid2 = st.selectbox(
-                    "追加する生徒",
-                    monthly_student_options,
-                    key=f"monthly_sidebar_add_student_{target_year}_{target_month}",
-                    format_func=lambda sid: monthly_student_label_map.get(sid, sid),
-                ) if monthly_student_options else ""
+                with st.form(
+                    key=_add_form_key,
+                    clear_on_submit=False,
+                ):
+                    cal_add_date = st.date_input(
+                        "追加する日付",
+                        value=_monthly_add_default_date,
+                        min_value=month_start,
+                        max_value=month_end,
+                        key=(
+                            f"monthly_sidebar_add_date_"
+                            f"{target_year}_{target_month}"
+                        ),
+                    )
 
-                _add_type_key = f"monthly_sidebar_add_session_type_{target_year}_{target_month}"
-                _add_reason_key = f"monthly_sidebar_add_reason_{target_year}_{target_month}"
-                _add_prev_type_key = f"monthly_sidebar_add_prev_type_{target_year}_{target_month}"
+                    cal_add_slot = st.selectbox(
+                        "追加するコマ",
+                        monthly_slot_options,
+                        key=(
+                            f"monthly_sidebar_add_slot_"
+                            f"{target_year}_{target_month}"
+                        ),
+                        format_func=lambda x: format_slot_label(
+                            x,
+                            monthly_slot_label_map,
+                        ),
+                    )
 
-                add_session_type2 = st.radio(
-                    "追加する種別",
-                    ["授業", "自習"],
-                    key=_add_type_key,
-                    horizontal=True,
-                )
+                    if monthly_student_options:
+                        add_sid2 = st.selectbox(
+                            "追加する生徒",
+                            monthly_student_options,
+                            key=(
+                                f"monthly_sidebar_add_student_"
+                                f"{target_year}_{target_month}"
+                            ),
+                            format_func=lambda sid: (
+                                monthly_student_label_map.get(sid, sid)
+                            ),
+                        )
+                    else:
+                        add_sid2 = ""
+                        st.info("追加できる在籍中の生徒がいません。")
 
-                # d232:
-                # 月スケジュール操作の追加でも、種別と回数区分を連動させる。
-                # 自習 → 回数外、授業 → 通常。
-                # 種別を変更した時だけ自動変更し、その後の手動変更は尊重する。
-                if _add_prev_type_key not in st.session_state:
-                    st.session_state[_add_prev_type_key] = str(add_session_type2)
-                    if _add_reason_key not in st.session_state:
-                        st.session_state[_add_reason_key] = "自習" if add_session_type2 == "自習" else "通常"
-                elif st.session_state.get(_add_prev_type_key) != str(add_session_type2):
-                    st.session_state[_add_prev_type_key] = str(add_session_type2)
-                    st.session_state[_add_reason_key] = "自習" if add_session_type2 == "自習" else "通常"
+                    add_session_type2 = st.radio(
+                        "追加する種別",
+                        ["授業", "自習"],
+                        key=(
+                            f"monthly_sidebar_add_session_type_"
+                            f"{target_year}_{target_month}"
+                        ),
+                        horizontal=True,
+                    )
 
-                _add_reason_value = st.session_state.get(
-                    _add_reason_key,
-                    "自習" if add_session_type2 == "自習" else "通常",
-                )
-                _add_reason_index = (
-                    monthly_reason_options.index(_add_reason_value)
-                    if _add_reason_value in monthly_reason_options else 0
-                )
+                    # d302:
+                    # フォーム内では種別変更時に再実行されないため、
+                    # 回数区分は画面上で即時連動させず、保存時に安全に補正する。
+                    add_reason2 = st.selectbox(
+                        "回数区分（集計に使います）",
+                        monthly_reason_options,
+                        index=(
+                            monthly_reason_options.index("通常")
+                            if "通常" in monthly_reason_options
+                            else 0
+                        ),
+                        key=(
+                            f"monthly_sidebar_add_reason_"
+                            f"{target_year}_{target_month}"
+                        ),
+                        format_func=format_monthly_reason_label,
+                        help=(
+                            "種別が自習で、回数区分を通常のまま保存した場合は、"
+                            "保存時に「自習（回数外）」へ自動補正します。"
+                            "前月振替・今月振替などを選んだ場合は、その選択を優先します。"
+                        ),
+                    )
 
-                add_reason2 = st.selectbox(
-                    "回数区分（集計に使います）",
-                    monthly_reason_options,
-                    index=_add_reason_index,
-                    key=_add_reason_key,
-                    format_func=format_monthly_reason_label,
-                    help="種別を自習にすると「自習（回数外）」、授業にすると「通常授業（回数に含める）」が自動で選ばれます。必要なら回数区分を選び直してください。",
-                )
-                if str(add_reason2).strip() in monthly_count_excluded_reasons:
-                    st.caption("回数扱い：回数外（予定回数に含めません）")
-                else:
-                    st.caption("回数扱い：回数に含める")
+                    st.caption(
+                        "回数区分は保存時に確認します。"
+                        "自習を選び、回数区分が通常のままなら"
+                        "「自習（回数外）」へ自動調整します。"
+                    )
 
-                add_note2 = st.text_input(
-                    "追加メモ",
-                    value="",
-                    placeholder="例：保護者都合、検定前確認、入会特典分 など",
-                    key=f"monthly_sidebar_add_note_{target_year}_{target_month}",
-                )
+                    add_note2 = st.text_input(
+                        "追加メモ",
+                        value="",
+                        placeholder=(
+                            "例：保護者都合、検定前確認、"
+                            "入会特典分 など"
+                        ),
+                        key=(
+                            f"monthly_sidebar_add_note_"
+                            f"{target_year}_{target_month}"
+                        ),
+                    )
 
-                if st.button("➕ この予定を追加", key=f"monthly_sidebar_add_button_{target_year}_{target_month}"):
+                    add_submitted = st.form_submit_button(
+                        "➕ この予定を追加",
+                        disabled=not bool(monthly_student_options),
+                        help=(
+                            "フォーム内の内容をまとめて保存します。"
+                            if monthly_student_options
+                            else "追加できる在籍中の生徒がいません。"
+                        ),
+                        use_container_width=True,
+                    )
+
+                if add_submitted:
                     if not add_sid2:
                         st.error("生徒を選択してください。")
                     else:
+                        effective_add_reason = str(add_reason2).strip()
+                        add_type_norm = str(
+                            add_session_type2
+                        ).strip()
+
+                        # 種別と回数区分の食い違いを保存時に補正する。
+                        # 明示的な振替区分などはそのまま尊重する。
+                        if (
+                            add_type_norm == "自習"
+                            and effective_add_reason in ["", "通常"]
+                        ):
+                            effective_add_reason = "自習"
+                        elif (
+                            add_type_norm == "授業"
+                            and effective_add_reason == "自習"
+                        ):
+                            effective_add_reason = "通常"
+
                         new_row = {
                             "date": cal_add_date.isoformat(),
                             "student_id": str(add_sid2).strip(),
                             "slot": normalize_slot(cal_add_slot),
-                            "session_type": str(add_session_type2).strip(),
-                            "reason": str(add_reason2).strip() or "通常",
+                            "session_type": add_type_norm,
+                            "reason": (
+                                effective_add_reason or "通常"
+                            ),
                             "note": str(add_note2).strip(),
                             "source": "サイドバー編集で追加",
                         }
-                        save_df = pd.concat([
-                            monthly_schedule[MONTHLY_SCHEDULE_COLS].fillna(""),
-                            pd.DataFrame([new_row], columns=MONTHLY_SCHEDULE_COLS),
-                        ], ignore_index=True)
-                        save_df = save_df[MONTHLY_SCHEDULE_COLS].fillna("")
-                        write_csv_atomic(save_df, MONTHLY_SCHEDULE_CSV)
-                        st.success("月スケジュールを追加しました。")
+
+                        save_df = pd.concat(
+                            [
+                                monthly_schedule[
+                                    MONTHLY_SCHEDULE_COLS
+                                ].fillna(""),
+                                pd.DataFrame(
+                                    [new_row],
+                                    columns=MONTHLY_SCHEDULE_COLS,
+                                ),
+                            ],
+                            ignore_index=True,
+                        )
+                        save_df = save_df[
+                            MONTHLY_SCHEDULE_COLS
+                        ].fillna("")
+                        write_csv_atomic(
+                            save_df,
+                            MONTHLY_SCHEDULE_CSV,
+                        )
+
+                        if (
+                            str(add_reason2).strip()
+                            != effective_add_reason
+                        ):
+                            st.success(
+                                "月スケジュールを追加しました。"
+                                f"回数区分は「{effective_add_reason}」へ"
+                                "自動調整しました。"
+                            )
+                        else:
+                            st.success(
+                                "月スケジュールを追加しました。"
+                            )
                         st.rerun()
 
                 st.divider()
@@ -13402,106 +13619,15 @@ elif page == "管理（入力）":
                         )
                     selected_can_edit = (not selected_attendance_locked) or selected_unlock_attended
 
-                    new_date = st.date_input(
-                        "変更後の日付",
-                        value=selected_date_value,
-                        min_value=month_start,
-                        max_value=month_end,
-                        key=f"monthly_sidebar_update_date_{target_year}_{target_month}_{selected_idx}",
+                    # d301:
+                    # Streamlitは通常の入力部品を変更するたびに全体を再実行する。
+                    # 選択中予定の編集欄をフォーム化し、
+                    # 日付・コマ・種別・回数区分・メモ・取消線設定は
+                    # 「変更を保存」を押すまで再実行しない。
+                    st.caption(
+                        "編集途中は再読み込みしません。"
+                        "日付・コマ・種別などをまとめて変更し、最後に「変更を保存」を押してください。"
                     )
-
-                    new_slot = st.selectbox(
-                        "変更後のコマ",
-                        monthly_slot_options,
-                        index=monthly_slot_options.index(selected_slot) if selected_slot in monthly_slot_options else 0,
-                        key=f"monthly_sidebar_update_slot_{target_year}_{target_month}_{selected_idx}",
-                        format_func=lambda x: format_slot_label(x, monthly_slot_label_map),
-                    )
-
-                    _update_type_key = f"monthly_sidebar_update_type_{target_year}_{target_month}_{selected_idx}"
-                    _update_reason_key = f"monthly_sidebar_update_reason_{target_year}_{target_month}_{selected_idx}"
-                    _update_prev_type_key = f"monthly_sidebar_update_prev_type_{target_year}_{target_month}_{selected_idx}"
-
-                    new_type = st.radio(
-                        "変更後の種別",
-                        ["授業", "自習"],
-                        index=["授業", "自習"].index(selected_type) if selected_type in ["授業", "自習"] else 0,
-                        key=_update_type_key,
-                        horizontal=True,
-                    )
-
-                    # d230:
-                    # 種別を変えた時だけ、回数区分を現場でよく使う初期値に寄せる。
-                    # 自習 → 回数外、授業 → 通常。
-                    # 初回表示では既存データの回数区分を尊重する。
-                    if _update_prev_type_key not in st.session_state:
-                        st.session_state[_update_prev_type_key] = str(new_type)
-                        if _update_reason_key not in st.session_state:
-                            st.session_state[_update_reason_key] = (
-                                selected_reason if selected_reason in monthly_reason_options
-                                else ("自習" if new_type == "自習" else "通常")
-                            )
-                    elif st.session_state.get(_update_prev_type_key) != str(new_type):
-                        st.session_state[_update_prev_type_key] = str(new_type)
-                        st.session_state[_update_reason_key] = "自習" if new_type == "自習" else "通常"
-
-                    _current_reason_value = st.session_state.get(
-                        _update_reason_key,
-                        selected_reason if selected_reason in monthly_reason_options else "通常"
-                    )
-                    _current_reason_index = (
-                        monthly_reason_options.index(_current_reason_value)
-                        if _current_reason_value in monthly_reason_options else 0
-                    )
-
-                    new_reason = st.selectbox(
-                        "回数区分（集計に使います）",
-                        monthly_reason_options,
-                        index=_current_reason_index,
-                        key=_update_reason_key,
-                        format_func=format_monthly_reason_label,
-                        help="種別を自習に変えると「自習（回数外）」、授業に変えると「通常授業（回数に含める）」が自動で選ばれます。必要なら回数区分を選び直してください。",
-                    )
-                    if str(new_reason).strip() in monthly_count_excluded_reasons:
-                        st.caption("回数扱い：回数外（予定回数に含めません）")
-                    else:
-                        st.caption("回数扱い：回数に含める")
-
-                    new_note = st.text_input(
-                        "メモ",
-                        value=selected_note,
-                        key=f"monthly_sidebar_update_note_{target_year}_{target_month}_{selected_idx}",
-                    )
-
-                    # d275:
-                    # 「選択中の予定を取消線にして残す」という意味へ文言を変更する。
-                    # ただし、取消線は student_id × date × slot で判定しているため、
-                    # 変更後も同じ日付・同じコマの場合、新しく追加した予定にも取消線が当たってしまう。
-                    # そのため、同じ日付・同じコマではチェックを無効化し、種別だけの変更は直接修正に寄せる。
-                    same_date_slot_update = (
-                        str(new_date) == str(selected_date_value)
-                        and normalize_slot(new_slot) == normalize_slot(selected_slot)
-                    )
-                    keep_original_key = f"monthly_sidebar_keep_original_cancelled_{target_year}_{target_month}_{selected_idx}"
-                    if same_date_slot_update:
-                        st.session_state[keep_original_key] = False
-
-                    keep_original_as_cancelled = st.checkbox(
-                        "選択中の予定を取消線にして残す（振替・予定変更）",
-                        value=False,
-                        key=keep_original_key,
-                        disabled=same_date_slot_update,
-                        help=(
-                            "ONにすると、選択中の予定に取消線を残し、変更後の日付・コマに新しい予定を追加します。"
-                            "同じ日付・同じコマでは、新しい予定にも取消線が当たるため使えません。"
-                        ),
-                    )
-                    if same_date_slot_update:
-                        st.caption("同じ日付・同じコマです。種別だけ変更する場合は、取消線を残さず直接修正します。")
-                    elif keep_original_as_cancelled:
-                        st.caption("ON：選択中の予定を取消線にして残し、変更後の予定を追加します。実際の振替・予定変更向けです。")
-                    else:
-                        st.caption("OFF：登録ミス修正として、選択中の予定自体を書き換えます。取消線は残りません。")
 
                     selected_has_cancel_override = False
                     try:
@@ -13510,91 +13636,359 @@ elif page == "管理（入力）":
                             for _c in ["student_id", "date", "slot", "action"]:
                                 if _c not in _ov_check.columns:
                                     _ov_check[_c] = ""
-                                _ov_check[_c] = _ov_check[_c].fillna("").astype(str).str.strip()
-                            _ov_check["_slot_norm"] = _ov_check["slot"].map(normalize_slot)
-                            _ov_check["_action_norm"] = _ov_check["action"].map(normalize_action_value)
+                                _ov_check[_c] = (
+                                    _ov_check[_c]
+                                    .fillna("")
+                                    .astype(str)
+                                    .str.strip()
+                                )
+                            _ov_check["_slot_norm"] = _ov_check["slot"].map(
+                                normalize_slot
+                            )
+                            _ov_check["_action_norm"] = _ov_check["action"].map(
+                                normalize_action_value
+                            )
                             selected_has_cancel_override = bool(
                                 (
-                                    (_ov_check["student_id"].astype(str).str.strip() == str(selected_sid).strip())
-                                    & (_ov_check["date"].astype(str).str.strip() == str(selected_date_value))
-                                    & (_ov_check["_slot_norm"].astype(str).str.strip() == normalize_slot(selected_slot))
-                                    & (_ov_check["_action_norm"].astype(str).str.strip() == "キャンセル")
+                                    (
+                                        _ov_check["student_id"]
+                                        .astype(str)
+                                        .str.strip()
+                                        == str(selected_sid).strip()
+                                    )
+                                    & (
+                                        _ov_check["date"]
+                                        .astype(str)
+                                        .str.strip()
+                                        == str(selected_date_value)
+                                    )
+                                    & (
+                                        _ov_check["_slot_norm"]
+                                        .astype(str)
+                                        .str.strip()
+                                        == normalize_slot(selected_slot)
+                                    )
+                                    & (
+                                        _ov_check["_action_norm"]
+                                        .astype(str)
+                                        .str.strip()
+                                        == "キャンセル"
+                                    )
                                 ).any()
                             )
                     except Exception:
                         selected_has_cancel_override = False
 
-                    col_update, col_cancel, col_delete = st.columns([1.4, 1.4, 1.0])
+                    _update_form_key = (
+                        f"monthly_sidebar_update_form_"
+                        f"{target_year}_{target_month}_{selected_idx}"
+                    )
 
-                    with col_update:
-                        if st.button(
-                            "💾 変更を保存",
-                            key=f"monthly_sidebar_update_button_{target_year}_{target_month}_{selected_idx}",
-                            disabled=not selected_can_edit,
-                            help="出席済みのためロック中です。修正する場合は『出席済みだけど修正する』をチェックしてください。" if not selected_can_edit else None,
+                    with st.form(
+                        key=_update_form_key,
+                        clear_on_submit=False,
+                    ):
+                        new_date = st.date_input(
+                            "変更後の日付",
+                            value=selected_date_value,
+                            min_value=month_start,
+                            max_value=month_end,
+                            key=(
+                                f"monthly_sidebar_update_date_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                        )
+
+                        new_slot = st.selectbox(
+                            "変更後のコマ",
+                            monthly_slot_options,
+                            index=(
+                                monthly_slot_options.index(selected_slot)
+                                if selected_slot in monthly_slot_options
+                                else 0
+                            ),
+                            key=(
+                                f"monthly_sidebar_update_slot_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                            format_func=lambda x: format_slot_label(
+                                x,
+                                monthly_slot_label_map,
+                            ),
+                        )
+
+                        new_type = st.radio(
+                            "変更後の種別",
+                            ["授業", "自習"],
+                            index=(
+                                ["授業", "自習"].index(selected_type)
+                                if selected_type in ["授業", "自習"]
+                                else 0
+                            ),
+                            key=(
+                                f"monthly_sidebar_update_type_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                            horizontal=True,
+                        )
+
+                        _selected_reason_value = (
+                            selected_reason
+                            if selected_reason in monthly_reason_options
+                            else (
+                                "自習"
+                                if selected_type == "自習"
+                                else "通常"
+                            )
+                        )
+                        _selected_reason_index = (
+                            monthly_reason_options.index(
+                                _selected_reason_value
+                            )
+                            if _selected_reason_value
+                            in monthly_reason_options
+                            else 0
+                        )
+
+                        new_reason = st.selectbox(
+                            "回数区分（集計に使います）",
+                            monthly_reason_options,
+                            index=_selected_reason_index,
+                            key=(
+                                f"monthly_sidebar_update_reason_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                            format_func=format_monthly_reason_label,
+                            help=(
+                                "種別だけを授業／自習へ変更し、回数区分を触らなかった場合は、"
+                                "保存時に「通常」または「自習」へ自動補正します。"
+                                "回数区分を手動で選んだ場合は、その選択を優先します。"
+                            ),
+                        )
+
+                        if (
+                            str(new_reason).strip()
+                            in monthly_count_excluded_reasons
                         ):
-                            updated_df = monthly_schedule.copy()
-                            for c in MONTHLY_SCHEDULE_COLS:
-                                if c not in updated_df.columns:
-                                    updated_df[c] = ""
-                            updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
+                            st.caption(
+                                "回数扱い：回数外"
+                                "（予定回数に含めません）"
+                            )
+                        else:
+                            st.caption(
+                                "回数扱い：回数に含める"
+                            )
 
-                            if keep_original_as_cancelled and same_date_slot_update:
-                                st.error("同じ日付・同じコマでは、取消線を残す変更はできません。種別だけ変更する場合は、チェックOFFで直接修正してください。")
-                                st.stop()
+                        new_note = st.text_input(
+                            "メモ",
+                            value=selected_note,
+                            key=(
+                                f"monthly_sidebar_update_note_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                        )
 
-                            if keep_original_as_cancelled:
-                                # 選択中の予定は残したまま、schedule_overridesで取消線を付ける
-                                ov2 = upsert_schedule_override_row(
-                                    schedule_overrides,
-                                    student_id=selected_sid,
-                                    d=selected_date_value,
-                                    slot=selected_slot,
-                                    action="キャンセル",
-                                    note="予定変更・振替のため選択中の予定を取消線で残す",
-                                )
-                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                        keep_original_as_cancelled = st.checkbox(
+                            "選択中の予定を取消線にして残す"
+                            "（振替・予定変更）",
+                            value=False,
+                            key=(
+                                f"monthly_sidebar_keep_original_cancelled_"
+                                f"{target_year}_{target_month}_{selected_idx}"
+                            ),
+                            help=(
+                                "ONにすると、選択中の予定に取消線を残し、"
+                                "変更後の日付・コマに新しい予定を追加します。"
+                                "同じ日付・同じコマでは保存できません。"
+                            ),
+                        )
 
-                                seat2 = remove_seat_assignment_for_plan(
-                                    seat_assignments,
-                                    d=selected_date_value,
-                                    student_id=selected_sid,
-                                    slot=selected_slot,
-                                )
-                                write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
+                        st.caption(
+                            "種別だけの修正はチェックOFFのまま保存します。"
+                            "振替や日時変更で元の予定を残したい時だけONにします。"
+                        )
 
-                                # 変更後の予定は新規追加する
-                                new_row = {
-                                    "date": new_date.isoformat(),
-                                    "student_id": str(selected_sid).strip(),
-                                    "slot": normalize_slot(new_slot),
-                                    "session_type": str(new_type).strip(),
-                                    "reason": str(new_reason).strip() or "通常",
-                                    "note": str(new_note).strip(),
-                                    "source": "サイドバー変更（選択中予定取消線あり）",
-                                }
-                                updated_df = pd.concat(
-                                    [updated_df, pd.DataFrame([new_row], columns=MONTHLY_SCHEDULE_COLS)],
-                                    ignore_index=True,
-                                )
-                                updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
-                                write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
+                        update_submitted = st.form_submit_button(
+                            "💾 変更を保存",
+                            disabled=not selected_can_edit,
+                            help=(
+                                "出席済みのためロック中です。"
+                                "修正する場合はフォームの外にある"
+                                "「出席済みだけど修正する」をチェックしてください。"
+                                if not selected_can_edit
+                                else "フォーム内の変更をまとめて保存します。"
+                            ),
+                            use_container_width=True,
+                        )
 
-                                st.success("選択中の予定に取消線を残し、変更後の予定を追加しました。")
-                            else:
-                                # 登録ミス修正として、元の予定自体を書き換える
-                                updated_df.loc[selected_idx, "date"] = new_date.isoformat()
-                                updated_df.loc[selected_idx, "slot"] = normalize_slot(new_slot)
-                                updated_df.loc[selected_idx, "session_type"] = str(new_type).strip()
-                                updated_df.loc[selected_idx, "reason"] = str(new_reason).strip() or "通常"
-                                updated_df.loc[selected_idx, "note"] = str(new_note).strip()
-                                updated_df.loc[selected_idx, "source"] = "カレンダー選択から修正"
+                    if update_submitted:
+                        same_date_slot_update = (
+                            str(new_date) == str(selected_date_value)
+                            and normalize_slot(new_slot)
+                            == normalize_slot(selected_slot)
+                        )
 
-                                updated_df = updated_df[MONTHLY_SCHEDULE_COLS].fillna("")
-                                write_csv_atomic(updated_df, MONTHLY_SCHEDULE_CSV)
-                                st.success("月スケジュールを修正しました。取消線は残していません。")
+                        # d301:
+                        # フォーム内では種別変更時に再実行しないため、
+                        # 種別だけを変更し、回数区分は元のままの場合、
+                        # 保存時に従来どおりの値へ自動補正する。
+                        effective_new_reason = str(new_reason).strip()
+                        reason_was_unchanged = (
+                            effective_new_reason
+                            == str(_selected_reason_value).strip()
+                        )
+                        type_was_changed = (
+                            str(new_type).strip()
+                            != str(selected_type).strip()
+                        )
+                        if type_was_changed and reason_was_unchanged:
+                            effective_new_reason = (
+                                "自習"
+                                if str(new_type).strip() == "自習"
+                                else "通常"
+                            )
 
+                        updated_df = monthly_schedule.copy()
+                        for c in MONTHLY_SCHEDULE_COLS:
+                            if c not in updated_df.columns:
+                                updated_df[c] = ""
+                        updated_df = updated_df[
+                            MONTHLY_SCHEDULE_COLS
+                        ].fillna("")
+
+                        if (
+                            keep_original_as_cancelled
+                            and same_date_slot_update
+                        ):
+                            st.error(
+                                "同じ日付・同じコマでは、取消線を残す変更はできません。"
+                                "種別だけ変更する場合は、チェックOFFで保存してください。"
+                            )
+                        elif keep_original_as_cancelled:
+                            # 選択中の予定は残したまま、
+                            # schedule_overridesで取消線を付ける。
+                            ov2 = upsert_schedule_override_row(
+                                schedule_overrides,
+                                student_id=selected_sid,
+                                d=selected_date_value,
+                                slot=selected_slot,
+                                action="キャンセル",
+                                note=(
+                                    "予定変更・振替のため"
+                                    "選択中の予定を取消線で残す"
+                                ),
+                            )
+                            write_csv_atomic(
+                                ov2,
+                                SCHEDULE_OVERRIDES_CSV,
+                            )
+
+                            seat2 = remove_seat_assignment_for_plan(
+                                seat_assignments,
+                                d=selected_date_value,
+                                student_id=selected_sid,
+                                slot=selected_slot,
+                            )
+                            write_csv_atomic(
+                                seat2,
+                                SEAT_ASSIGNMENTS_CSV,
+                            )
+
+                            new_row = {
+                                "date": new_date.isoformat(),
+                                "student_id": (
+                                    str(selected_sid).strip()
+                                ),
+                                "slot": normalize_slot(new_slot),
+                                "session_type": (
+                                    str(new_type).strip()
+                                ),
+                                "reason": (
+                                    effective_new_reason or "通常"
+                                ),
+                                "note": str(new_note).strip(),
+                                "source": (
+                                    "サイドバー変更"
+                                    "（選択中予定取消線あり）"
+                                ),
+                            }
+                            updated_df = pd.concat(
+                                [
+                                    updated_df,
+                                    pd.DataFrame(
+                                        [new_row],
+                                        columns=MONTHLY_SCHEDULE_COLS,
+                                    ),
+                                ],
+                                ignore_index=True,
+                            )
+                            updated_df = updated_df[
+                                MONTHLY_SCHEDULE_COLS
+                            ].fillna("")
+                            write_csv_atomic(
+                                updated_df,
+                                MONTHLY_SCHEDULE_CSV,
+                            )
+
+                            st.success(
+                                "選択中の予定に取消線を残し、"
+                                "変更後の予定を追加しました。"
+                            )
                             st.rerun()
+                        else:
+                            # 登録ミス修正として、
+                            # 元の予定自体を書き換える。
+                            updated_df.loc[
+                                selected_idx,
+                                "date",
+                            ] = new_date.isoformat()
+                            updated_df.loc[
+                                selected_idx,
+                                "slot",
+                            ] = normalize_slot(new_slot)
+                            updated_df.loc[
+                                selected_idx,
+                                "session_type",
+                            ] = str(new_type).strip()
+                            updated_df.loc[
+                                selected_idx,
+                                "reason",
+                            ] = effective_new_reason or "通常"
+                            updated_df.loc[
+                                selected_idx,
+                                "note",
+                            ] = str(new_note).strip()
+                            updated_df.loc[
+                                selected_idx,
+                                "source",
+                            ] = "カレンダー選択から修正"
+
+                            updated_df = updated_df[
+                                MONTHLY_SCHEDULE_COLS
+                            ].fillna("")
+                            write_csv_atomic(
+                                updated_df,
+                                MONTHLY_SCHEDULE_CSV,
+                            )
+
+                            if (
+                                type_was_changed
+                                and reason_was_unchanged
+                            ):
+                                st.success(
+                                    "月スケジュールを修正しました。"
+                                    f"回数区分は「{effective_new_reason}」へ"
+                                    "自動調整しました。"
+                                )
+                            else:
+                                st.success(
+                                    "月スケジュールを修正しました。"
+                                    "取消線は残していません。"
+                                )
+                            st.rerun()
+
+                    # 取消線・削除は、保存フォームとは別の即時操作として残す。
+                    col_cancel, col_delete = st.columns([1.4, 1.0])
 
                     with col_cancel:
                         if selected_has_cancel_override:
@@ -14032,7 +14426,7 @@ elif page == "管理（入力）":
     #   - student_schedule.csv（通常の時間割）
     #   - timeslots.csv（コマ時間）
     # ---------------------------
-    with sub_sys:
+    if admin_section == "🛠 システム設定":
         st.subheader("🛠 システム設定")
         st.caption("CSVを探して手書きしなくても済むように、基本スケジュールとコマ時間をここで管理できます。保存時は自動バックアップを作成します。")
 
@@ -14046,10 +14440,17 @@ elif page == "管理（入力）":
             except Exception as e:
                 st.warning(f"バックアップ作成に失敗しました: {path.name} / {e}")
 
-        tab_sched, tab_slots = st.tabs(["🗓️ 基本スケジュール（student_schedule）", "⏱ コマ時間（timeslots）"])
+        # d303:
+        # システム設定内も、選択していない画面を実行しない。
+        system_section = st.radio(
+            "設定項目",
+            ["🗓️ 基本スケジュール", "⏱ コマ時間"],
+            horizontal=True,
+            key="system_section_selector",
+        )
 
         # ===== student_schedule.csv =====
-        with tab_sched:
+        if system_section == "🗓️ 基本スケジュール":
             st.markdown("### 🗓️ 基本スケジュール（student_schedule.csv）")
             st.caption("曜日×コマの通常予定（毎週のベース）を登録します。欠席/振替など当日の変更は『スケジュール例外』で入力します。")
 
@@ -14224,7 +14625,7 @@ elif page == "管理（入力）":
                             st.rerun()
 
         # ===== timeslots.csv =====
-        with tab_slots:
+        if system_section == "⏱ コマ時間":
             st.markdown("### ⏱ コマ時間（timeslots.csv）")
             st.caption("曜日×コマの開始/終了時刻を設定します。時間割の見える化や印刷に使えます（任意機能）。")
 
@@ -14379,7 +14780,7 @@ elif page == "管理（入力）":
                             st.rerun()
 
     
-    with sub_override:
+    if admin_section == "🗓️ スケジュール例外":
             st.subheader("スケジュール例外（一覧確認用）")
             st.caption("※ 予定の取消・解除・削除は、基本的に 月スケジュールカレンダー で行います。ここは schedule_overrides.csv の確認用です。")
     
@@ -14408,6 +14809,14 @@ elif page == "管理（入力）":
                 st.dataframe(ov_show, use_container_width=True, hide_index=True)
                 
                 
+    if admin_section == "ℹ️ 運用メモ":
+        st.subheader("ℹ️ 運用メモ")
+        st.info(
+            "現在、運用メモとして個別に登録する項目はありません。"
+            "日々の操作は、各管理メニューから行ってください。"
+        )
+
+
 elif page == "座席":
     st.subheader("🪑 座席表（今日の配置）")
     st.markdown("### 今日の座席配置")
