@@ -3027,6 +3027,90 @@ def remove_schedule_override_rows(
     return df[cols].fillna("")
 
 
+def restore_cancelled_plan_and_clear_absence(
+    overrides_df: pd.DataFrame,
+    attendance_df: pd.DataFrame,
+    *,
+    student_id: str,
+    d,
+    slot,
+) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+    """d312: 取消線解除と、欠席・取消の出欠ログ解除を整合させる。
+
+    - 対象コマのキャンセル行を削除する。
+    - 同じ日・同じ生徒に他のキャンセル予定が残っていない場合だけ、
+      attendance_log の absence / cancel / 欠席 / キャンセル を削除する。
+    - lesson / selfstudy / 授業 / 自習など、通常の出欠実績は消さない。
+    """
+    sid = str(student_id).strip()
+    d_obj = pd.to_datetime(d, errors="coerce")
+    dstr = (
+        d_obj.strftime("%Y-%m-%d")
+        if pd.notna(d_obj)
+        else str(d).strip()
+    )
+
+    restored_overrides = remove_schedule_override_rows(
+        overrides_df,
+        student_id=sid,
+        d=dstr,
+        slot=slot,
+        action="キャンセル",
+    )
+
+    # 同日・同一生徒に、別コマのキャンセルがまだ残っているか確認する。
+    remaining_cancel = False
+    if restored_overrides is not None and not restored_overrides.empty:
+        _ov = restored_overrides.copy()
+        for _c in ["student_id", "date", "action"]:
+            if _c not in _ov.columns:
+                _ov[_c] = ""
+            _ov[_c] = _ov[_c].fillna("").astype(str).str.strip()
+
+        remaining_cancel = bool(
+            (
+                (_ov["student_id"] == sid)
+                & (_ov["date"] == dstr)
+                & (
+                    _ov["action"].map(normalize_action_value)
+                    == "キャンセル"
+                )
+            ).any()
+        )
+
+    att = (
+        attendance_df.copy()
+        if attendance_df is not None
+        else pd.DataFrame(
+            columns=["date", "student_id", "kind", "memo"]
+        )
+    )
+    for _c in ["date", "student_id", "kind", "memo"]:
+        if _c not in att.columns:
+            att[_c] = ""
+        att[_c] = att[_c].fillna("").astype(str).str.strip()
+
+    cleared_absence = False
+    if not remaining_cancel and not att.empty:
+        _kind_norm = att["kind"].map(
+            normalize_attendance_kind_for_lock
+        )
+        _remove_mask = (
+            (att["student_id"] == sid)
+            & (att["date"] == dstr)
+            & (_kind_norm.isin(["absence", "cancel"]))
+        )
+        cleared_absence = bool(_remove_mask.any())
+        if cleared_absence:
+            att = att.loc[~_remove_mask].copy()
+
+    return (
+        restored_overrides,
+        att[["date", "student_id", "kind", "memo"]].fillna(""),
+        cleared_absence,
+    )
+
+
 def remove_seat_assignment_for_plan(
     seat_df: pd.DataFrame,
     *,
@@ -4684,6 +4768,166 @@ if page == "閲覧":
     st.caption("※ 記録後でも「取消」で元に戻せます")
     #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
     st.warning("授業が終わったら、出欠を記録してください。進捗がある場合は下のカリキュラム課題 / 検定課題で登録してください。進捗が無い場合だけ「進捗なしで完了」を押してください。")
+
+    # =====================================================
+    # d311: 今日の取消済み予定を復活
+    # -----------------------------------------------------
+    # 今日の予定が1人だけで、その予定を誤って取消した場合でも、
+    # today_view が空になる前提に依存せず、ここから取消を解除できる。
+    # =====================================================
+    _today_cancel_rows = schedule_overrides.copy()
+    for _c in ["student_id", "date", "slot", "action", "note"]:
+        if _c not in _today_cancel_rows.columns:
+            _today_cancel_rows[_c] = ""
+        _today_cancel_rows[_c] = (
+            _today_cancel_rows[_c]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+        )
+
+    if not _today_cancel_rows.empty:
+        _today_cancel_rows["_action_norm"] = (
+            _today_cancel_rows["action"]
+            .map(normalize_action_value)
+        )
+        _today_cancel_rows["_slot_norm"] = (
+            _today_cancel_rows["slot"]
+            .map(normalize_slot)
+        )
+        _today_cancel_rows = _today_cancel_rows[
+            (
+                _today_cancel_rows["date"]
+                == today.strftime("%Y-%m-%d")
+            )
+            & (
+                _today_cancel_rows["_action_norm"]
+                == "キャンセル"
+            )
+        ].copy()
+
+    if not _today_cancel_rows.empty:
+        _restore_name_map = {}
+        if (
+            not students.empty
+            and "student_id" in students.columns
+            and "display_name" in students.columns
+        ):
+            _restore_name_map = dict(
+                zip(
+                    students["student_id"]
+                    .astype(str)
+                    .str.strip(),
+                    students["display_name"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip(),
+                )
+            )
+
+        st.warning(
+            f"今日の取消済み予定が"
+            f"{len(_today_cancel_rows)}件あります。"
+            "誤って取消した場合は、ここから復活できます。"
+        )
+
+        with st.expander(
+            "↩ 今日の取消済み予定を復活",
+            expanded=True,
+        ):
+            for _restore_idx, _restore_row in (
+                _today_cancel_rows.iterrows()
+            ):
+                _restore_sid = str(
+                    _restore_row.get("student_id", "")
+                ).strip()
+                _restore_slot = normalize_slot(
+                    _restore_row.get("slot", "")
+                )
+                _restore_name = (
+                    _restore_name_map.get(
+                        _restore_sid,
+                        _restore_sid,
+                    )
+                    or _restore_sid
+                )
+                _restore_note = str(
+                    _restore_row.get("note", "")
+                ).strip()
+
+                _rc1, _rc2 = st.columns([4, 1.4])
+                with _rc1:
+                    _restore_text = (
+                        f"{_restore_slot}コマ｜"
+                        f"{_restore_name}"
+                    )
+                    if _restore_note:
+                        _restore_text += (
+                            f"｜{_restore_note}"
+                        )
+                    st.write(_restore_text)
+
+                with _rc2:
+                    if st.button(
+                        "復活",
+                        key=(
+                            f"today_cancel_restore_"
+                            f"{today}_"
+                            f"{_restore_sid}_"
+                            f"{_restore_slot}_"
+                            f"{_restore_idx}"
+                        ),
+                        use_container_width=True,
+                        help=(
+                            "今日のキャンセルだけを解除し、"
+                            "予定へ戻します。"
+                        ),
+                    ):
+                        _attendance_before_restore = (
+                            load_attendance_log().copy()
+                        )
+                        (
+                            _restored_overrides,
+                            _restored_attendance,
+                            _cleared_absence,
+                        ) = restore_cancelled_plan_and_clear_absence(
+                            schedule_overrides,
+                            _attendance_before_restore,
+                            student_id=_restore_sid,
+                            d=today,
+                            slot=_restore_slot,
+                        )
+                        write_csv_atomic(
+                            _restored_overrides,
+                            SCHEDULE_OVERRIDES_CSV,
+                        )
+                        if _cleared_absence:
+                            save_attendance_log(
+                                _restored_attendance
+                            )
+
+                        _restore_message = (
+                            f"{_restore_name}の"
+                            f"{_restore_slot}コマを"
+                            "今日の予定へ復活しました。"
+                        )
+                        if _cleared_absence:
+                            _restore_message += (
+                                " 欠席・取消の出欠記録も"
+                                "未登録へ戻しました。"
+                            )
+
+                        st.session_state[
+                            "today_restore_flash"
+                        ] = _restore_message
+                        st.rerun()
+
+    _today_restore_flash = st.session_state.pop(
+        "today_restore_flash",
+        "",
+    )
+    if _today_restore_flash:
+        st.success(_today_restore_flash)
 
     # =====================================================
     # 今日の予定の元データ
@@ -7234,7 +7478,9 @@ if page == "閲覧":
                     slot_candidates = sorted(slot_candidates)
                 _slot_index = slot_candidates.index(_slot_state) if _slot_state in slot_candidates else 0
 
-                # コマ番号ごとの表示名を作る（共通関数を使用）
+                # d311:
+                # 固定スケジュール画面専用の変数へ依存しない。
+                # 閲覧画面内で timeslots から表示名を作る。
                 slot_label_map = build_slot_label_map(timeslots)
 
 
@@ -9739,7 +9985,8 @@ elif page == "管理（入力）":
         with colB:
             # コマ：リスト＋自由入力（統一フォーマット）
             cur_slot = normalize_slot("")
-            fs_slot_options = slot_options.copy()
+            fs_slot_label_map = build_slot_label_map(timeslots)
+            fs_slot_options = [str(k) for k in sorted(fs_slot_label_map.keys())] + ["その他（自由入力）"]
 
 
             slot_label_map = build_slot_label_map(timeslots)
@@ -13271,16 +13518,37 @@ elif page == "管理（入力）":
                                             st.rerun()
 
                                         def _uncancel_current_monthly_calendar_item():
-                                            ov2 = remove_schedule_override_rows(
-                                                schedule_overrides,
-                                                student_id=sid,
-                                                d=day_date,
-                                                slot=slot,
-                                                action="キャンセル",
+                                            _att_before = load_attendance_log().copy()
+                                            ov2, att2, _cleared_absence = (
+                                                restore_cancelled_plan_and_clear_absence(
+                                                    schedule_overrides,
+                                                    _att_before,
+                                                    student_id=sid,
+                                                    d=day_date,
+                                                    slot=slot,
+                                                )
                                             )
-                                            write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                            st.success("キャンセルを解除しました。元の予定を復活させます。")
-                                            st.caption("※ キャンセル時に座席を空席にしていた場合、座席は必要に応じて再登録してください。")
+                                            write_csv_atomic(
+                                                ov2,
+                                                SCHEDULE_OVERRIDES_CSV,
+                                            )
+                                            if _cleared_absence:
+                                                save_attendance_log(att2)
+
+                                            _msg = (
+                                                "キャンセルを解除しました。"
+                                                "元の予定を復活させます。"
+                                            )
+                                            if _cleared_absence:
+                                                _msg += (
+                                                    " 欠席・取消の出欠記録も"
+                                                    "未登録へ戻しました。"
+                                                )
+                                            st.success(_msg)
+                                            st.caption(
+                                                "※ キャンセル時に座席を空席にしていた場合、"
+                                                "座席は必要に応じて再登録してください。"
+                                            )
                                             st.rerun()
 
                                         def _cancel_current_monthly_calendar_item():
@@ -13998,16 +14266,41 @@ elif page == "管理（入力）":
                                 disabled=not selected_can_edit,
                                 help="この予定についている取消線だけを解除します。座席は必要に応じて再登録してください。" if selected_can_edit else "出席済みのためロック中です。",
                             ):
-                                ov2 = remove_schedule_override_rows(
+                                _att_before = (
+                                    load_attendance_log().copy()
+                                )
+                                (
+                                    ov2,
+                                    att2,
+                                    _cleared_absence,
+                                ) = restore_cancelled_plan_and_clear_absence(
                                     schedule_overrides,
+                                    _att_before,
                                     student_id=selected_sid,
                                     d=selected_date_value,
                                     slot=selected_slot,
-                                    action="キャンセル",
                                 )
-                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                st.success("取消線を解除しました。元の予定を復活させます。")
-                                st.caption("※ 座席を空席にしていた場合、座席は必要に応じて再登録してください。")
+                                write_csv_atomic(
+                                    ov2,
+                                    SCHEDULE_OVERRIDES_CSV,
+                                )
+                                if _cleared_absence:
+                                    save_attendance_log(att2)
+
+                                _msg = (
+                                    "取消線を解除しました。"
+                                    "元の予定を復活させます。"
+                                )
+                                if _cleared_absence:
+                                    _msg += (
+                                        " 欠席・取消の出欠記録も"
+                                        "未登録へ戻しました。"
+                                    )
+                                st.success(_msg)
+                                st.caption(
+                                    "※ 座席を空席にしていた場合、"
+                                    "座席は必要に応じて再登録してください。"
+                                )
                                 st.rerun()
                         else:
                             if st.button(
