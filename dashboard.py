@@ -1,3 +1,7 @@
+# d316:
+# 出欠登録の操作案内を明確化。
+# 授業・自習・欠席はすべて「出欠を保存／更新」で登録・上書きし、
+# 欠席選択時に予定取消・座席解除が行われることを画面上に表示。
 from __future__ import annotations
 
 from pathlib import Path
@@ -535,6 +539,7 @@ def has_unpassed_kentei_exam_schedule(student_id: str, exam_df: pd.DataFrame) ->
 ATTENDANCE_LOG_CSV = DATA_DIR / "attendance_log.csv"
 PROGRESS_SKIP_OK_CSV = DATA_DIR / "progress_skip_ok.csv"
 PREP_MEMO_CSV = DATA_DIR / "prep_memo.csv"
+PREPARATION_LOG_CSV = DATA_DIR / "preparation_log.csv"
 
 # d296:
 # 教室に来た生徒の「5分タイピング練習」を確認するログ。
@@ -796,6 +801,111 @@ def delete_attendance(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFram
     ds = str(d)
     mask = (df["student_id"].astype(str).str.strip() == sid) & (df["date"].astype(str).str.strip() == ds)
     return df.loc[~mask].copy()
+
+
+
+# =========================================================
+# 🧰 当日準備チェック（d314）
+# =========================================================
+PREPARATION_LOG_COLS = [
+    "date", "student_id", "slot", "prepared", "prepared_at"
+]
+
+
+def load_preparation_log() -> pd.DataFrame:
+    if PREPARATION_LOG_CSV.exists():
+        try:
+            df = pd.read_csv(PREPARATION_LOG_CSV, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=PREPARATION_LOG_COLS)
+    else:
+        df = pd.DataFrame(columns=PREPARATION_LOG_COLS)
+        write_csv_atomic(df, PREPARATION_LOG_CSV)
+        return df
+
+    for c in PREPARATION_LOG_COLS:
+        if c not in df.columns:
+            df[c] = ""
+        df[c] = df[c].fillna("").astype(str).str.strip()
+    return df[PREPARATION_LOG_COLS].copy()
+
+
+def save_preparation_log(df: pd.DataFrame) -> None:
+    out = df.copy()
+    for c in PREPARATION_LOG_COLS:
+        if c not in out.columns:
+            out[c] = ""
+        out[c] = out[c].fillna("").astype(str).str.strip()
+    write_csv_atomic(out[PREPARATION_LOG_COLS], PREPARATION_LOG_CSV)
+
+
+def is_prepared_for_plan(prep_df, *, d, student_id, slot) -> bool:
+    if prep_df is None or prep_df.empty:
+        return False
+
+    d_obj = pd.to_datetime(d, errors="coerce")
+    dstr = d_obj.strftime("%Y-%m-%d") if pd.notna(d_obj) else str(d).strip()
+    sid = str(student_id).strip()
+    slot_norm = normalize_slot(slot)
+
+    tmp = prep_df.copy()
+    for c in PREPARATION_LOG_COLS:
+        if c not in tmp.columns:
+            tmp[c] = ""
+        tmp[c] = tmp[c].fillna("").astype(str).str.strip()
+
+    hit = tmp[
+        (tmp["date"] == dstr)
+        & (tmp["student_id"] == sid)
+        & (tmp["slot"].map(normalize_slot) == slot_norm)
+        & (tmp["prepared"].str.lower().isin(["true", "1", "yes", "済", "完了"]))
+    ]
+    return not hit.empty
+
+
+def set_preparation_status(
+    prep_df,
+    *,
+    d,
+    student_id,
+    slots,
+    prepared: bool,
+) -> pd.DataFrame:
+    out = prep_df.copy() if prep_df is not None else pd.DataFrame(columns=PREPARATION_LOG_COLS)
+
+    for c in PREPARATION_LOG_COLS:
+        if c not in out.columns:
+            out[c] = ""
+        out[c] = out[c].fillna("").astype(str).str.strip()
+
+    d_obj = pd.to_datetime(d, errors="coerce")
+    dstr = d_obj.strftime("%Y-%m-%d") if pd.notna(d_obj) else str(d).strip()
+    sid = str(student_id).strip()
+    slot_list = [normalize_slot(x) for x in slots if normalize_slot(x)]
+
+    remove_mask = (
+        (out["date"] == dstr)
+        & (out["student_id"] == sid)
+        & (out["slot"].map(normalize_slot).isin(slot_list))
+    )
+    out = out.loc[~remove_mask].copy()
+
+    if prepared:
+        now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        rows = [
+            {
+                "date": dstr,
+                "student_id": sid,
+                "slot": slot_value,
+                "prepared": "true",
+                "prepared_at": now_str,
+            }
+            for slot_value in slot_list
+        ]
+        if rows:
+            out = pd.concat([out, pd.DataFrame(rows)], ignore_index=True)
+
+    return out[PREPARATION_LOG_COLS].fillna("")
 
 
 # =========================================================
@@ -4961,6 +5071,8 @@ if page == "閲覧":
     if today_view.empty:
         st.info("今日の予定はありません。（月スケジュール / student_schedule.csv / schedule_overrides.csv を確認してね）")
     else:
+        preparation_log_df = load_preparation_log().copy()
+
         # current merge（最新ログの「done以外」を優先）
         today_view = today_view.merge(
             current_per_student[["student_id", "現在コース", "現在項目", "状態"]],
@@ -4977,6 +5089,20 @@ if page == "閲覧":
             today_view["display_name"] = ""
         today_view["display_name"] = today_view["display_name"].fillna("").astype(str).str.strip()
         today_view["生徒"] = today_view["display_name"]
+
+        today_view["準備"] = today_view.apply(
+            lambda r: (
+                "✅ 準備済"
+                if is_prepared_for_plan(
+                    preparation_log_df,
+                    d=today,
+                    student_id=r.get("student_id", ""),
+                    slot=r.get("slot", ""),
+                )
+                else "⬜ 未準備"
+            ),
+            axis=1,
+        )
 
         
         today_view["検定目安"] = today_view["student_id"].astype(str).str.strip().map(
@@ -6429,7 +6555,27 @@ if page == "閲覧":
         #    → 作業完了管理寄り（未確認を先に表示）
         # =====================================================
         with st.expander("✅ 出席記録（授業/自習）", expanded=True):
-            st.caption("来たタイミングで『記録』を押すだけ。確認済みは下に分かれます。")
+            st.caption("授業・自習・欠席を選び、「出欠を保存／更新」で保存します。確認済みの記録も同じ方法で上書きできます。")
+
+            _prep_flash = st.session_state.pop("preparation_flash", "")
+            if _prep_flash:
+                st.success(_prep_flash)
+
+            _prep_status_df = load_preparation_log().copy()
+            _prep_total = len(today_view)
+            _prep_done_count = int(
+                (today_view["準備"].astype(str) == "✅ 準備済").sum()
+            )
+            _prep_pending_count = max(0, _prep_total - _prep_done_count)
+
+            st.markdown("### 🧰 今日の準備チェック")
+            if _prep_pending_count == 0:
+                st.success(f"全員の準備が完了しています（{_prep_done_count}/{_prep_total}）")
+            else:
+                st.warning(
+                    f"未準備 {_prep_pending_count}人／準備済み {_prep_done_count}人"
+                )
+
             att_df = load_attendance_log()
 
             curr_prog_df = safe_read_csv(
@@ -6626,14 +6772,14 @@ if page == "閲覧":
                                 st.session_state["pending_sidebar_student"] = nm
                                 st.rerun()
                                 
-                # d270:
-                # 「出欠を未登録に戻す」は確認済みの出欠ログだけに意味がある。
-                # チェックON時だけ確認済みカードを表示し、そのカード内だけに戻すボタンを出す。
+                # d315:
+                # 確認済みの出欠も同じカードで編集し、「記録/更新」で上書きする。
+                # 修正方法を統一するため、「未登録に戻す」操作は廃止した。
                 show_done = st.checkbox(
-                    "確認済み（出欠を未登録に戻せる）を表示",
+                    "確認済みを表示（修正・上書き可能）",
                     value=False,
                     key=f"att_show_done_{today}",
-                    help="ONにすると、記録済みの出欠を表示します。予定取消ではなく、出欠ログだけを未登録へ戻すための確認用です。",
+                    help="ONにすると、記録済みの出欠を表示します。授業・自習・欠席を選び直して「出欠を保存／更新」を押すと上書きできます。",
                 )
 
                 # d299:
@@ -6664,7 +6810,12 @@ if page == "閲覧":
                         rec_memo = (rec.get("memo", "") if rec else "").strip()
 
 
-                        kind_options = [("lesson", "授業"), ("selfstudy", "自習")]
+                        # d315: 授業・自習・欠席を同じ選択欄から登録／上書きする。
+                        kind_options = [
+                            ("lesson", "授業"),
+                            ("selfstudy", "自習"),
+                            ("absence", "欠席"),
+                        ]
 
 
                         # 初期値の優先順
@@ -6686,7 +6837,9 @@ if page == "閲覧":
                             or (planned_kind_for_sid == "lesson" and rec_kind in ["selfstudy", "自習"])
                         )
 
-                        if is_lesson_and_selfstudy_plan:
+                        if rec_kind in ["absence", "欠席", "cancel", "キャンセル"]:
+                            default_kind = "absence"
+                        elif is_lesson_and_selfstudy_plan:
                             default_kind = "lesson"
                         elif rec_kind in ["selfstudy", "自習"]:
                             default_kind = "selfstudy"
@@ -6760,6 +6913,54 @@ if page == "閲覧":
 
 
                             with c2:
+                                _plan_rows_for_prep = today_view[
+                                    today_view["student_id"].astype(str).str.strip()
+                                    == str(sid).strip()
+                                ]
+                                _prep_slots = [
+                                    normalize_slot(x)
+                                    for x in _plan_rows_for_prep["slot"].tolist()
+                                    if normalize_slot(x)
+                                ]
+                                if not _prep_slots:
+                                    _prep_slots = [""]
+
+                                _prep_current = all(
+                                    is_prepared_for_plan(
+                                        _prep_status_df,
+                                        d=today,
+                                        student_id=sid,
+                                        slot=_slot,
+                                    )
+                                    for _slot in _prep_slots
+                                )
+
+                                _prep_checked = st.checkbox(
+                                    "🧰 準備完了",
+                                    value=bool(_prep_current),
+                                    key=f"prep_done_{today}_{sid}",
+                                    help="準備が終わったらチェック。外すと未準備へ戻ります。",
+                                )
+
+                                if _prep_checked != _prep_current:
+                                    _prep_updated = set_preparation_status(
+                                        _prep_status_df,
+                                        d=today,
+                                        student_id=sid,
+                                        slots=_prep_slots,
+                                        prepared=_prep_checked,
+                                    )
+                                    save_preparation_log(_prep_updated)
+                                    st.session_state["preparation_flash"] = (
+                                        f"{label}を"
+                                        + (
+                                            "準備済みにしました。"
+                                            if _prep_checked
+                                            else "未準備に戻しました。"
+                                        )
+                                    )
+                                    st.rerun()
+
                                 opt_labels = [x[1] for x in kind_options]
                                 opt_vals = [x[0] for x in kind_options]
                                 idx = opt_vals.index(default_kind) if default_kind in opt_vals else 0
@@ -6812,7 +7013,16 @@ if page == "閲覧":
                                 # すでに「進捗なしで完了」済みの生徒はONで表示する。
                                 _picked_kind_norm = str(picked_kind).strip().lower()
                                 _no_progress_default = (
-                                    _picked_kind_norm in ["selfstudy", "self", "自習"]
+                                    _picked_kind_norm
+                                    in [
+                                        "selfstudy",
+                                        "self",
+                                        "自習",
+                                        "absence",
+                                        "欠席",
+                                        "cancel",
+                                        "キャンセル",
+                                    ]
                                     or str(sid).strip() in prog_skip_today_ids
                                 )
                                 no_progress_done = st.checkbox(
@@ -6823,16 +7033,100 @@ if page == "閲覧":
 
 
                             with c5:
-                                if st.button("✅ 記録/更新", key=f"att_save_{today}_{sid}"):
-                                    # d256:
-                                    # 授業＋自習予定は、出欠ログ上は lesson を優先して保存する。
-                                    # attendance_log は1日1生徒1レコードのため、selfstudy で保存すると授業回数から漏れる。
+                                if st.button("💾 出欠を保存／更新", key=f"att_save_{today}_{sid}"):
+                                    # d315:
+                                    # 授業・自習・欠席を同じボタンで登録／上書きする。
+                                    # 欠席へ変更した場合は予定取消と座席解除も行う。
+                                    # 欠席から授業・自習へ戻した場合は、欠席時の予定取消を解除する。
                                     save_kind = picked_kind
-                                    if str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習":
+                                    if (
+                                        save_kind != "absence"
+                                        and str(
+                                            planned_kind_label_map.get(sid, "")
+                                        ).strip()
+                                        == "授業＋自習"
+                                    ):
                                         save_kind = "lesson"
 
-                                    att_df2 = upsert_attendance(att_df, sid, today, save_kind, memo, count=count)
-                                    save_attendance_log(att_df2)
+                                    if save_kind == "absence":
+                                        absence_note = (
+                                            memo.strip()
+                                            if str(memo).strip()
+                                            else "出欠登録画面で欠席を保存（予定取消）"
+                                        )
+                                        (
+                                            att_df2,
+                                            ov2,
+                                            seat2,
+                                            cancel_count,
+                                        ) = apply_absence_and_cancel_schedule(
+                                            att_df=att_df,
+                                            overrides_df=schedule_overrides,
+                                            seat_df=seat_assignments,
+                                            plan_df=today_view,
+                                            student_id=sid,
+                                            d=today,
+                                            note=absence_note,
+                                        )
+                                        # 入力されたメモと回数を出欠ログへ反映する。
+                                        att_df2 = upsert_attendance(
+                                            att_df2,
+                                            sid,
+                                            today,
+                                            "absence",
+                                            memo,
+                                            count=count,
+                                        )
+                                        save_attendance_log(att_df2)
+                                        write_csv_atomic(
+                                            ov2,
+                                            SCHEDULE_OVERRIDES_CSV,
+                                        )
+                                        write_csv_atomic(
+                                            seat2,
+                                            SEAT_ASSIGNMENTS_CSV,
+                                        )
+                                        st.success(
+                                            f"欠席で保存しました。予定 {cancel_count}件をキャンセルし、座席も外しました。"
+                                        )
+                                    else:
+                                        # 以前の記録が欠席／キャンセルなら、
+                                        # 同日の対象コマに付いた取消を解除してから通常出欠へ上書きする。
+                                        ov2 = schedule_overrides.copy()
+                                        att_base = att_df.copy()
+                                        if normalize_attendance_kind_for_lock(
+                                            rec_kind
+                                        ) in ["absence", "cancel"]:
+                                            for _slot in collect_plan_slots_for_student(
+                                                today_view,
+                                                sid,
+                                            ):
+                                                (
+                                                    ov2,
+                                                    att_base,
+                                                    _,
+                                                ) = restore_cancelled_plan_and_clear_absence(
+                                                    ov2,
+                                                    att_base,
+                                                    student_id=sid,
+                                                    d=today,
+                                                    slot=_slot,
+                                                )
+                                            write_csv_atomic(
+                                                ov2,
+                                                SCHEDULE_OVERRIDES_CSV,
+                                            )
+
+                                        att_df2 = upsert_attendance(
+                                            att_base,
+                                            sid,
+                                            today,
+                                            save_kind,
+                                            memo,
+                                            count=count,
+                                        )
+                                        save_attendance_log(att_df2)
+                                        st.success("出欠記録を上書き保存しました。")
 
                                     # 進捗状態を保存
                                     if no_progress_done:
@@ -6844,8 +7138,6 @@ if page == "閲覧":
                                             note="出席記録画面から進捗なしで完了"
                                         )
                                         save_progress_skip_ok(prog_skip_df2)
-
-                                    st.success("保存しました。")
 
                                     if open_after_attendance_save:
                                         if nm:
@@ -6865,44 +7157,6 @@ if page == "閲覧":
 
                                     st.rerun()
 
-                                # d298:
-                                # 来なかった子は、出欠画面から欠席登録できるようにする。
-                                # 欠席にした場合は、カレンダーの予定取消と座席解除も同時に行う。
-                                if rec is None:
-                                    if st.button(
-                                        "欠席で登録（予定取消）",
-                                        key=f"att_absence_cancel_{today}_{sid}",
-                                        help="今日来なかった生徒を、欠席として記録し、今日の予定をキャンセル扱いにして座席も外します。",
-                                    ):
-                                        att_df2, ov2, seat2, cancel_count = apply_absence_and_cancel_schedule(
-                                            att_df=att_df,
-                                            overrides_df=schedule_overrides,
-                                            seat_df=seat_assignments,
-                                            plan_df=today_view,
-                                            student_id=sid,
-                                            d=today,
-                                            note="出欠登録画面から欠席で登録（予定取消）",
-                                        )
-                                        save_attendance_log(att_df2)
-                                        write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                        write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
-                                        st.success(
-                                            f"{label} を欠席で登録しました。"
-                                            f"予定 {cancel_count}件をキャンセルし、座席も外しました。"
-                                        )
-                                        st.rerun()
-
-
-                                # d270:
-                                # これは予定の取消ではなく、出欠ログだけを削除して
-                                # 「出欠未登録」の状態へ戻す操作。
-                                # 未確認の子には意味がないため、確認済み表示ONかつ記録済みの子だけに出す。
-                                if show_done and rec is not None:
-                                    if st.button("↩ 出欠を未登録に戻す", key=f"att_del_{today}_{sid}"):
-                                        att_df2 = delete_attendance(att_df, sid, today)
-                                        save_attendance_log(att_df2)
-                                        st.success("出欠記録を削除し、未登録に戻しました。予定は残っています。")
-                                        st.rerun()
 
 
 
@@ -6938,7 +7192,19 @@ if page == "閲覧":
                                 kind_label = "授業"
 
 
-                            st.markdown(f"- **{label}** ／ {kind_label}" + (f" ／ {rec_memo}" if rec_memo else ""))
+                            _summary_rows = today_view[
+                                today_view["student_id"].astype(str).str.strip()
+                                == str(sid).strip()
+                            ]
+                            _summary_prepared = (
+                                not _summary_rows.empty
+                                and (_summary_rows["準備"].astype(str) == "✅ 準備済").all()
+                            )
+                            _summary_prep_label = "✅ 準備済" if _summary_prepared else "⬜ 未準備"
+                            st.markdown(
+                                f"- **{label}** ／ {_summary_prep_label} ／ {kind_label}"
+                                + (f" ／ {rec_memo}" if rec_memo else "")
+                            )
 
         # =====================================================
         # ⌨️ タイピング5分チェック（d296）
