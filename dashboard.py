@@ -1,3 +1,9 @@
+# d372: 一括保存が必要な画面の保存UIを固定保存バーへ統一
+# 1) 生徒管理・検定予定・固定スケジュール・コース管理を、未保存時は画面下の固定保存バーで保存/破棄する方式へ統一。
+# 2) 月スケジュールと同じ「未保存なら下に固定保存バーが出る」ルールへ寄せ、上部/下部だけの保存に依存しない。
+# 3) 一括保存画面の説明文も「固定保存バーで確定」に統一。
+# 4) 既存の保存ロジック・競合検知・破棄処理は維持。
+
 # d370: 今日の未完了の授業/自習判定修正・検定予定/生徒管理の未保存防止を強化
 # 1) 「今日の未完了」で出欠未登録時に予定の session_type を正しく使い、自習を授業表示しない。
 # 2) 検定予定編集後は「一覧へ反映」だけでは未保存であることを強く表示し、上部にも保存ボタンを追加。
@@ -253,6 +259,77 @@ def ui_str(x) -> str:
         pass
     s = str(x).strip()
     return "" if s.lower() in ["nan", "none"] else s
+
+
+
+def render_fixed_save_bar(
+    *,
+    bar_key: str,
+    dirty: bool,
+    entity_label: str,
+    save_label: str = "💾 保存",
+    discard_label: str = "↩ 破棄",
+    unsaved_message: str | None = None,
+):
+    """一括保存画面用の共通固定保存バー。"""
+    save_clicked = False
+    discard_clicked = False
+
+    if dirty:
+        if unsaved_message:
+            st.error(unsaved_message)
+
+        safe_key = re.sub(r"[^0-9a-zA-Z_]+", "_", str(bar_key))
+        st.markdown(
+            f"""
+            <style>
+            .st-key-{safe_key}_fixed_save_bar {{
+                position: fixed;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                z-index: 99999;
+                background: rgba(255,255,255,0.98);
+                border-top: 3px solid #f59e0b;
+                box-shadow: 0 -4px 18px rgba(0,0,0,0.18);
+                padding: 8px 14px 10px 14px;
+            }}
+            .st-key-{safe_key}_fixed_save_bar p {{
+                margin-bottom: 0;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.container(key=f"{safe_key}_fixed_save_bar"):
+            status_col, save_col, discard_col = st.columns([2.4, 1.4, 1.0])
+            with status_col:
+                st.markdown(
+                    f"**🟡 {entity_label} に未保存の変更があります**"
+                )
+            with save_col:
+                save_clicked = st.button(
+                    save_label,
+                    type="primary",
+                    use_container_width=True,
+                    key=f"{safe_key}_save_fixed",
+                )
+            with discard_col:
+                discard_clicked = st.button(
+                    discard_label,
+                    use_container_width=True,
+                    key=f"{safe_key}_discard_fixed",
+                )
+
+        st.markdown(
+            "<div style='height:110px;'></div>",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.success(f"🟢 {entity_label} は保存済みです。")
+
+    return save_clicked, discard_clicked
 
 
 def status_label(status: str) -> str:
@@ -14309,30 +14386,23 @@ elif page == "管理（入力）":
         )
 
         student_dirty = bool(st.session_state.get(student_dirty_key, False))
-        save_students_batch_top = False
-        if student_dirty:
-            st.error(
+        save_students_batch, discard_students_batch = render_fixed_save_bar(
+            bar_key="students",
+            dirty=student_dirty,
+            entity_label="生徒一覧",
+            save_label="💾 生徒一覧を保存",
+            discard_label="↩ 編集を破棄",
+            unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "『編集内容を一覧へ反映』は仮反映です。"
-                "必ず『💾 生徒一覧を保存』で確定してください。"
-            )
-            save_students_batch_top = st.button(
-                "💾 生徒一覧を保存（上部）",
-                type="primary",
-                use_container_width=True,
-                key="save_students_batch_top",
-            )
-            st.caption(
-                "同じ保存ボタンは画面下部にもあります。"
-                "どちらを押しても同じ一括保存処理を実行します。"
-            )
-        else:
-            st.success("🟢 生徒一覧は保存済みです。")
+                "画面下の固定保存バーの『💾 生徒一覧を保存』で確定してください。"
+            ),
+        )
 
         st.caption(
             "追加・更新・退会は編集用データへ反映されます。"
             "『一覧へ反映』だけではCSVに保存されません。"
-            "複数人を続けて変更し、最後に『💾 生徒一覧を保存』で確定してください。"
+            "未保存の間は、画面下の固定保存バーで保存または破棄できます。"
         )
 
         # 候補作成用データ
@@ -14848,36 +14918,7 @@ elif page == "管理（入力）":
         st.caption(
             "生徒IDは変更しません。退会になった生徒の基本席は、"
             "保存時にまとめて解除します。"
-        )
-        save_students_col, discard_students_col = st.columns(
-            [2, 1]
-        )
-
-        with save_students_col:
-            save_students_batch_bottom = st.button(
-                "💾 生徒一覧を保存",
-                type="primary",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    student_dirty_key,
-                    False,
-                ),
-                key="save_students_batch_bottom",
-            )
-
-        with discard_students_col:
-            discard_students_batch = st.button(
-                "↩ 編集を破棄",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    student_dirty_key,
-                    False,
-                ),
-                key="discard_students_batch",
-            )
-
-        save_students_batch = bool(
-            save_students_batch_top or save_students_batch_bottom
+            "未保存の間は、画面下の固定保存バーで確定してください。"
         )
 
         if save_students_batch:
@@ -15112,10 +15153,19 @@ elif page == "管理（入力）":
             .map(normalize_week_pattern)
         )
 
-        if st.session_state.get(schedule_dirty_key, False):
-            st.warning("🟡 保存していない固定スケジュールの変更があります。")
-        else:
-            st.success("🟢 固定スケジュールは保存済みです。")
+        schedule_dirty = bool(st.session_state.get(schedule_dirty_key, False))
+        save_fixed_schedule, discard_fixed_schedule = render_fixed_save_bar(
+            bar_key="fixed_schedule",
+            dirty=schedule_dirty,
+            entity_label="固定スケジュール",
+            save_label="💾 固定スケジュールを保存",
+            discard_label="↩ 編集を破棄",
+            unsaved_message=(
+                "⚠️ まだ保存されていません。"
+                "追加・削除した内容は仮反映です。"
+                "画面下の固定保存バーの『💾 固定スケジュールを保存』で確定してください。"
+            ),
+        )
 
         cur_rows = student_schedule[
             student_schedule["student_id"].astype(str).str.strip()
@@ -15286,32 +15336,9 @@ elif page == "管理（入力）":
         st.divider()
         st.markdown("#### 編集内容を確定")
         st.caption(
-            "複数の生徒を続けて追加・削除した後、最後に一度だけ保存します。"
+            "複数の生徒を続けて追加・削除した後は、"
+            "画面下の固定保存バーで一度だけ保存または破棄します。"
         )
-        save_col, discard_col = st.columns([2, 1])
-
-        with save_col:
-            save_fixed_schedule = st.button(
-                "💾 固定スケジュールを保存",
-                type="primary",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    schedule_dirty_key,
-                    False,
-                ),
-                key="save_fixed_schedule_batch",
-            )
-
-        with discard_col:
-            discard_fixed_schedule = st.button(
-                "↩ 編集を破棄",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    schedule_dirty_key,
-                    False,
-                ),
-                key="discard_fixed_schedule_batch",
-            )
 
         if save_fixed_schedule:
             current_signature = _fixed_schedule_file_signature()
@@ -15433,25 +15460,18 @@ elif page == "管理（入力）":
         )
 
         exam_dirty = bool(st.session_state.get(exam_dirty_key, False))
-        save_exam_batch_top = False
-        if exam_dirty:
-            st.error(
+        save_exam_batch, discard_exam_batch = render_fixed_save_bar(
+            bar_key="exam_schedule",
+            dirty=exam_dirty,
+            entity_label="検定予定一覧",
+            save_label="💾 検定予定一覧を保存",
+            discard_label="↩ 編集を破棄",
+            unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "『編集内容を一覧へ反映』は仮反映です。"
-                "必ず『💾 検定予定一覧を保存』で確定してください。"
-            )
-            save_exam_batch_top = st.button(
-                "💾 検定予定一覧を保存（上部）",
-                type="primary",
-                use_container_width=True,
-                key="save_exam_batch_top",
-            )
-            st.caption(
-                "同じ保存ボタンは画面下部にもあります。"
-                "どちらを押しても同じ一括保存処理を実行します。"
-            )
-        else:
-            st.success("🟢 検定予定一覧は保存済みです。")
+                "画面下の固定保存バーの『💾 検定予定一覧を保存』で確定してください。"
+            ),
+        )
 
         students_k = admin_students_for_pick.copy()
         students_k["label"] = (
@@ -15640,29 +15660,9 @@ elif page == "管理（入力）":
                 hide_index=True,
             )
 
-        save_col, discard_col = st.columns([2, 1])
-        with save_col:
-            save_exam_batch_bottom = st.button(
-                "💾 検定予定一覧を保存",
-                type="primary",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    exam_dirty_key,
-                    False,
-                ),
-                key="save_exam_batch_bottom",
-            )
-        with discard_col:
-            discard_exam_batch = st.button(
-                "↩ 編集を破棄",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    exam_dirty_key,
-                    False,
-                ),
-            )
-
-        save_exam_batch = bool(save_exam_batch_top or save_exam_batch_bottom)
+        st.caption(
+            "未保存の間は、画面下の固定保存バーで保存または破棄できます。"
+        )
 
         if save_exam_batch:
             if (
@@ -17484,14 +17484,23 @@ elif page == "管理（入力）":
             st.session_state[course_edit_key]
         )
 
-        if st.session_state.get(course_dirty_key, False):
-            st.warning("🟡 保存していないコース管理の変更があります。")
-        else:
-            st.success("🟢 コース管理は保存済みです。")
+        course_dirty = bool(st.session_state.get(course_dirty_key, False))
+        save_courses_batch, discard_courses_batch = render_fixed_save_bar(
+            bar_key="course_manage",
+            dirty=course_dirty,
+            entity_label="コース管理",
+            save_label="💾 コース管理を保存",
+            discard_label="↩ 編集を破棄",
+            unsaved_message=(
+                "⚠️ まだ保存されていません。"
+                "追加・修正・削除した内容は仮反映です。"
+                "画面下の固定保存バーの『💾 コース管理を保存』で確定してください。"
+            ),
+        )
 
         st.caption(
             "複数のコースを追加・修正・削除してから、"
-            "最後に一度だけ保存します。"
+            "未保存の間は画面下の固定保存バーで保存または破棄します。"
         )
 
         # 表示用
@@ -17802,32 +17811,9 @@ elif page == "管理（入力）":
                 + "、".join(pending_task_delete)
             )
 
-        save_course_col, discard_course_col = st.columns(
-            [2, 1]
+        st.caption(
+            "未保存の間は、画面下の固定保存バーで保存または破棄できます。"
         )
-
-        with save_course_col:
-            save_courses_batch = st.button(
-                "💾 コース管理を保存",
-                type="primary",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    course_dirty_key,
-                    False,
-                ),
-                key="save_courses_batch",
-            )
-
-        with discard_course_col:
-            discard_courses_batch = st.button(
-                "↩ 編集を破棄",
-                use_container_width=True,
-                disabled=not st.session_state.get(
-                    course_dirty_key,
-                    False,
-                ),
-                key="discard_courses_batch",
-            )
 
         if save_courses_batch:
             current_signature = _course_file_signature()
