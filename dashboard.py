@@ -1,3 +1,10 @@
+# d379: 月カレンダーの手動振替を1操作化
+# 1) 月予定編集ポップアップに「通常の予定変更 / 振替として変更」を追加。
+# 2) 振替として変更した場合は、元予定をキャンセルとして残し、振替先を追加予定として同時登録。
+# 3) 元予定には取消線が残り、振替先は「振替追加」として表示。
+# 4) 振替先に同じ生徒の予定が既にある場合は登録を止める。
+# 5) 元予定の座席登録は自動解除。通常の予定変更は従来どおり monthly_schedule の行を移動する。
+
 # d377: 座席予約連携の振替を「元予定へ戻す」ケースに対応
 # 1) d376の「インポート振替を月カレンダーから編集可能」は維持。
 # 2) 連携振替の変更先が、反映ログに記録された元予定（日付・コマ）と一致した場合は「元予定へ復帰」と判定。
@@ -11,6 +18,12 @@
 # 3) 連携振替の振替先（日付・コマ）を変更しても、元予定の取消は保持する。
 # 4) 連携用メモは技術情報を含むため編集不可とし、誤って連携識別を壊さない。
 # 5) 連携振替の取消は振替先をキャンセルする。完全削除は誤復元防止のため行わない。
+
+# d378: 生徒新規登録時のBot匿名ID自動発行を追加
+# 1) 生徒管理の一括保存時に bot_student_map_private.csv を自動同期。
+# 2) 新規在籍生徒に匿名IDが無ければ、推測されにくいランダムIDを自動発行。
+# 3) 既存在籍生徒で匿名IDが欠けている場合も同時に補完。
+# 4) students.csv 保存後に匿名ID対応表まで確認し、発行件数を保存メッセージへ表示。
 
 # d375: 座席予約スケジュールv3の確定振替CSV取り込み＋一括反映
 # 1) 管理（入力）に「🔁 確定振替CSV取込」を追加。
@@ -2704,6 +2717,21 @@ def build_daily_plan_for_date(
                     )
                     add_view.loc[
                         _inbox_transfer_mask,
+                        "reason",
+                    ] = "振替追加"
+
+                    # d379:
+                    # 月カレンダーから「振替として変更」した追加予定も、
+                    # 当日追加ではなく「振替追加」と表示する。
+                    _manual_transfer_mask = (
+                        add_view["action_norm"].eq("追加")
+                        & _inbox_note_s.str.contains(
+                            "月カレンダー手動振替",
+                            na=False,
+                        )
+                    )
+                    add_view.loc[
+                        _manual_transfer_mask,
                         "reason",
                     ] = "振替追加"
 
@@ -15732,6 +15760,38 @@ elif page == "管理（入力）":
                 else:
                     write_csv(edited_students, STUDENTS_CSV)
 
+                    # d378:
+                    # 生徒保存と同じタイミングで、座席予約スケジュール用の匿名ID対応表も同期する。
+                    # 新規在籍生徒だけでなく、既存在籍生徒で匿名IDが欠けている場合も補完する。
+                    bot_map_before = load_bot_student_map_private()
+                    before_bot_ids = set(
+                        bot_map_before.get(
+                            "student_id",
+                            pd.Series(dtype=str),
+                        )
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+                    before_bot_ids.discard("")
+
+                    bot_map_after = ensure_bot_student_map_private(
+                        edited_students
+                    )
+                    after_bot_ids = set(
+                        bot_map_after.get(
+                            "student_id",
+                            pd.Series(dtype=str),
+                        )
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+                    after_bot_ids.discard("")
+                    new_bot_id_count = len(
+                        after_bot_ids - before_bot_ids
+                    )
+
                     # 在籍→退会へ変更された生徒の基本席を解除
                     original_active_map = dict(
                         zip(
@@ -15795,17 +15855,22 @@ elif page == "管理（入力）":
                         None,
                     )
 
+                    save_message_parts = [
+                        "生徒一覧をまとめて保存しました。"
+                    ]
+                    if new_bot_id_count > 0:
+                        save_message_parts.append(
+                            f"座席予約用の匿名IDを"
+                            f"{new_bot_id_count}件自動発行しました。"
+                        )
                     if removed_default_seat_count > 0:
-                        st.success(
-                            "生徒一覧をまとめて保存しました。"
+                        save_message_parts.append(
                             f"退会者の基本席"
                             f"{removed_default_seat_count}件も"
                             "解除しました。"
                         )
-                    else:
-                        st.success(
-                            "生徒一覧をまとめて保存しました。"
-                        )
+
+                    st.success(" ".join(save_message_parts))
                     st.rerun()
 
         if discard_students_batch:
@@ -19864,6 +19929,34 @@ elif page == "管理（入力）":
                     f"{target_year}_{target_month}_{selected_idx}"
                 )
 
+                # d379:
+                # 単なる日付/コマ変更か、元予定に取消線を残す「振替」かを明示的に選ぶ。
+                dialog_change_mode_key = (
+                    f"monthly_dialog_change_mode_"
+                    f"{target_year}_{target_month}_{selected_idx}"
+                )
+                if dialog_change_mode_key not in st.session_state:
+                    st.session_state[dialog_change_mode_key] = "通常の予定変更"
+
+                dialog_change_mode = st.radio(
+                    "変更方法",
+                    [
+                        "通常の予定変更",
+                        "振替として変更（元予定に取消線を残す）",
+                    ],
+                    horizontal=False,
+                    key=dialog_change_mode_key,
+                    help=(
+                        "通常の予定変更＝元予定そのものを新しい日時へ移動します。"
+                        "振替として変更＝元予定は取消線付きで残し、振替先を追加します。"
+                    ),
+                )
+                if dialog_change_mode == "振替として変更（元予定に取消線を残す）":
+                    st.info(
+                        "振替として変更すると、元予定は取消線付きで残り、"
+                        "選んだ日時へ振替予定を追加します。"
+                    )
+
                 # d373: 新規追加と同じく、種別をフォーム外に置いて回数区分を即時連動。
                 dialog_type_key = (
                     f"monthly_dialog_type_"
@@ -19953,6 +20046,13 @@ elif page == "管理（入力）":
                 if dialog_update:
                     effective_reason = str(dialog_reason).strip()
                     dialog_type_norm = str(dialog_type).strip()
+                    new_date_s = dialog_date.isoformat()
+                    new_slot = normalize_slot(dialog_slot)
+                    user_note = str(dialog_note).strip()
+                    is_manual_transfer = (
+                        dialog_change_mode
+                        == "振替として変更（元予定に取消線を残す）"
+                    )
 
                     # d373: 新規追加と同じ保存時の二重チェック。
                     if dialog_type_norm == "自習":
@@ -19963,37 +20063,148 @@ elif page == "管理（入力）":
                     ):
                         effective_reason = "通常"
 
-                    updated_df = monthly_schedule.copy()
-                    updated_df.loc[
-                        selected_idx,
-                        "date",
-                    ] = dialog_date.isoformat()
-                    updated_df.loc[
-                        selected_idx,
-                        "slot",
-                    ] = normalize_slot(dialog_slot)
-                    updated_df.loc[
-                        selected_idx,
-                        "session_type",
-                    ] = dialog_type_norm
-                    updated_df.loc[
-                        selected_idx,
-                        "reason",
-                    ] = effective_reason or "通常"
-                    updated_df.loc[
-                        selected_idx,
-                        "note",
-                    ] = str(dialog_note).strip()
-                    updated_df.loc[
-                        selected_idx,
-                        "source",
-                    ] = "月カレンダーポップアップから修正"
+                    if is_manual_transfer:
+                        # 元予定と同じ日時は振替にならないため止める。
+                        if (
+                            new_date_s == selected_date_s
+                            and new_slot == normalize_slot(selected_slot)
+                        ):
+                            st.error(
+                                "振替先が元予定と同じです。"
+                                "別の日付またはコマを選んでください。"
+                            )
+                        else:
+                            # 元予定をキャンセルした状態を仮に作り、
+                            # そのうえで振替先に同じ生徒の予定が無いか確認する。
+                            ov_after_cancel = upsert_schedule_override_row(
+                                schedule_overrides,
+                                student_id=selected_sid,
+                                d=selected_date_value,
+                                slot=selected_slot,
+                                action="キャンセル",
+                                session_type=selected_type,
+                                note="月カレンダー手動振替 / 元予定取消",
+                            )
 
-                    st.session_state[monthly_edit_key] = (
-                        _normalize_monthly_edit_df(updated_df)
-                    )
-                    st.session_state[monthly_dirty_key] = True
-                    st.rerun()
+                            dest_plan = build_daily_plan_for_date(
+                                new_date_s,
+                                students,
+                                student_schedule,
+                                monthly_schedule,
+                                ov_after_cancel,
+                                timeslots,
+                                include_inactive=True,
+                            )
+
+                            duplicate_dest = False
+                            if dest_plan is not None and not dest_plan.empty:
+                                _dp = dest_plan.copy()
+                                for _c in ["student_id", "slot"]:
+                                    if _c not in _dp.columns:
+                                        _dp[_c] = ""
+                                    _dp[_c] = (
+                                        _dp[_c]
+                                        .fillna("")
+                                        .astype(str)
+                                        .str.strip()
+                                    )
+                                duplicate_dest = bool(
+                                    (
+                                        _dp["student_id"].eq(selected_sid)
+                                        & _dp["slot"]
+                                        .map(normalize_slot)
+                                        .eq(new_slot)
+                                    ).any()
+                                )
+
+                            if duplicate_dest:
+                                st.error(
+                                    "振替先には同じ生徒の予定がすでにあります。"
+                                    "別の日付またはコマを選んでください。"
+                                )
+                            else:
+                                transfer_note_parts = [
+                                    "月カレンダー手動振替",
+                                    "振替追加",
+                                    "特別追加",
+                                ]
+                                if user_note:
+                                    transfer_note_parts.append(user_note)
+                                transfer_note = " / ".join(
+                                    transfer_note_parts
+                                )
+
+                                ov2 = upsert_schedule_override_row(
+                                    ov_after_cancel,
+                                    student_id=selected_sid,
+                                    d=new_date_s,
+                                    slot=new_slot,
+                                    action="追加",
+                                    session_type=dialog_type_norm,
+                                    note=transfer_note,
+                                )
+
+                                # 元予定取消＋振替先追加を、1回のCSV保存で確定する。
+                                write_csv_atomic(
+                                    ov2,
+                                    SCHEDULE_OVERRIDES_CSV,
+                                )
+
+                                # 元予定の座席は解除する。振替先の席は座席画面で再配置する。
+                                seat2 = remove_seat_assignment_for_plan(
+                                    seat_assignments,
+                                    d=selected_date_value,
+                                    student_id=selected_sid,
+                                    slot=selected_slot,
+                                )
+                                write_csv_atomic(
+                                    seat2,
+                                    SEAT_ASSIGNMENTS_CSV,
+                                )
+
+                                st.session_state.pop(
+                                    f"monthly_sidebar_update_target_"
+                                    f"{target_year}_{target_month}",
+                                    None,
+                                )
+                                st.success(
+                                    "振替として変更しました。"
+                                    "元予定に取消線を残し、振替先を追加しました。"
+                                )
+                                st.rerun()
+                    else:
+                        # 従来どおり、月予定そのものを新しい日時へ移動する。
+                        updated_df = monthly_schedule.copy()
+                        updated_df.loc[
+                            selected_idx,
+                            "date",
+                        ] = new_date_s
+                        updated_df.loc[
+                            selected_idx,
+                            "slot",
+                        ] = new_slot
+                        updated_df.loc[
+                            selected_idx,
+                            "session_type",
+                        ] = dialog_type_norm
+                        updated_df.loc[
+                            selected_idx,
+                            "reason",
+                        ] = effective_reason or "通常"
+                        updated_df.loc[
+                            selected_idx,
+                            "note",
+                        ] = user_note
+                        updated_df.loc[
+                            selected_idx,
+                            "source",
+                        ] = "月カレンダーポップアップから修正"
+
+                        st.session_state[monthly_edit_key] = (
+                            _normalize_monthly_edit_df(updated_df)
+                        )
+                        st.session_state[monthly_dirty_key] = True
+                        st.rerun()
 
                 st.divider()
                 st.markdown("### 取消・削除")
