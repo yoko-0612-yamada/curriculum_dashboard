@@ -1,3 +1,78 @@
+# d390: 受付経路に応じて月カレンダー編集UIを整理
+# 1) 😃口頭受付／📱LINEなど座席予約連携由来の予定は、ツール側では更新・誤登録訂正を表示しない。
+# 2) 外部受付由来の予定は「内容確認＋予定をキャンセル」だけに限定。
+# 3) 💻ツール内で作った予定は、更新・キャンセル・誤登録訂正を従来どおり利用可能。
+# 4) 将来ツール→座席予約スケジュールの逆同期が完成した時点で外部受付予定の更新を解禁する想定。
+# 5) d389までの訂正履歴・取消線・出席/未完了除外・受付経路絵文字・8種類request_typeは維持。
+
+# d389: 予定操作の意味を「キャンセル／誤登録を訂正／変更・振替」に整理
+# 1) 「完全削除」という通常操作名をやめ、「誤登録を訂正」に変更。
+# 2) キャンセル＝実際に存在した予定を取りやめ。グレー＋取消線で履歴を残す。
+# 3) 誤登録を訂正＝入力ミスの予定を現在のカレンダーから消すが、訂正履歴は別ログへ残す。
+# 4) 変更・振替＝既存の処理を維持。
+# 5) 外部受付由来の予定は、連携履歴を壊さないためツール側で誤登録訂正しない。
+
+# d388: 「今日の未完了」からキャンセル済み予定を除外
+# 1) d387の「今日来る人／出席記録」のキャンセル除外を維持。
+# 2) 未完了タスク生成用の plan_day でも、取消線表示用のキャンセル行を除外。
+# 3) 月カレンダーのグレー＋取消線表示、受付経路絵文字はそのまま維持。
+# 4) 8種類request_type、CSV取込、再追加判定などは変更しない。
+
+# d387: 出席記録の「今日来る人」からキャンセル済み予定を除外
+# 1) 今日の予定・出席記録では、取消線表示用のキャンセル行を現在有効な予定として扱わない。
+# 2) 口頭受付・LINE Bot・ツール内操作のどこからキャンセルされても、出席対象から除外。
+# 3) 月カレンダーのグレー＋取消線表示はそのまま維持。
+# 4) 8種類request_type、受付経路絵文字、再追加判定などは変更しない。
+
+# d386: キャンセル表示統一＋受付経路アイコン
+# 1) 座席予約連携キャンセルも通常キャンセルと同じ override_status='キャンセル' を使い、
+#    名前・予定ともグレー＋取消線の既存表示へ統一。
+# 2) 追加・キャンセル・変更の受付経路を絵文字で表示。
+#    💻=ツール内操作 / 😃=口頭受付 / 📱=LINE Bot
+# 3) 座席予約連携CSVのreception_sourceをschedule_overridesのnoteへ保持。
+# 4) 既存の座席予約連携データは、受付経路情報が無い場合は現在の運用に合わせ😃として表示。
+# 5) CSV取込・request_type・再追加判定などの処理ロジックは変更しない。
+
+# d385: 取消線表示だけを限定修正（回帰影響を最小化）
+# 1) 座席予約連携キャンセル行をカレンダーへ戻す際に、表示に必要な列を明示的に保持。
+# 2) date / weekday / slot / session_type / display_name / action / status /
+#    reason / cancelled / is_cancelled を欠落させない。
+# 3) 8種類request_type、CSV取込、反映済み判定、再追加重複判定、
+#    通常追加・振替ロジックには手を入れない。
+# 4) 今回のテストは「キャンセル→取消線表示」だけで確認できるようにする。
+
+# d384: 取消線表示用の予定を「追加先の重複」として扱わないよう修正
+# 1) カレンダーに取消線で残している行は、追加先重複チェックから除外。
+# 2) 「追加→キャンセル→同じ日時へ再追加」を正常に反映可能にする。
+# 3) 現在有効な予定だけを追加先重複として判定。
+# 4) d383の最新状態表示、d381の取消線表示、8種類request_type連携を維持。
+
+# d383: 座席予約連携の同一日時「キャンセル→再追加」で最新受付を優先
+# 1) schedule_overridesに過去のキャンセル行が残っていても、
+#    同じ生徒・日付・コマの座席予約連携では最後に登録された受付を有効とする。
+# 2) 再追加が最後なら旧キャンセルを表示判定から除外。
+# 3) キャンセルが最後なら取消線表示を維持。
+# 4) 既にd381/d382で取り込み済みのデータも、CSVを再取込せず表示を復旧できる。
+# 5) 手動キャンセル等、座席予約連携以外の例外は変更しない。
+
+# d382: 座席予約連携でキャンセル後、同じ日時へ再追加した時に予定を復活できるよう修正
+# 1) 新しい追加/振替先を反映する直前に、同じ生徒・日付・コマの
+#    「座席予約連携由来のキャンセル」だけを解除。
+# 2) 手動キャンセルなど、座席予約連携以外のキャンセルは勝手に解除しない。
+# 3) d381の取消線表示、d380の8種類request_type連携・二重反映防止は維持。
+
+# d381: 座席予約連携のキャンセルを月カレンダーで取消線表示に修正
+# 1) lesson_cancel / selfstudy_cancel で元予定を消さず、取消済み行として表示。
+# 2) 座席予約連携由来のキャンセル行も、月カレンダーに元予定情報を残して見える化。
+# 3) d380の8種類request_type連携・二重反映防止は維持。
+
+# d380: 座席予約スケジュールv3.5の8種類受付CSV取り込み対応
+# 1) request_typeで8種類の受付を分岐。
+# 2) 授業/自習の元予定種別を検証し、追加先重複も確認。
+# 3) 振替は元取消＋先追加、追加は先追加のみ、キャンセルは元取消のみ。
+# 4) 授業↔自習の同日同コマ変更は時間変更として反映し、取消に潰されないようにする。
+# 5) reservation_idによる二重反映防止は従来どおり維持。
+
 # d379: 月カレンダーの手動振替を1操作化
 # 1) 月予定編集ポップアップに「通常の予定変更 / 振替として変更」を追加。
 # 2) 振替として変更した場合は、元予定をキャンセルとして残し、振替先を追加予定として同時登録。
@@ -1488,6 +1563,52 @@ def is_progress_done_on_or_after(progress_df: pd.DataFrame, student_id: str, d: 
 
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
+def append_schedule_correction_log(items) -> None:
+    if not items:
+        return
+    if isinstance(items, dict):
+        items = [items]
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for item in items:
+        rows.append({
+            "corrected_at": now,
+            "operation": "誤登録を訂正",
+            "source": str(item.get("source", "💻 ツール")).strip(),
+            "student_id": str(item.get("student_id", "")).strip(),
+            "date": str(item.get("date", "")).strip(),
+            "slot": normalize_slot(item.get("slot", "")),
+            "session_type": str(item.get("session_type", "")).strip(),
+            "reason": str(item.get("reason", "")).strip(),
+            "note": str(item.get("note", "")).strip(),
+        })
+
+    new_df = pd.DataFrame(rows, columns=SCHEDULE_CORRECTION_LOG_COLS)
+
+    if SCHEDULE_CORRECTION_LOG_CSV.exists():
+        try:
+            old_df = pd.read_csv(
+                SCHEDULE_CORRECTION_LOG_CSV,
+                dtype=str,
+                encoding="utf-8-sig",
+            ).fillna("")
+        except Exception:
+            old_df = pd.DataFrame(columns=SCHEDULE_CORRECTION_LOG_COLS)
+    else:
+        old_df = pd.DataFrame(columns=SCHEDULE_CORRECTION_LOG_COLS)
+
+    for c in SCHEDULE_CORRECTION_LOG_COLS:
+        if c not in old_df.columns:
+            old_df[c] = ""
+
+    merged = pd.concat(
+        [old_df[SCHEDULE_CORRECTION_LOG_COLS], new_df],
+        ignore_index=True,
+    )
+    write_csv_atomic(merged, SCHEDULE_CORRECTION_LOG_CSV)
+
+
 def build_today_task_status(att_done: bool, prog_done: bool) -> str:
     if att_done and prog_done:
         return "✅ 出欠済 / 進捗済"
@@ -1523,6 +1644,12 @@ STUDENT_SCHEDULE_CSV = DATA_DIR / "student_schedule.csv"
 TIMESLOTS_CSV = DATA_DIR / "timeslots.csv"
 SCHEDULE_OVERRIDES_CSV = DATA_DIR / "schedule_overrides.csv"
 
+SCHEDULE_CORRECTION_LOG_CSV = DATA_DIR / "schedule_correction_log.csv"
+SCHEDULE_CORRECTION_LOG_COLS = [
+    "corrected_at", "operation", "source", "student_id",
+    "date", "slot", "session_type", "reason", "note",
+]
+
 # [STEP 2026-05] 月単位で確定した予定を保存するCSV（固定スケジュールと当日例外の間の層）
 MONTHLY_SCHEDULE_CSV = DATA_DIR / "monthly_schedule.csv"
 
@@ -1545,14 +1672,39 @@ SEAT_RESERVATION_SYNC_COLS = ["date", "slot", "base_count", "absence_count"]
 # d375: 座席予約スケジュールv3から戻ってきた確定振替の反映済み台帳（教室PCだけ）。
 SEAT_TRANSFER_IMPORT_LOG_CSV = DATA_DIR / "seat_transfer_import_log.csv"
 SEAT_TRANSFER_IMPORT_REQUIRED_COLS = [
-    "reservation_id", "bot_student_id", "source_date", "source_slot",
-    "requested_date", "requested_slot", "reception_source", "status",
+    "reservation_id", "bot_student_id", "request_type",
+    "source_date", "source_slot", "requested_date", "requested_slot",
+    "source_session_type", "requested_session_type",
+    "reception_source", "status",
 ]
 SEAT_TRANSFER_IMPORT_LOG_COLS = [
-    "reservation_id", "bot_student_id", "student_id",
+    "reservation_id", "bot_student_id", "student_id", "request_type",
     "source_date", "source_slot", "requested_date", "requested_slot",
+    "source_session_type", "requested_session_type",
     "reception_source", "applied_at",
 ]
+
+SEAT_REQUEST_RULES = {
+    "lesson_transfer": {"needs_source": True, "needs_dest": True, "source_type": "授業", "dest_type": "授業"},
+    "lesson_add": {"needs_source": False, "needs_dest": True, "source_type": "", "dest_type": "授業"},
+    "lesson_cancel": {"needs_source": True, "needs_dest": False, "source_type": "授業", "dest_type": ""},
+    "selfstudy_transfer": {"needs_source": True, "needs_dest": True, "source_type": "自習", "dest_type": "自習"},
+    "selfstudy_add": {"needs_source": False, "needs_dest": True, "source_type": "", "dest_type": "自習"},
+    "selfstudy_cancel": {"needs_source": True, "needs_dest": False, "source_type": "自習", "dest_type": ""},
+    "lesson_to_selfstudy": {"needs_source": True, "needs_dest": True, "source_type": "授業", "dest_type": "自習"},
+    "selfstudy_to_lesson": {"needs_source": True, "needs_dest": True, "source_type": "自習", "dest_type": "授業"},
+}
+
+SEAT_REQUEST_LABELS = {
+    "lesson_transfer": "授業→授業振替",
+    "lesson_add": "授業追加",
+    "lesson_cancel": "授業キャンセル",
+    "selfstudy_transfer": "自習→自習振替",
+    "selfstudy_add": "自習追加",
+    "selfstudy_cancel": "自習キャンセル",
+    "lesson_to_selfstudy": "授業→自習",
+    "selfstudy_to_lesson": "自習→授業",
+}
 BOT_STUDENT_MAP_COLS = ["student_id", "bot_student_id"]
 BOT_SCHEDULE_COLS = [
     "bot_student_id", "date", "weekday", "slot",
@@ -1654,12 +1806,295 @@ def remove_linked_source_cancel_for_transfer(overrides_df: pd.DataFrame, *, rese
     return out.fillna(""), removed
 
 
+
+
+SEAT_CURRENT_STATE_SYNC_COLS = [
+    "reservation_id",
+    "current_date",
+    "current_slot",
+    "current_session_type",
+    "current_status",
+    "current_source",
+    "current_updated_at",
+]
+
+
+def _seat_origin_source_label(reception_source: str) -> str:
+    s = str(reception_source or "").strip().lower()
+    if "line" in s:
+        return "📱 LINE Bot"
+    if "口頭" in s:
+        return "😃 口頭受付"
+    return "😃 外部受付"
+
+
+def _find_latest_linked_override(
+    schedule_overrides_df: pd.DataFrame,
+    *,
+    reservation_id: str,
+    student_id: str,
+) -> dict:
+    """reservation_idをnoteに持つ最新の例外行を探す。"""
+    if schedule_overrides_df is None or schedule_overrides_df.empty:
+        return {}
+
+    rid = str(reservation_id).strip()
+    sid = str(student_id).strip()
+    if not rid:
+        return {}
+
+    ov = schedule_overrides_df.copy()
+    for c in ["student_id", "date", "slot", "action", "session_type", "note"]:
+        if c not in ov.columns:
+            ov[c] = ""
+        ov[c] = ov[c].fillna("").astype(str).str.strip()
+
+    hit = ov[
+        ov["student_id"].eq(sid)
+        & ov["note"].str.contains(rid, regex=False, na=False)
+    ].copy()
+    if hit.empty:
+        return {}
+
+    # schedule_overridesは行順を履歴順として扱う。
+    r = hit.iloc[-1]
+    return {
+        "date": str(r.get("date", "")).strip(),
+        "slot": normalize_slot(r.get("slot", "")),
+        "action": normalize_action_value(r.get("action", "")),
+        "session_type": str(r.get("session_type", "")).strip(),
+        "note": str(r.get("note", "")).strip(),
+    }
+
+
+def _is_cancelled_at(
+    schedule_overrides_df: pd.DataFrame,
+    *,
+    student_id: str,
+    d: str,
+    slot: str,
+) -> bool:
+    if schedule_overrides_df is None or schedule_overrides_df.empty:
+        return False
+
+    ov = schedule_overrides_df.copy()
+    for c in ["student_id", "date", "slot", "action"]:
+        if c not in ov.columns:
+            ov[c] = ""
+        ov[c] = ov[c].fillna("").astype(str).str.strip()
+
+    return bool((
+        ov["student_id"].eq(str(student_id).strip())
+        & ov["date"].eq(str(d).strip())
+        & ov["slot"].map(normalize_slot).eq(normalize_slot(slot))
+        & ov["action"].map(normalize_action_value).eq("キャンセル")
+    ).any())
+
+
+def build_seat_current_state_sync_df(
+    *,
+    students_df: pd.DataFrame,
+    student_schedule_df: pd.DataFrame,
+    monthly_schedule_df: pd.DataFrame,
+    schedule_overrides_df: pd.DataFrame,
+    timeslots_df: pd.DataFrame,
+    import_log_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """d392: 受付履歴ごとの「現在状態」をカリキュラム側から判定する。
+
+    戻り値:
+      export_df: v3.7へ渡す匿名CSV
+      preview_df: 教室PC上だけで見る確認用（生徒名を含む）
+    """
+    log = import_log_df.copy() if isinstance(import_log_df, pd.DataFrame) else pd.DataFrame()
+    if log.empty:
+        return (
+            pd.DataFrame(columns=SEAT_CURRENT_STATE_SYNC_COLS),
+            pd.DataFrame(),
+        )
+
+    for c in SEAT_TRANSFER_IMPORT_LOG_COLS:
+        if c not in log.columns:
+            log[c] = ""
+        log[c] = log[c].fillna("").astype(str).str.strip()
+
+    name_map = dict(zip(
+        students_df.get("student_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip(),
+        students_df.get("display_name", pd.Series(dtype=str)).fillna("").astype(str).str.strip(),
+    ))
+
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    export_rows = []
+    preview_rows = []
+
+    # 同じ日を何度もbuildしない。
+    plan_cache = {}
+
+    def get_plan(d_str: str) -> pd.DataFrame:
+        d_str = str(d_str).strip()
+        if not d_str:
+            return pd.DataFrame()
+        if d_str not in plan_cache:
+            plan_cache[d_str] = build_daily_plan_for_date(
+                d_str,
+                students_df,
+                student_schedule_df,
+                monthly_schedule_df,
+                schedule_overrides_df,
+                timeslots_df,
+                include_inactive=True,
+            )
+        return plan_cache[d_str]
+
+    for _, r in log.iterrows():
+        rid = str(r.get("reservation_id", "")).strip()
+        sid = str(r.get("student_id", "")).strip()
+        req = str(r.get("request_type", "")).strip() or "lesson_transfer"
+        reception_source = str(r.get("reception_source", "")).strip()
+        orig_date = str(r.get("requested_date", "")).strip()
+        orig_slot = normalize_slot(r.get("requested_slot", ""))
+        orig_type = str(r.get("requested_session_type", "")).strip()
+        if not orig_type:
+            orig_type = SEAT_REQUEST_RULES.get(req, {}).get("dest_type", "")
+
+        current_date = orig_date
+        current_slot = orig_slot
+        current_type = orig_type
+        current_status = "active"
+        current_source = _seat_origin_source_label(reception_source)
+
+        # 受付自体がキャンセル受付なら、その受付の現在状態はキャンセル済み。
+        if req in ["lesson_cancel", "selfstudy_cancel"]:
+            current_date = ""
+            current_slot = ""
+            current_type = ""
+            current_status = "cancelled"
+            current_source = _seat_origin_source_label(reception_source)
+        else:
+            linked = _find_latest_linked_override(
+                schedule_overrides_df,
+                reservation_id=rid,
+                student_id=sid,
+            )
+
+            # 過去版で外部受付予定をツール側変更していた場合にも追従。
+            if linked and linked.get("action") in ["追加", "時間変更"]:
+                if linked.get("date"):
+                    current_date = linked["date"]
+                if linked.get("slot"):
+                    current_slot = linked["slot"]
+                if linked.get("session_type"):
+                    current_type = linked["session_type"]
+
+            # 現在の実予定に存在するかで最終判定する。
+            plan = get_plan(current_date)
+            active_hit = pd.DataFrame()
+            if plan is not None and not plan.empty:
+                tmp = plan.copy()
+                for c in ["student_id", "slot", "session_type", "action", "status", "override_status", "reason"]:
+                    if c not in tmp.columns:
+                        tmp[c] = ""
+                    tmp[c] = tmp[c].fillna("").astype(str).str.strip()
+
+                active_hit = tmp[
+                    tmp["student_id"].eq(sid)
+                    & tmp["slot"].map(normalize_slot).eq(normalize_slot(current_slot))
+                ].copy()
+
+                if not active_hit.empty:
+                    cancel_mask = pd.Series(False, index=active_hit.index)
+                    for c in ["action", "status", "override_status", "reason"]:
+                        vals = active_hit[c].fillna("").astype(str).str.strip()
+                        cancel_mask = cancel_mask | vals.isin(
+                            ["キャンセル", "取消", "取消済み", "キャンセル済み", "削除"]
+                        )
+                    for c in ["cancelled", "is_cancelled"]:
+                        if c in active_hit.columns:
+                            cancel_mask = cancel_mask | active_hit[c].map(
+                                lambda v: (
+                                    v is True
+                                    or str(v).strip().lower() in ["true", "1", "yes"]
+                                )
+                            ).fillna(False)
+                    active_hit = active_hit.loc[~cancel_mask].copy()
+
+            if active_hit.empty:
+                # 予定が無く、同位置にキャンセルがあるなら明確にcancelled。
+                current_status = "cancelled"
+                current_date = ""
+                current_slot = ""
+                current_type = ""
+                current_source = "💻 カリキュラムツール"
+            else:
+                actual_type = str(active_hit.iloc[0].get("session_type", "")).strip()
+                if actual_type:
+                    current_type = actual_type
+
+                changed = (
+                    current_date != orig_date
+                    or normalize_slot(current_slot) != normalize_slot(orig_slot)
+                    or (orig_type and current_type != orig_type)
+                )
+                current_status = "changed" if changed else "active"
+                if changed:
+                    current_source = "💻 カリキュラムツール"
+
+        export_rows.append({
+            "reservation_id": rid,
+            "current_date": current_date,
+            "current_slot": current_slot,
+            "current_session_type": current_type,
+            "current_status": current_status,
+            "current_source": current_source,
+            "current_updated_at": now,
+        })
+
+        preview_rows.append({
+            "予約ID": rid,
+            "生徒": name_map.get(sid, sid),
+            "受付内容": SEAT_REQUEST_LABELS.get(req, req),
+            "受付時": (
+                f"{orig_date} / {orig_slot}コマ / {orig_type}"
+                if orig_date or orig_slot or orig_type
+                else "キャンセル受付"
+            ),
+            "現在": (
+                f"{current_date} / {current_slot}コマ / {current_type}"
+                if current_status in ["active", "changed"]
+                else "予定なし"
+            ),
+            "現在状態": {
+                "active": "🟢 現在有効",
+                "changed": "🔵 変更済み",
+                "cancelled": "⚫ キャンセル済み",
+                "corrected": "🧹 訂正済み",
+            }.get(current_status, current_status),
+            "最終変更元": current_source,
+        })
+
+    export_df = pd.DataFrame(export_rows, columns=SEAT_CURRENT_STATE_SYNC_COLS)
+    preview_df = pd.DataFrame(preview_rows)
+    return export_df, preview_df
 def _normalize_transfer_import_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
     for c in SEAT_TRANSFER_IMPORT_REQUIRED_COLS:
         if c not in out.columns:
             out[c] = ""
         out[c] = out[c].fillna("").astype(str).str.strip()
+
+    # v3.1以前の旧CSVも授業振替として後方互換。
+    out.loc[out["request_type"].eq(""), "request_type"] = "lesson_transfer"
+    out.loc[out["source_session_type"].eq(""), "source_session_type"] = (
+        out["request_type"].map(
+            lambda x: SEAT_REQUEST_RULES.get(x, {}).get("source_type", "")
+        )
+    )
+    out.loc[out["requested_session_type"].eq(""), "requested_session_type"] = (
+        out["request_type"].map(
+            lambda x: SEAT_REQUEST_RULES.get(x, {}).get("dest_type", "")
+        )
+    )
+
     for c in ["source_slot", "requested_slot"]:
         out[c] = out[c].map(normalize_slot)
     for c in ["source_date", "requested_date"]:
@@ -1685,6 +2120,55 @@ def _has_exact_cancel(overrides_df: pd.DataFrame, student_id: str, d: str, slot:
     ).any())
 
 
+def _plan_hit(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
+    if plan_df is None or plan_df.empty:
+        return pd.DataFrame()
+    tmp = plan_df.copy()
+    for c in ["student_id", "slot", "session_type"]:
+        if c not in tmp.columns:
+            tmp[c] = ""
+        tmp[c] = tmp[c].fillna("").astype(str).str.strip()
+    return tmp[
+        tmp["student_id"].eq(str(sid).strip())
+        & tmp["slot"].map(normalize_slot).eq(normalize_slot(slot))
+    ].copy()
+
+
+def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
+    """d384:
+    カレンダー表示用に残している「取消済み行」を除外し、
+    現在有効な予定だけを返す。
+    """
+    hit = _plan_hit(plan_df, sid, slot)
+    if hit.empty:
+        return hit
+
+    active = hit.copy()
+
+    # d381以降の取消線表示用行で使っている各種フラグをまとめて判定。
+    cancel_mask = pd.Series(False, index=active.index)
+
+    for col in ["action", "status", "reason"]:
+        if col in active.columns:
+            vals = active[col].fillna("").astype(str).str.strip()
+            cancel_mask = cancel_mask | vals.isin(
+                ["キャンセル", "取消", "取消済み", "キャンセル済み"]
+            )
+
+    for col in ["cancelled", "is_cancelled"]:
+        if col in active.columns:
+            vals = active[col]
+            bool_mask = vals.map(
+                lambda v: (
+                    v is True
+                    or str(v).strip().lower() in ["true", "1", "yes"]
+                )
+            )
+            cancel_mask = cancel_mask | bool_mask.fillna(False)
+
+    return active.loc[~cancel_mask].copy()
+
+
 def validate_seat_transfer_import_rows(
     import_df: pd.DataFrame,
     *,
@@ -1696,7 +2180,7 @@ def validate_seat_transfer_import_rows(
     bot_map_df: pd.DataFrame,
     applied_log_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """d375: 反映前に1行ずつ安全確認し、ローカル表示用情報を付ける。"""
+    """d380: 8種類の受付をrequest_typeごとに検証する。"""
     work = _normalize_transfer_import_df(import_df)
     bot_to_sid = dict(zip(
         bot_map_df.get("bot_student_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip(),
@@ -1713,69 +2197,55 @@ def validate_seat_transfer_import_rows(
 
     rows = []
     for _, r in work.iterrows():
-        reservation_id = str(r.get("reservation_id", "")).strip()
+        rid = str(r.get("reservation_id", "")).strip()
         bot_id = str(r.get("bot_student_id", "")).strip()
-        source_date = str(r.get("source_date", "")).strip()
-        source_slot = normalize_slot(r.get("source_slot", ""))
-        dest_date = str(r.get("requested_date", "")).strip()
-        dest_slot = normalize_slot(r.get("requested_slot", ""))
+        req = str(r.get("request_type", "")).strip()
+        rule = SEAT_REQUEST_RULES.get(req)
+        src_date = str(r.get("source_date", "")).strip()
+        src_slot = normalize_slot(r.get("source_slot", ""))
+        dst_date = str(r.get("requested_date", "")).strip()
+        dst_slot = normalize_slot(r.get("requested_slot", ""))
+        src_type = str(r.get("source_session_type", "")).strip()
+        dst_type = str(r.get("requested_session_type", "")).strip()
         reception_source = str(r.get("reception_source", "")).strip()
         status = str(r.get("status", "")).strip().lower()
         sid = bot_to_sid.get(bot_id, "")
-        problems = []
-        notes = []
+        problems, notes = [], []
 
-        if not reservation_id:
+        if not rid:
             problems.append("予約IDなし")
-        elif reservation_id in dup_ids:
+        elif rid in dup_ids:
             problems.append("CSV内で予約ID重複")
-        elif reservation_id in applied_ids:
+        elif rid in applied_ids:
             problems.append("反映済み")
 
         if status != "confirmed":
             problems.append("confirmed以外")
         if not bot_id or not sid:
             problems.append("匿名IDをローカル対応表で解決できません")
-        if pd.isna(pd.to_datetime(source_date, errors="coerce")):
-            problems.append("元授業日が不正")
-        if pd.isna(pd.to_datetime(dest_date, errors="coerce")):
-            problems.append("振替先日が不正")
-        if not source_slot:
-            problems.append("元コマなし")
-        if not dest_slot:
-            problems.append("振替先コマなし")
-        if source_date == dest_date and source_slot == dest_slot:
-            problems.append("元予定と振替先が同一")
+        if rule is None:
+            problems.append("未対応のrequest_type")
+            rule = {"needs_source": False, "needs_dest": False, "source_type": "", "dest_type": ""}
 
-        if sid and not problems:
-            already_cancel = _has_exact_cancel(
-                schedule_overrides_df, sid, source_date, source_slot
-            )
-            if already_cancel:
-                notes.append("元予定は既に欠席/取消済み（取消追加なし）")
-            else:
-                source_plan = build_daily_plan_for_date(
-                    source_date,
-                    students_df,
-                    student_schedule_df,
-                    monthly_schedule_df,
-                    schedule_overrides_df,
-                    timeslots_df,
-                    include_inactive=True,
-                )
-                source_hit = source_plan[
-                    source_plan.get("student_id", pd.Series(dtype=str)).astype(str).str.strip().eq(sid)
-                    & source_plan.get("slot", pd.Series(dtype=str)).map(normalize_slot).eq(source_slot)
-                ] if not source_plan.empty else pd.DataFrame()
-                if source_hit.empty:
-                    problems.append("元予定が見つかりません")
-                else:
-                    stypes = set(source_hit.get("session_type", pd.Series(dtype=str)).fillna("").astype(str).str.strip())
-                    if stypes and stypes.issubset({"自習"}):
-                        problems.append("元予定が自習です")
+        if rule["needs_source"]:
+            if pd.isna(pd.to_datetime(src_date, errors="coerce")):
+                problems.append("元予定日が不正")
+            if not src_slot:
+                problems.append("元コマなし")
+        if rule["needs_dest"]:
+            if pd.isna(pd.to_datetime(dst_date, errors="coerce")):
+                problems.append("追加先日が不正")
+            if not dst_slot:
+                problems.append("追加先コマなし")
 
-            dest_plan = build_daily_plan_for_date(
-                dest_date,
+        if src_type and rule["source_type"] and src_type != rule["source_type"]:
+            problems.append("元種別がrequest_typeと不一致")
+        if dst_type and rule["dest_type"] and dst_type != rule["dest_type"]:
+            problems.append("変更後種別がrequest_typeと不一致")
+
+        if sid and not problems and rule["needs_source"]:
+            source_plan = build_daily_plan_for_date(
+                src_date,
                 students_df,
                 student_schedule_df,
                 monthly_schedule_df,
@@ -1783,24 +2253,68 @@ def validate_seat_transfer_import_rows(
                 timeslots_df,
                 include_inactive=True,
             )
-            dest_hit = dest_plan[
-                dest_plan.get("student_id", pd.Series(dtype=str)).astype(str).str.strip().eq(sid)
-                & dest_plan.get("slot", pd.Series(dtype=str)).map(normalize_slot).eq(dest_slot)
-            ] if not dest_plan.empty else pd.DataFrame()
-            if not dest_hit.empty:
-                problems.append("振替先に同じ生徒の予定が既にあります")
+            source_hit = _plan_hit(source_plan, sid, src_slot)
+
+            if source_hit.empty:
+                if _has_exact_cancel(schedule_overrides_df, sid, src_date, src_slot):
+                    notes.append("元予定は既に取消済み")
+                else:
+                    problems.append("元予定が見つかりません")
+            else:
+                actual_types = set(
+                    source_hit["session_type"].fillna("").astype(str).str.strip()
+                )
+                expected = rule["source_type"]
+                if expected == "自習":
+                    if actual_types and not actual_types.issubset({"自習"}):
+                        problems.append("元予定が自習ではありません")
+                elif expected == "授業":
+                    if actual_types and actual_types.issubset({"自習"}):
+                        problems.append("元予定が授業ではありません")
+
+        if sid and not problems and rule["needs_dest"]:
+            same_source_dest = (
+                rule["needs_source"]
+                and src_date == dst_date
+                and src_slot == dst_slot
+            )
+
+            # 授業↔自習の同コマ変更は元予定が存在して当然なので重複扱いしない。
+            if not (
+                same_source_dest
+                and req in ["lesson_to_selfstudy", "selfstudy_to_lesson"]
+            ):
+                dest_plan = build_daily_plan_for_date(
+                    dst_date,
+                    students_df,
+                    student_schedule_df,
+                    monthly_schedule_df,
+                    schedule_overrides_df,
+                    timeslots_df,
+                    include_inactive=True,
+                )
+                # d384:
+                # 取消線表示のためにカレンダーへ残している行は、
+                # 「現在有効な予定」ではないので重複扱いしない。
+                dest_hit = _plan_hit_active(dest_plan, sid, dst_slot)
+                if not dest_hit.empty:
+                    problems.append("追加先に同じ生徒の有効な予定が既にあります")
 
         rows.append({
             "反映": "OK" if not problems else "不可",
             "理由/注意": " / ".join(problems + notes),
-            "予約ID": reservation_id,
+            "予約ID": rid,
+            "受付内容": SEAT_REQUEST_LABELS.get(req, req),
+            "request_type": req,
             "生徒": name_map.get(sid, sid or "不明"),
             "匿名ID": bot_id,
             "student_id": sid,
-            "元授業日": source_date,
-            "元コマ": source_slot,
-            "振替先日": dest_date,
-            "振替先コマ": dest_slot,
+            "元日": src_date,
+            "元コマ": src_slot,
+            "元種別": rule.get("source_type", src_type),
+            "追加先日": dst_date,
+            "追加先コマ": dst_slot,
+            "変更後種別": rule.get("dest_type", dst_type),
             "受付経路": reception_source,
         })
     return pd.DataFrame(rows)
@@ -1813,7 +2327,7 @@ def apply_confirmed_seat_transfers(
     import_source_df: pd.DataFrame,
     applied_log_df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, int]:
-    """d375: OK行だけを、元取消＋振替先追加のセットとしてメモリ上で反映する。"""
+    """d380: request_typeに応じて予定変更を一括反映する。"""
     ok = preview_df[preview_df["反映"].eq("OK")].copy()
     if ok.empty:
         return schedule_overrides_df.copy(), applied_log_df.copy(), 0
@@ -1831,57 +2345,128 @@ def apply_confirmed_seat_transfers(
     for _, v in ok.iterrows():
         rid = str(v.get("予約ID", "")).strip()
         sid = str(v.get("student_id", "")).strip()
-        src_date = str(v.get("元授業日", "")).strip()
+        req = str(v.get("request_type", "")).strip()
+        rule = SEAT_REQUEST_RULES[req]
+        src_date = str(v.get("元日", "")).strip()
         src_slot = normalize_slot(v.get("元コマ", ""))
-        dst_date = str(v.get("振替先日", "")).strip()
-        dst_slot = normalize_slot(v.get("振替先コマ", ""))
+        dst_date = str(v.get("追加先日", "")).strip()
+        dst_slot = normalize_slot(v.get("追加先コマ", ""))
         raw = source_by_id.get(rid, {})
         bot_id = str(raw.get("bot_student_id", v.get("匿名ID", ""))).strip()
         reception_source = str(raw.get("reception_source", v.get("受付経路", ""))).strip()
 
-        if not _has_exact_cancel(working, sid, src_date, src_slot):
+        same_source_dest_conversion = (
+            req in ["lesson_to_selfstudy", "selfstudy_to_lesson"]
+            and src_date == dst_date
+            and src_slot == dst_slot
+        )
+
+        if same_source_dest_conversion:
+            # 同日同コマの種別変更は「キャンセル＋追加」だとキャンセルが勝つため、
+            # 時間変更行1件として種別だけ上書きする。
             working = upsert_schedule_override_row(
                 working,
                 student_id=sid,
-                d=src_date,
-                slot=src_slot,
-                action="キャンセル",
-                session_type="授業",
-                note=f"座席予約連携 {rid} / 元予定取消",
+                d=dst_date,
+                slot=dst_slot,
+                action="時間変更",
+                session_type=rule["dest_type"],
+                note=(
+                    f"座席予約連携 {rid} / "
+                    f"{SEAT_REQUEST_LABELS.get(req, req)} / 種別変更 / "
+                    f"受付経路:{reception_source or '口頭受付'}"
+                ),
             )
+        else:
+            if rule["needs_source"] and not _has_exact_cancel(
+                working, sid, src_date, src_slot
+            ):
+                working = upsert_schedule_override_row(
+                    working,
+                    student_id=sid,
+                    d=src_date,
+                    slot=src_slot,
+                    action="キャンセル",
+                    session_type=rule["source_type"],
+                    note=(
+                        f"座席予約連携 {rid} / "
+                        f"{SEAT_REQUEST_LABELS.get(req, req)} / 元予定取消 / 取消線表示 / "
+                        f"受付経路:{reception_source or '口頭受付'}"
+                    ),
+                )
 
-        working = upsert_schedule_override_row(
-            working,
-            student_id=sid,
-            d=dst_date,
-            slot=dst_slot,
-            action="追加",
-            session_type="授業",
-            note=f"座席予約連携 {rid} / 振替追加 / 特別追加",
-        )
+            if rule["needs_dest"]:
+                # d382:
+                # 座席予約側で一度キャンセルした同じ日時へ再追加する場合、
+                # 旧キャンセル行が残っていると build_daily_plan_for_date で
+                # 「キャンセルが最後に勝つ」ため新しい追加が見えなくなる。
+                # ここでは同一 student/date/slot のうち、
+                # 座席予約連携由来のキャンセルだけを解除する。
+                if working is not None and not working.empty:
+                    _w = working.copy()
+                    for _c in ["student_id", "date", "slot", "action", "note"]:
+                        if _c not in _w.columns:
+                            _w[_c] = ""
+                        _w[_c] = _w[_c].fillna("").astype(str).str.strip()
+
+                    _release_cancel_mask = (
+                        _w["student_id"].eq(sid)
+                        & _w["date"].eq(dst_date)
+                        & _w["slot"].map(normalize_slot).eq(dst_slot)
+                        & _w["action"].map(normalize_action_value).eq("キャンセル")
+                        & _w["note"].str.contains("座席予約連携", na=False)
+                    )
+                    if _release_cancel_mask.any():
+                        working = _w.loc[~_release_cancel_mask].copy()
+
+                note_parts = [
+                    f"座席予約連携 {rid}",
+                    SEAT_REQUEST_LABELS.get(req, req),
+                    "特別追加",
+                    f"受付経路:{reception_source or '口頭受付'}",
+                ]
+                working = upsert_schedule_override_row(
+                    working,
+                    student_id=sid,
+                    d=dst_date,
+                    slot=dst_slot,
+                    action="追加",
+                    session_type=rule["dest_type"],
+                    note=" / ".join(note_parts),
+                )
 
         applied_rows.append({
             "reservation_id": rid,
             "bot_student_id": bot_id,
             "student_id": sid,
+            "request_type": req,
             "source_date": src_date,
             "source_slot": src_slot,
             "requested_date": dst_date,
             "requested_slot": dst_slot,
+            "source_session_type": rule["source_type"],
+            "requested_session_type": rule["dest_type"],
             "reception_source": reception_source,
             "applied_at": applied_at,
         })
 
     if applied_rows:
-        log_work = pd.concat([log_work, pd.DataFrame(applied_rows)], ignore_index=True)
-        log_work = log_work.drop_duplicates(subset=["reservation_id"], keep="last")
+        log_work = pd.concat(
+            [log_work, pd.DataFrame(applied_rows)],
+            ignore_index=True,
+        )
+        log_work = log_work.drop_duplicates(
+            subset=["reservation_id"],
+            keep="last",
+        )
         for c in SEAT_TRANSFER_IMPORT_LOG_COLS:
             if c not in log_work.columns:
                 log_work[c] = ""
-        log_work = log_work[SEAT_TRANSFER_IMPORT_LOG_COLS].fillna("")
+        log_work = log_work[
+            SEAT_TRANSFER_IMPORT_LOG_COLS
+        ].fillna("")
 
     return working, log_work, len(applied_rows)
-
 
 def _new_bot_student_id(used_ids: set[str]) -> str:
     """推測されにくいランダム匿名IDを作る。student_idからは導出しない。"""
@@ -2768,6 +3353,56 @@ def build_daily_plan_for_date(
                     plan = pd.concat([plan, add_view], ignore_index=True)
 
         # キャンセル：最後に反映する。同じ student_id × slot は最終的に消す。
+        # d383:
+        # 同じ student_id × date × slot に座席予約連携の履歴が複数ある場合は、
+        # CSV上で最後に登録された受付を最新状態として扱う。
+        # 例: 追加 → キャンセル → 再追加 なら、古いキャンセルは無効。
+        if not ov_day.empty:
+            _seat_hist = ov_day.copy()
+            if "note" not in _seat_hist.columns:
+                _seat_hist["note"] = ""
+            _seat_hist["note"] = _seat_hist["note"].fillna("").astype(str).str.strip()
+            _seat_hist["_row_order"] = range(len(_seat_hist))
+            _seat_hist["_slot_norm2"] = _seat_hist["slot"].map(normalize_slot)
+            _seat_hist["_is_seat_link"] = _seat_hist["note"].str.contains(
+                "座席予約連携", na=False
+            )
+
+            _seat_only = _seat_hist[_seat_hist["_is_seat_link"]].copy()
+            if not _seat_only.empty:
+                _latest_map = {}
+                for _, _rr in _seat_only.iterrows():
+                    _key = (
+                        str(_rr.get("student_id", "")).strip(),
+                        normalize_slot(_rr.get("slot", "")),
+                    )
+                    _latest_map[_key] = str(_rr.get("action_norm", "")).strip()
+
+                _stale_cancel_mask = _seat_hist.apply(
+                    lambda _rr: (
+                        bool(_rr.get("_is_seat_link", False))
+                        and str(_rr.get("action_norm", "")).strip() == "キャンセル"
+                        and _latest_map.get(
+                            (
+                                str(_rr.get("student_id", "")).strip(),
+                                normalize_slot(_rr.get("slot", "")),
+                            ),
+                            "キャンセル",
+                        ) != "キャンセル"
+                    ),
+                    axis=1,
+                )
+                if _stale_cancel_mask.any():
+                    ov_day = _seat_hist.loc[~_stale_cancel_mask].copy()
+                    ov_day = ov_day.drop(
+                        columns=[
+                            "_row_order",
+                            "_slot_norm2",
+                            "_is_seat_link",
+                        ],
+                        errors="ignore",
+                    )
+
         cancel_df = ov_day[ov_day["action_norm"] == "キャンセル"].copy()
         if not cancel_df.empty and not plan.empty:
             cancel_keys = set(zip(cancel_df["student_id"].astype(str).str.strip(), cancel_df["slot"].map(normalize_slot)))
@@ -2786,6 +3421,154 @@ def build_daily_plan_for_date(
     if not plan.empty:
         plan["slot"] = plan["slot"].map(normalize_slot)
         plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
+    # d381: 座席予約連携のキャンセルを「完全に消えたように見せず」、
+    # 元予定を取消線表示できる行として日次プランへ戻す。
+    try:
+        _ov_src = schedule_overrides_df.copy() if isinstance(schedule_overrides_df, pd.DataFrame) else pd.DataFrame()
+        if not _ov_src.empty:
+            for _c in ["student_id", "date", "slot", "action", "session_type", "note"]:
+                if _c not in _ov_src.columns:
+                    _ov_src[_c] = ""
+                _ov_src[_c] = _ov_src[_c].fillna("").astype(str).str.strip()
+
+            _target_str = pd.to_datetime(
+                target_date, errors="coerce"
+            )
+            _target_str = (
+                _target_str.strftime("%Y-%m-%d")
+                if pd.notna(_target_str)
+                else str(target_date)
+            )
+
+            _seat_day = _ov_src[
+                _ov_src["date"].eq(_target_str)
+                & _ov_src["note"].str.contains("座席予約連携", na=False)
+            ].copy()
+
+            _cancel_vis = pd.DataFrame(columns=_ov_src.columns)
+            if not _seat_day.empty:
+                _seat_day["_slot_norm"] = _seat_day["slot"].map(normalize_slot)
+                _seat_day["_action_norm"] = _seat_day["action"].map(
+                    normalize_action_value
+                )
+                # 元CSVの行順を保持したまま、同一キーの最後の行だけ採用。
+                _seat_day["_order"] = range(len(_seat_day))
+                _latest_idx = (
+                    _seat_day.groupby(
+                        ["student_id", "_slot_norm"],
+                        sort=False,
+                    )["_order"]
+                    .idxmax()
+                    .tolist()
+                )
+                _latest_rows = _seat_day.loc[_latest_idx].copy()
+                _cancel_vis = _latest_rows[
+                    _latest_rows["_action_norm"].eq("キャンセル")
+                ].copy()
+
+            if not _cancel_vis.empty:
+                _existing = plan.copy() if isinstance(plan, pd.DataFrame) else pd.DataFrame()
+                _rows_to_add = []
+
+                for _, _r in _cancel_vis.iterrows():
+                    _sid = str(_r.get("student_id", "")).strip()
+                    _slot = normalize_slot(_r.get("slot", ""))
+                    _stype = str(_r.get("session_type", "")).strip() or "授業"
+                    _note = str(_r.get("note", "")).strip()
+
+                    _already = False
+                    if not _existing.empty:
+                        _tmp = _existing.copy()
+                        for _c in ["student_id", "slot"]:
+                            if _c not in _tmp.columns:
+                                _tmp[_c] = ""
+                            _tmp[_c] = _tmp[_c].fillna("").astype(str).str.strip()
+                        _already = bool((
+                            _tmp["student_id"].eq(_sid)
+                            & _tmp["slot"].map(normalize_slot).eq(_slot)
+                        ).any())
+
+                    if not _already:
+                        _name = ""
+                        try:
+                            _sdf = students_df.copy()
+                            if "student_id" in _sdf.columns:
+                                _hit = _sdf[_sdf["student_id"].fillna("").astype(str).str.strip().eq(_sid)]
+                                if not _hit.empty:
+                                    for _name_col in ["display_name", "name", "student_name"]:
+                                        if _name_col in _hit.columns:
+                                            _name = str(_hit.iloc[0].get(_name_col, "")).strip()
+                                            if _name:
+                                                break
+                        except Exception:
+                            _name = ""
+
+                        _row = {c: "" for c in _existing.columns} if not _existing.empty else {}
+
+                        # d385:
+                        # 取消線表示用の行に、月カレンダー描画で参照される主要列を
+                        # 明示的に保持する。ここ以外の予定処理ロジックは変更しない。
+                        try:
+                            _date_obj = pd.to_datetime(target_date, errors="coerce")
+                            _date_str = (
+                                _date_obj.strftime("%Y-%m-%d")
+                                if pd.notna(_date_obj)
+                                else str(target_date)
+                            )
+                            _weekday_value = (
+                                str(int(_date_obj.weekday()))
+                                if pd.notna(_date_obj)
+                                else ""
+                            )
+                        except Exception:
+                            _date_str = str(target_date)
+                            _weekday_value = ""
+
+                        _row.update({
+                            "student_id": _sid,
+                            "display_name": _name,
+                            "date": _date_str,
+                            "weekday": _weekday_value,
+                            "slot": _slot,
+                            "session_type": _stype,
+                            "status": "キャンセル",
+                            "action": "キャンセル",
+                            # d386: 月カレンダー既存の通常キャンセル表示へ乗せる。
+                            "override_status": "キャンセル",
+                            "reason": "通常",
+                            "note": _note,
+                            "cancelled": True,
+                            "is_cancelled": True,
+                        })
+
+                        # 既存の列名バリエーションがある場合にも値を合わせる。
+                        if "name" in _row and not _row.get("name"):
+                            _row["name"] = _name
+                        if "student_name" in _row and not _row.get("student_name"):
+                            _row["student_name"] = _name
+                        if "day" in _row and not _row.get("day"):
+                            _row["day"] = _date_str
+
+                        _rows_to_add.append(_row)
+
+                if _rows_to_add:
+                    _add_df = pd.DataFrame(_rows_to_add)
+                    if _existing.empty:
+                        plan = _add_df
+                    else:
+                        for _c in _existing.columns:
+                            if _c not in _add_df.columns:
+                                _add_df[_c] = ""
+                        for _c in _add_df.columns:
+                            if _c not in _existing.columns:
+                                _existing[_c] = ""
+                        plan = pd.concat(
+                            [_existing, _add_df[_existing.columns]],
+                            ignore_index=True
+                        )
+    except Exception:
+        pass
+
 
     return plan
 
@@ -7175,6 +7958,31 @@ if page == "閲覧":
             include_inactive=include_inactive,
         )
 
+        # d388:
+        # 月カレンダーでは履歴確認のため取消線表示を残すが、
+        # 「今日の未完了／昨日以前の未完了」では現在有効な予定だけを対象にする。
+        if isinstance(plan_day, pd.DataFrame) and not plan_day.empty:
+            _cancel_mask_unfinished = pd.Series(False, index=plan_day.index)
+
+            for _c in ["action", "status", "override_status", "reason"]:
+                if _c in plan_day.columns:
+                    _vals = plan_day[_c].fillna("").astype(str).str.strip()
+                    _cancel_mask_unfinished = _cancel_mask_unfinished | _vals.isin(
+                        ["キャンセル", "取消", "取消済み", "キャンセル済み", "削除"]
+                    )
+
+            for _c in ["cancelled", "is_cancelled"]:
+                if _c in plan_day.columns:
+                    _vals = plan_day[_c]
+                    _cancel_mask_unfinished = _cancel_mask_unfinished | _vals.map(
+                        lambda v: (
+                            v is True
+                            or str(v).strip().lower() in ["true", "1", "yes"]
+                        )
+                    ).fillna(False)
+
+            plan_day = plan_day.loc[~_cancel_mask_unfinished].copy()
+
         if plan_day.empty:
             continue
 
@@ -8033,6 +8841,31 @@ if page == "閲覧":
         timeslots,
         include_inactive=include_inactive,
     )
+
+    # d387:
+    # 月カレンダーでは取消線表示のためキャンセル行を残しているが、
+    # 「今日の予定」「出席記録」では現在有効な予定だけを対象にする。
+    if isinstance(today_view, pd.DataFrame) and not today_view.empty:
+        _cancel_mask_today = pd.Series(False, index=today_view.index)
+
+        for _c in ["action", "status", "override_status", "reason"]:
+            if _c in today_view.columns:
+                _vals = today_view[_c].fillna("").astype(str).str.strip()
+                _cancel_mask_today = _cancel_mask_today | _vals.isin(
+                    ["キャンセル", "取消", "取消済み", "キャンセル済み", "削除"]
+                )
+
+        for _c in ["cancelled", "is_cancelled"]:
+            if _c in today_view.columns:
+                _vals = today_view[_c]
+                _cancel_mask_today = _cancel_mask_today | _vals.map(
+                    lambda v: (
+                        v is True
+                        or str(v).strip().lower() in ["true", "1", "yes"]
+                    )
+                ).fillna(False)
+
+        today_view = today_view.loc[~_cancel_mask_today].copy()
 
     if today_view.empty:
         st.info("今日の予定はありません。（月スケジュール / student_schedule.csv / schedule_overrides.csv を確認してね）")
@@ -13789,7 +14622,8 @@ elif page == "管理（入力）":
         "📥 振替インボックス",
         "🤖 Bot匿名CSV",
         "🪑 座席予約同期CSV",
-        "🔁 確定振替CSV取込",
+        "🔁 座席予約受付CSV取込",
+        "🔄 座席予約現在状態CSV",
         "👥 生徒管理",
         "📅 固定スケジュール（週次）",
         "📘 カリキュラム管理",
@@ -14108,11 +14942,69 @@ elif page == "管理（入力）":
     # ---------------------------
     # 🔁 確定振替CSV取込（d375）
     # ---------------------------
-    if admin_section == "🔁 確定振替CSV取込":
-        st.subheader("🔁 座席予約スケジュール：確定振替CSV取り込み")
+    if admin_section == "🔄 座席予約現在状態CSV":
+        st.subheader("🔄 座席予約スケジュールへ返す現在状態CSV")
         st.caption(
-            "座席予約スケジュールv3で確定した振替を、1件の振替として取り込みます。"
-            "反映時は『元予定取消＋振替先追加』をセットで処理します。"
+            "座席予約スケジュールには受付履歴を残したまま、"
+            "カリキュラムツール側で確定している「現在の予定状態」だけを返します。"
+        )
+        st.info(
+            "🔐 出力CSVには氏名・student_idを含めません。"
+            " reservation_idを使って座席予約スケジュールv3.7の受付履歴へ現在状態を紐づけます。"
+        )
+
+        _state_log = load_seat_transfer_import_log()
+        _state_export, _state_preview = build_seat_current_state_sync_df(
+            students_df=students,
+            student_schedule_df=student_schedule,
+            monthly_schedule_df=monthly_schedule,
+            schedule_overrides_df=schedule_overrides,
+            timeslots_df=timeslots,
+            import_log_df=_state_log,
+        )
+
+        if _state_log.empty:
+            st.info("座席予約スケジュールから反映した受付履歴がまだありません。")
+        else:
+            _m1, _m2, _m3 = st.columns(3)
+            _m1.metric("受付履歴", len(_state_export))
+            _m2.metric(
+                "現在有効",
+                int((_state_export["current_status"] == "active").sum())
+                if not _state_export.empty else 0,
+            )
+            _m3.metric(
+                "キャンセル済み",
+                int((_state_export["current_status"] == "cancelled").sum())
+                if not _state_export.empty else 0,
+            )
+
+            if not _state_preview.empty:
+                st.markdown("### 教室PC内の確認用")
+                st.dataframe(
+                    _state_preview,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+            st.download_button(
+                "⬇️ 現在状態CSVを出力",
+                data=_state_export.to_csv(index=False).encode("utf-8-sig"),
+                file_name="reservation_current_state_from_curriculum.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_seat_current_state_sync",
+            )
+            st.caption(
+                "このCSVを座席予約スケジュールv3.7の"
+                "「カリキュラムツールから現在状態を同期」へ取り込みます。"
+            )
+
+    if admin_section == "🔁 座席予約受付CSV取込":
+        st.subheader("🔁 座席予約スケジュール：確定受付CSV取り込み")
+        st.caption(
+            "座席予約スケジュールv3.5で確定した8種類の受付を取り込みます。"
+            "request_typeに応じて、取消・追加・種別変更を自動で分岐します。"
         )
         st.info(
             "🔒 CSV内は匿名IDで受け取り、このPCだけにある bot_student_map_private.csv で実名へ解決します。"
@@ -14123,7 +15015,7 @@ elif page == "管理（入力）":
         )
 
         _transfer_upload = st.file_uploader(
-            "座席予約スケジュールv3の確定予約CSV",
+            "座席予約スケジュールv3.5の確定受付CSV",
             type=["csv"],
             key="seat_transfer_confirmed_csv_upload",
         )
@@ -14200,7 +15092,7 @@ elif page == "管理（入力）":
                         write_csv_atomic(_new_overrides, SCHEDULE_OVERRIDES_CSV)
                         write_csv_atomic(_new_log, SEAT_TRANSFER_IMPORT_LOG_CSV)
                         st.success(
-                            f"✅ {_applied_count}件の振替を反映しました。元予定取消＋振替先追加をセットで保存しました。"
+                            f"✅ {_applied_count}件の受付をrequest_typeに応じて反映しました。"
                         )
                         st.info(
                             "座席予約スケジュール側は、次回の座席同期CSV取り込みで人数を更新してください。"
@@ -14209,7 +15101,7 @@ elif page == "管理（入力）":
                         st.rerun()
                     except Exception as e:
                         st.error(
-                            "振替反映中にエラーが発生したため処理を完了できませんでした："
+                            "受付反映中にエラーが発生したため処理を完了できませんでした："
                             + str(e)
                         )
 
@@ -19659,163 +20551,195 @@ elif page == "管理（入力）":
                         f"{selected_type}"
                     )
                     if is_seat_linked_transfer:
+                        _external_source_icon = (
+                            "📱" if "受付経路:LINE" in selected_note
+                            or "LINE Bot" in selected_note
+                            or "LINEBot" in selected_note
+                            else "😃"
+                        )
+                        st.info(
+                            f"{_external_source_icon} 外部受付から反映された予定です。"
+                            " 現在は連携履歴を守るため、このツールでは内容変更・誤登録訂正は行いません。"
+                            " 変更や入力ミスの訂正は座席予約スケジュール側で行ってください。"
+                            " この画面では内容確認とキャンセルだけできます。"
+                        )
                         if linked_source.get("found"):
-                            st.info(
-                                "座席予約スケジュールから取り込んだ振替です。"
-                                f"元予定は {linked_source.get('source_date', '')} / "
-                                f"{format_slot_label(linked_source.get('source_slot', ''), monthly_slot_label_map)} です。"
-                                " 別の日時へ変更する場合は元予定の取消を保持します。"
-                                " 元予定と同じ日時へ戻した場合は、振替追加と連携で作った取消を解除して元予定へ復帰します。"
-                            )
-                        else:
-                            st.warning(
-                                "座席予約連携の振替ですが、元予定情報を反映ログから確認できません。"
-                                "元予定へ戻す操作は自動判定できないため、別日時への振替先変更だけ行ってください。"
+                            st.caption(
+                                f"元予定：{linked_source.get('source_date', '')} / "
+                                f"{format_slot_label(linked_source.get('source_slot', ''), monthly_slot_label_map)}"
                             )
 
-                    override_dialog_key = (
-                        f"monthly_override_dialog_{target_year}_{target_month}_"
-                        f"{selected_override_idx}"
-                    )
-                    with st.form(override_dialog_key):
-                        override_date = st.date_input(
-                            "振替先の日付" if is_seat_linked_transfer else "日付",
-                            value=selected_date_value,
-                            min_value=month_start,
-                            max_value=month_end,
+                    if is_seat_linked_transfer:
+                        st.markdown("### 受付内容")
+                        st.text_input(
+                            "日付",
+                            value=selected_date_s,
+                            disabled=True,
+                            key=f"external_readonly_date_{target_year}_{target_month}_{selected_override_idx}",
                         )
-                        override_slot_options = list(monthly_slot_options)
-                        if selected_slot not in override_slot_options:
-                            override_slot_options.append(selected_slot)
-                        override_slot = st.selectbox(
-                            "振替先のコマ" if is_seat_linked_transfer else "コマ",
-                            override_slot_options,
-                            index=override_slot_options.index(selected_slot),
-                            format_func=lambda x: format_slot_label(
-                                x, monthly_slot_label_map
-                            ),
+                        st.text_input(
+                            "コマ",
+                            value=format_slot_label(selected_slot, monthly_slot_label_map),
+                            disabled=True,
+                            key=f"external_readonly_slot_{target_year}_{target_month}_{selected_override_idx}",
                         )
-                        if is_seat_linked_transfer:
-                            st.text_input(
-                                "連携メモ（自動管理）",
-                                value=selected_note,
-                                disabled=True,
-                            )
-                            override_type = selected_type
-                            override_note = selected_note
-                        else:
-                            override_type = st.radio(
-                                "変更後の種別",
-                                ["授業", "自習"],
-                                horizontal=True,
-                                index=1 if selected_type == "自習" else 0,
-                            )
-                            override_note = st.text_input(
-                                "メモ", value=selected_note
-                            )
-
-                        override_update = st.form_submit_button(
-                            "🟠 この予定を更新",
-                            type="primary",
-                            use_container_width=True,
+                        st.text_input(
+                            "種別",
+                            value=selected_type,
+                            disabled=True,
+                            key=f"external_readonly_type_{target_year}_{target_month}_{selected_override_idx}",
                         )
-
-                    if override_update:
-                        new_date_s = override_date.isoformat()
-                        new_slot = normalize_slot(override_slot)
-                        new_type = str(override_type).strip() or selected_type
-                        new_note = str(override_note).strip()
-
-                        # 現在の追加/時間変更行を一度外す。
-                        ov_without_current = schedule_overrides.drop(
-                            index=selected_override_idx, errors="ignore"
-                        ).reset_index(drop=True)
-
-                        # d377: 元予定と同じ日時へ戻す場合は、追加を作らず元予定取消を解除する。
-                        is_return_to_source = bool(
-                            is_seat_linked_transfer
-                            and linked_source.get("found")
-                            and new_date_s == str(linked_source.get("source_date", "")).strip()
-                            and new_slot == normalize_slot(linked_source.get("source_slot", ""))
+                        st.text_input(
+                            "連携メモ（自動管理）",
+                            value=selected_note,
+                            disabled=True,
+                            key=f"external_readonly_note_{target_year}_{target_month}_{selected_override_idx}",
                         )
-
-                        if is_return_to_source:
-                            ov2, removed_cancel_count = remove_linked_source_cancel_for_transfer(
-                                ov_without_current,
-                                reservation_id=str(linked_source.get("reservation_id", "")).strip(),
-                                student_id=selected_sid,
-                                source_date=str(linked_source.get("source_date", "")).strip(),
-                                source_slot=normalize_slot(linked_source.get("source_slot", "")),
+                    else:
+                        override_dialog_key = (
+                            f"monthly_override_dialog_{target_year}_{target_month}_"
+                            f"{selected_override_idx}"
+                        )
+                        with st.form(override_dialog_key):
+                            override_date = st.date_input(
+                                "振替先の日付" if is_seat_linked_transfer else "日付",
+                                value=selected_date_value,
+                                min_value=month_start,
+                                max_value=month_end,
                             )
-                            if removed_cancel_count <= 0:
-                                st.error(
-                                    "元予定へ戻すための『座席予約連携 / 元予定取消』が見つかりません。"
-                                    "連携前からの欠席・取消を誤って解除しないため、自動復帰を中止しました。"
+                            override_slot_options = list(monthly_slot_options)
+                            if selected_slot not in override_slot_options:
+                                override_slot_options.append(selected_slot)
+                            override_slot = st.selectbox(
+                                "振替先のコマ" if is_seat_linked_transfer else "コマ",
+                                override_slot_options,
+                                index=override_slot_options.index(selected_slot),
+                                format_func=lambda x: format_slot_label(
+                                    x, monthly_slot_label_map
+                                ),
+                            )
+                            if is_seat_linked_transfer:
+                                st.text_input(
+                                    "連携メモ（自動管理）",
+                                    value=selected_note,
+                                    disabled=True,
                                 )
+                                override_type = selected_type
+                                override_note = selected_note
                             else:
-                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                seat2 = remove_seat_assignment_for_plan(
-                                    seat_assignments, d=selected_date_value, student_id=selected_sid, slot=selected_slot
+                                override_type = st.radio(
+                                    "変更後の種別",
+                                    ["授業", "自習"],
+                                    horizontal=True,
+                                    index=1 if selected_type == "自習" else 0,
                                 )
-                                write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
-                                st.session_state.pop(
-                                    f"monthly_calendar_override_target_{target_year}_{target_month}", None
+                                override_note = st.text_input(
+                                    "メモ", value=selected_note
                                 )
-                                st.session_state.pop(
-                                    f"monthly_sidebar_update_target_{target_year}_{target_month}", None
-                                )
-                                st.success(
-                                    "振替を元予定へ戻しました。旧振替先を削除し、"
-                                    "座席予約連携で作った元予定の取消も解除しました。"
-                                )
-                                st.rerun()
-                        else:
-                            dest_plan = build_daily_plan_for_date(
-                                new_date_s, students, student_schedule, monthly_schedule,
-                                ov_without_current, timeslots, include_inactive=True,
-                            )
-                            duplicate_dest = False
-                            if dest_plan is not None and not dest_plan.empty:
-                                _dp = dest_plan.copy()
-                                for _c in ["student_id", "slot"]:
-                                    if _c not in _dp.columns:
-                                        _dp[_c] = ""
-                                    _dp[_c] = _dp[_c].fillna("").astype(str).str.strip()
-                                duplicate_dest = bool((
-                                    _dp["student_id"].eq(selected_sid)
-                                    & _dp["slot"].map(normalize_slot).eq(new_slot)
-                                ).any())
 
-                            if duplicate_dest:
-                                st.error(
-                                    "変更先には同じ生徒の予定が既にあります。"
-                                    "別の日付またはコマを選んでください。"
+                            override_update = st.form_submit_button(
+                                "🟠 この予定を更新",
+                                type="primary",
+                                use_container_width=True,
+                            )
+
+                        if override_update:
+                            new_date_s = override_date.isoformat()
+                            new_slot = normalize_slot(override_slot)
+                            new_type = str(override_type).strip() or selected_type
+                            new_note = str(override_note).strip()
+
+                            # 現在の追加/時間変更行を一度外す。
+                            ov_without_current = schedule_overrides.drop(
+                                index=selected_override_idx, errors="ignore"
+                            ).reset_index(drop=True)
+
+                            # d377: 元予定と同じ日時へ戻す場合は、追加を作らず元予定取消を解除する。
+                            is_return_to_source = bool(
+                                is_seat_linked_transfer
+                                and linked_source.get("found")
+                                and new_date_s == str(linked_source.get("source_date", "")).strip()
+                                and new_slot == normalize_slot(linked_source.get("source_slot", ""))
+                            )
+
+                            if is_return_to_source:
+                                ov2, removed_cancel_count = remove_linked_source_cancel_for_transfer(
+                                    ov_without_current,
+                                    reservation_id=str(linked_source.get("reservation_id", "")).strip(),
+                                    student_id=selected_sid,
+                                    source_date=str(linked_source.get("source_date", "")).strip(),
+                                    source_slot=normalize_slot(linked_source.get("source_slot", "")),
                                 )
-                            else:
-                                ov2 = upsert_schedule_override_row(
-                                    ov_without_current, student_id=selected_sid, d=new_date_s, slot=new_slot,
-                                    action=selected_action, session_type=new_type, note=new_note,
-                                )
-                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                if selected_date_s != new_date_s or normalize_slot(selected_slot) != new_slot:
+                                if removed_cancel_count <= 0:
+                                    st.error(
+                                        "元予定へ戻すための『座席予約連携 / 元予定取消』が見つかりません。"
+                                        "連携前からの欠席・取消を誤って解除しないため、自動復帰を中止しました。"
+                                    )
+                                else:
+                                    write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
                                     seat2 = remove_seat_assignment_for_plan(
                                         seat_assignments, d=selected_date_value, student_id=selected_sid, slot=selected_slot
                                     )
                                     write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
-                                st.session_state.pop(
-                                    f"monthly_calendar_override_target_{target_year}_{target_month}", None
+                                    st.session_state.pop(
+                                        f"monthly_calendar_override_target_{target_year}_{target_month}", None
+                                    )
+                                    st.session_state.pop(
+                                        f"monthly_sidebar_update_target_{target_year}_{target_month}", None
+                                    )
+                                    st.success(
+                                        "振替を元予定へ戻しました。旧振替先を削除し、"
+                                        "座席予約連携で作った元予定の取消も解除しました。"
+                                    )
+                                    st.rerun()
+                            else:
+                                dest_plan = build_daily_plan_for_date(
+                                    new_date_s, students, student_schedule, monthly_schedule,
+                                    ov_without_current, timeslots, include_inactive=True,
                                 )
-                                st.success("予定を更新しました。")
-                                st.rerun()
+                                duplicate_dest = False
+                                if dest_plan is not None and not dest_plan.empty:
+                                    _dp = dest_plan.copy()
+                                    for _c in ["student_id", "slot"]:
+                                        if _c not in _dp.columns:
+                                            _dp[_c] = ""
+                                        _dp[_c] = _dp[_c].fillna("").astype(str).str.strip()
+                                    duplicate_dest = bool((
+                                        _dp["student_id"].eq(selected_sid)
+                                        & _dp["slot"].map(normalize_slot).eq(new_slot)
+                                    ).any())
+
+                                if duplicate_dest:
+                                    st.error(
+                                        "変更先には同じ生徒の予定が既にあります。"
+                                        "別の日付またはコマを選んでください。"
+                                    )
+                                else:
+                                    ov2 = upsert_schedule_override_row(
+                                        ov_without_current, student_id=selected_sid, d=new_date_s, slot=new_slot,
+                                        action=selected_action, session_type=new_type, note=new_note,
+                                    )
+                                    write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                                    if selected_date_s != new_date_s or normalize_slot(selected_slot) != new_slot:
+                                        seat2 = remove_seat_assignment_for_plan(
+                                            seat_assignments, d=selected_date_value, student_id=selected_sid, slot=selected_slot
+                                        )
+                                        write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
+                                    st.session_state.pop(
+                                        f"monthly_calendar_override_target_{target_year}_{target_month}", None
+                                    )
+                                    st.success("予定を更新しました。")
+                                    st.rerun()
 
                     st.divider()
-                    st.markdown("### 取消")
+                    st.markdown("### 予定をキャンセル")
                     if is_seat_linked_transfer:
                         st.caption(
-                            "振替先を取消します。元予定の取消は解除しません。"
+                            "この外部受付由来の現在予定をキャンセルします。"
+                            " 入力ミスの訂正や日時・種別の変更は受付元で行います。"
                         )
                     if st.button(
-                        "↩ この予定を取消",
+                        "↩ 予定をキャンセル",
                         key=(
                             f"monthly_override_cancel_{target_year}_{target_month}_"
                             f"{selected_override_idx}"
@@ -19847,17 +20771,18 @@ elif page == "管理（入力）":
                     if not is_seat_linked_transfer:
                         st.divider()
                         st.caption(
-                            "通常の例外追加だけ、登録ミスとして完全削除できます。"
+                            "通常の例外追加で入力を間違えた場合だけ「誤登録を訂正」できます。"
+                            " 訂正するとカレンダーから消えますが、訂正履歴は残ります。"
                         )
                         confirm_override_delete = st.checkbox(
-                            "この例外予定を完全削除することを確認しました",
+                            "これはキャンセルではなく、入力ミスの訂正です",
                             key=(
                                 f"monthly_override_delete_confirm_{target_year}_"
                                 f"{target_month}_{selected_override_idx}"
                             ),
                         )
                         if st.button(
-                            "🗑 完全削除",
+                            "🧹 誤登録を訂正",
                             key=(
                                 f"monthly_override_delete_{target_year}_{target_month}_"
                                 f"{selected_override_idx}"
@@ -19865,6 +20790,26 @@ elif page == "管理（入力）":
                             disabled=not confirm_override_delete,
                             use_container_width=True,
                         ):
+                            _correction_row = (
+                                schedule_overrides.loc[selected_override_idx]
+                                if selected_override_idx in schedule_overrides.index
+                                else {}
+                            )
+                            append_schedule_correction_log({
+                                "source": "💻 ツール・例外予定",
+                                "student_id": selected_sid,
+                                "date": selected_date_value,
+                                "slot": selected_slot,
+                                "session_type": (
+                                    str(_correction_row.get("session_type", "")).strip()
+                                    if hasattr(_correction_row, "get") else ""
+                                ),
+                                "reason": "例外予定の誤登録",
+                                "note": (
+                                    str(_correction_row.get("note", "")).strip()
+                                    if hasattr(_correction_row, "get") else ""
+                                ),
+                            })
                             ov2 = schedule_overrides.drop(
                                 index=selected_override_idx, errors="ignore"
                             ).reset_index(drop=True)
@@ -20207,7 +21152,7 @@ elif page == "管理（入力）":
                         st.rerun()
 
                 st.divider()
-                st.markdown("### 取消・削除")
+                st.markdown("### キャンセル・誤登録の訂正")
                 st.caption(
                     "対象："
                     f"{selected_date_s}｜"
@@ -20216,14 +21161,14 @@ elif page == "管理（入力）":
                     f"{format_monthly_reason_label(selected_reason)}"
                 )
                 st.info(
-                    "取消＝記録を残して予定を無効化します。"
-                    "完全削除＝登録ミスなどの予定を編集一覧から消します。"
+                    "予定をキャンセル＝実際にあった予定を取りやめ、取消線を残します。"
+                    "誤登録を訂正＝入力ミスだった予定をカレンダーから消しますが、訂正履歴は残します。"
                 )
                 dialog_cancel_col, dialog_delete_col = st.columns(2)
 
                 with dialog_cancel_col:
                     if st.button(
-                        "↩ 取消線のみ",
+                        "↩ 予定をキャンセル",
                         key=f"monthly_dialog_cancel_{selected_idx}",
                         use_container_width=True,
                     ):
@@ -20233,7 +21178,7 @@ elif page == "管理（入力）":
                             d=selected_date_value,
                             slot=selected_slot,
                             action="キャンセル",
-                            note="月予定ポップアップ：取消線のみ",
+                            note="月予定ポップアップ：予定をキャンセル",
                         )
                         write_csv_atomic(
                             ov2,
@@ -20253,11 +21198,11 @@ elif page == "管理（入力）":
 
                 with dialog_delete_col:
                     confirm_dialog_delete = st.checkbox(
-                        "この予定を完全削除することを確認しました",
+                        "これはキャンセルではなく、入力ミスの訂正です",
                         key=f"monthly_dialog_delete_confirm_{selected_idx}",
                     )
                     if st.button(
-                        "🗑 完全削除",
+                        "🧹 誤登録を訂正",
                         key=f"monthly_dialog_delete_{selected_idx}",
                         disabled=not confirm_dialog_delete,
                         use_container_width=True,
@@ -20281,6 +21226,11 @@ elif page == "管理（入力）":
                             "student_id": selected_sid,
                             "date": str(selected_date_value),
                             "slot": selected_slot,
+                            "session_type": selected_type,
+                            "reason": selected_reason,
+                            "note": selected_note,
+                            "source": "💻 ツール・月予定",
+                            "correction_operation": "誤登録を訂正",
                         })
                         st.session_state[
                             monthly_pending_override_cleanup_key
@@ -20503,8 +21453,8 @@ elif page == "管理（入力）":
                     else:
                         st.caption("今月に今日なし")
 
-                st.caption("予定の確認・取消・解除・削除は、基本的にこのカレンダーから行います。")
-                st.info("操作の意味：取消＝キャンセル記録を残します（取消線がつき、解除で戻せます） / 削除＝登録ミス・月回数調整用に予定を完全削除します（解除では戻せません） / 解除＝取消線を戻して予定を復活させます。")
+                st.caption("予定の確認・変更・キャンセル・誤登録の訂正は、基本的にこのカレンダーから行います。")
+                st.info("操作の意味：予定をキャンセル＝実際にあった予定を取りやめ、取消線を残します / 誤登録を訂正＝入力ミスの予定をカレンダーから消しますが訂正履歴は残します / 解除＝キャンセルを取り消して予定を復活させます / 変更・振替＝日時や種別を変更します。")
                 st.caption("回数区分は、通常・今月振替・前月振替・回数外・確認必要を基本にします。細かい事情はメモで補足します。")
 
                 # =====================================================
@@ -21538,6 +22488,26 @@ elif page == "管理（入力）":
                                             typ = str(rr.get("session_type", "")).strip() or "授業"
                                             reason = str(rr.get("reason", "")).strip() or "通常"
                                             override_status = str(rr.get("override_status", "")).strip()
+                                            _origin_note = str(rr.get("note", "")).strip()
+
+                                            # d386: 状態の見た目は統一し、受付経路だけ絵文字で補足する。
+                                            # 💻 ツール内操作 / 😃 口頭受付 / 📱 LINE Bot
+                                            origin_icon = ""
+                                            if override_status in ["キャンセル", "追加", "変更"]:
+                                                if "座席予約連携" in _origin_note:
+                                                    _origin_note_lower = _origin_note.lower()
+                                                    if (
+                                                        "受付経路:line" in _origin_note_lower
+                                                        or "line bot" in _origin_note_lower
+                                                        or "linebot" in _origin_note_lower
+                                                    ):
+                                                        origin_icon = "📱"
+                                                    else:
+                                                        # 既存の座席予約連携データは現時点では口頭受付由来。
+                                                        origin_icon = "😃"
+                                                else:
+                                                    origin_icon = "💻"
+
                                             attendance_locked = (
                                                 override_status != "キャンセル"
                                                 and is_attendance_locked_plan(monthly_attended_keys, sid, day_date)
@@ -21642,12 +22612,13 @@ elif page == "管理（入力）":
                                             # コマ固定レーンは使わず、予定は上から順に詰めて表示する。
                                             # 生徒名だけ最大3行分の高さを確保し、できるだけフルネームが見えるようにする。
                                             item_html = (
-                                                f'<div title="{slot}コマ｜{name}｜{typ}{reason_part}" '
+                                                f'<div title="{origin_icon} {slot}コマ｜{name}｜{typ}{reason_part}" '
                                                 f'style="background:{item_bg};{highlight_style}'
                                                 f'border-radius:6px;padding:4px 6px;margin:4px 0 2px 0;'
                                                 f'height:72px;box-sizing:border-box;'
                                                 f'opacity:{opacity};{text_style}">'
                                                 f'<div style="display:flex;align-items:flex-start;min-width:0;">'
+                                                f'<span style="flex:0 0 auto;margin-right:2px;">{origin_icon}</span>'
                                                 f'<span style="flex:0 0 auto;margin-right:2px;">{item_icon}</span>'
                                                 f'{slot_badge_html}'
                                                 f'<span style="'
@@ -21912,8 +22883,12 @@ elif page == "管理（入力）":
             )
             save_monthly_batch = False
             discard_monthly_batch = False
+            open_monthly_add_from_fixed = False
 
-            if monthly_has_unsaved:
+            # d392: 編集画面では「新しい予定」も固定バーへ配置。
+            # カレンダー下部を確認している途中でも、上へ戻らず追加できる。
+            # 未保存変更がある場合は、同じ固定バーに保存・破棄も並べる。
+            if monthly_view_mode == "📅 編集" or monthly_has_unsaved:
                 st.markdown(
                     """
                     <style>
@@ -21939,32 +22914,82 @@ elif page == "管理（入力）":
                 with st.container(
                     key="monthly_fixed_save_bar"
                 ):
-                    fixed_status_col, fixed_save_col, fixed_discard_col = (
-                        st.columns([2.2, 1.4, 1.0])
-                    )
-                    with fixed_status_col:
-                        st.markdown(
-                            "**🟡 月スケジュールに未保存の変更があります**"
+                    if monthly_view_mode == "📅 編集":
+                        if monthly_has_unsaved:
+                            (
+                                fixed_status_col,
+                                fixed_add_col,
+                                fixed_save_col,
+                                fixed_discard_col,
+                            ) = st.columns([2.0, 1.2, 1.35, 0.95])
+                        else:
+                            fixed_status_col, fixed_add_col = st.columns([3.4, 1.4])
+
+                        with fixed_status_col:
+                            if monthly_has_unsaved:
+                                st.markdown(
+                                    "**🟡 月スケジュールに未保存の変更があります**"
+                                )
+                            else:
+                                st.markdown(
+                                    "**📅 月スケジュール編集中**"
+                                )
+
+                        with fixed_add_col:
+                            open_monthly_add_from_fixed = st.button(
+                                "➕ 新しい予定",
+                                type=("secondary" if monthly_has_unsaved else "primary"),
+                                use_container_width=True,
+                                key=(
+                                    f"monthly_open_add_dialog_fixed_"
+                                    f"{target_year}_{target_month}"
+                                ),
+                            )
+
+                        if monthly_has_unsaved:
+                            with fixed_save_col:
+                                save_monthly_batch = st.button(
+                                    "💾 今すぐ保存",
+                                    type="primary",
+                                    use_container_width=True,
+                                    key="save_monthly_schedule_batch",
+                                )
+                            with fixed_discard_col:
+                                discard_monthly_batch = st.button(
+                                    "↩ 破棄",
+                                    use_container_width=True,
+                                    key="discard_monthly_schedule_batch",
+                                )
+                    else:
+                        fixed_status_col, fixed_save_col, fixed_discard_col = (
+                            st.columns([2.2, 1.4, 1.0])
                         )
-                    with fixed_save_col:
-                        save_monthly_batch = st.button(
-                            "💾 今すぐ保存",
-                            type="primary",
-                            use_container_width=True,
-                            key="save_monthly_schedule_batch",
-                        )
-                    with fixed_discard_col:
-                        discard_monthly_batch = st.button(
-                            "↩ 破棄",
-                            use_container_width=True,
-                            key="discard_monthly_schedule_batch",
-                        )
+                        with fixed_status_col:
+                            st.markdown(
+                                "**🟡 月スケジュールに未保存の変更があります**"
+                            )
+                        with fixed_save_col:
+                            save_monthly_batch = st.button(
+                                "💾 今すぐ保存",
+                                type="primary",
+                                use_container_width=True,
+                                key="save_monthly_schedule_batch",
+                            )
+                        with fixed_discard_col:
+                            discard_monthly_batch = st.button(
+                                "↩ 破棄",
+                                use_container_width=True,
+                                key="discard_monthly_schedule_batch",
+                            )
 
                 # 固定バーで最下部が隠れないための余白
                 st.markdown(
                     "<div style='height:110px;'></div>",
                     unsafe_allow_html=True,
                 )
+
+            if open_monthly_add_from_fixed:
+                _open_monthly_add_dialog()
 
             if save_monthly_batch:
                 current_signature = _monthly_schedule_file_signature()
@@ -22012,6 +23037,14 @@ elif page == "管理（入力）":
                             overrides_to_save,
                             SCHEDULE_OVERRIDES_CSV,
                         )
+
+                        _correction_items = [
+                            item for item in pending_cleanup
+                            if str(item.get("correction_operation", "")).strip()
+                            == "誤登録を訂正"
+                        ]
+                        if _correction_items:
+                            append_schedule_correction_log(_correction_items)
 
                     for key in [
                         monthly_edit_key,
