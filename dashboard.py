@@ -1,3 +1,22 @@
+# d400:
+# - 出欠登録の「回数」を「授業実績回数」に統一（自習は含めない）。
+# - 授業＋授業=2、授業＋自習/自習＋授業=1、自習のみ=0。
+# - 月スケジュールの回数確認に「授業実績回数」を追加し、予定と実績を一覧比較できるようにする。
+
+# d399: 最終確認にサブ課題・タイピングチェックを追加
+# 1) 今日の予定生徒について、出欠未登録／進捗未登録を一番上の確認エリアで集計。
+# 2) 未入力が0件なら「今日のタスクはすべて入力済みです」を明示。
+# 3) 未入力がある場合は件数（出欠／要対応）を表示し、長いスクロール確認を減らす。
+# 4) d396の完了日修正・入力日時・修正履歴、およびd395までのUI改善は維持。
+
+# d396: 課題完了日は通常自動入力のまま、必要時だけ修正できるようにし、入力日時と修正履歴を保持
+# 1) 同一生徒に授業と自習がある場合、自習行が後でも授業カリキュラム表示を上書きしない。
+# 2) 本日の検定は従来どおり最優先。自習のみの生徒は自習表示を維持。
+# 1) 「次に見る候補」で算出した今日やる候補を、生徒ごとの出席登録カードにも再表示。
+# 2) 準備完了ボタンの近くで通常課題・検定・自習を確認でき、長い上下スクロールを減らす。
+# 3) 出席登録の同じカード内に、今日の各コマの座席番号も表示して準備時の画面往復を減らす。
+# 3) サブ課題候補も同じカード内に補助表示。次に見る候補の既存機能はそのまま維持。
+
 # d390: 受付経路に応じて月カレンダー編集UIを整理
 # 1) 😃口頭受付／📱LINEなど座席予約連携由来の予定は、ツール側では更新・誤登録訂正を表示しない。
 # 2) 外部受付由来の予定は「内容確認＋予定をキャンセル」だけに限定。
@@ -1656,6 +1675,13 @@ MONTHLY_SCHEDULE_CSV = DATA_DIR / "monthly_schedule.csv"
 CURRICULUM_COURSES_CSV = DATA_DIR / "curriculum_courses.csv"
 CURRICULUM_TASKS_CSV = DATA_DIR / "curriculum_tasks.csv"
 CURRICULUM_PROGRESS_CSV = DATA_DIR / "curriculum_progress.csv"
+# d396: 課題完了日の訂正履歴。通常保存は従来どおり今日の日付を自動入力し、
+# 必要な時だけ完了日を修正できる。実際の入力日時は curriculum_progress.csv の recorded_at に保持。
+PROGRESS_DATE_CORRECTION_LOG_CSV = DATA_DIR / "progress_date_correction_log.csv"
+PROGRESS_DATE_CORRECTION_LOG_COLS = [
+    "corrected_at", "student_id", "course_id", "task_id",
+    "old_done_date", "new_done_date", "reason",
+]
 
 KENTEI_TASKS_CSV = DATA_DIR / "kentei_tasks.csv"
 KENTEI_PROGRESS_CSV = DATA_DIR / "kentei_progress.csv"
@@ -5338,6 +5364,11 @@ curr_prog = safe_read_csv(
     ["student_id", "course_id", "task_id", "is_done", "is_skip", "done_date", "note"],
     stop_on_missing=False,
 )
+# d396: 既存CSVとの互換性を保ちながら、完了を実際に入力した日時を別で保持する。
+if "recorded_at" not in curr_prog.columns:
+    curr_prog["recorded_at"] = ""
+else:
+    curr_prog["recorded_at"] = curr_prog["recorded_at"].fillna("").astype(str).str.strip()
 
 
 kentei_prog = safe_read_csv(
@@ -5355,6 +5386,31 @@ if "done_date" in curr_prog.columns:
 if "done_date" in kentei_prog.columns:
     kentei_prog["done_date"] = pd.to_datetime(kentei_prog["done_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     kentei_prog["done_date"] = kentei_prog["done_date"].fillna("")
+
+
+def append_progress_date_correction_log(student_id: str, course_id: str, task_id: str, old_date: str, new_date: str, reason: str = "") -> None:
+    """d396: 完了日の手動修正履歴を追記する。通常の完了保存では呼ばない。"""
+    row = {
+        "corrected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "student_id": str(student_id).strip(),
+        "course_id": str(course_id).strip(),
+        "task_id": str(task_id).strip(),
+        "old_done_date": str(old_date).strip(),
+        "new_done_date": str(new_date).strip(),
+        "reason": str(reason).strip(),
+    }
+    if PROGRESS_DATE_CORRECTION_LOG_CSV.exists():
+        try:
+            df = pd.read_csv(PROGRESS_DATE_CORRECTION_LOG_CSV, dtype=str).fillna("")
+        except Exception:
+            df = pd.DataFrame(columns=PROGRESS_DATE_CORRECTION_LOG_COLS)
+    else:
+        df = pd.DataFrame(columns=PROGRESS_DATE_CORRECTION_LOG_COLS)
+    for c in PROGRESS_DATE_CORRECTION_LOG_COLS:
+        if c not in df.columns:
+            df[c] = ""
+    df = pd.concat([df[PROGRESS_DATE_CORRECTION_LOG_COLS], pd.DataFrame([row])], ignore_index=True)
+    write_csv_atomic(df, PROGRESS_DATE_CORRECTION_LOG_CSV)
 
 kentei_tasks = safe_read_csv(
     KENTEI_TASKS_CSV,
@@ -7621,6 +7677,198 @@ if page == "閲覧":
     current_per_student = build_current_per_student(log_all)
 
     # =========================================================
+    # d398: 今日の入力状況（最終確認）
+    # ログイン直後に確認できるよう、検定予定より前へ表示する。
+    # 普段の success / warning と区別しやすいよう紫系の確認パネルに統一。
+    # =========================================================
+    _summary_today = dt.date.today()
+    _summary_plan = build_daily_plan_for_date(
+        _summary_today,
+        students,
+        student_schedule,
+        monthly_schedule,
+        schedule_overrides,
+        timeslots,
+        include_inactive=include_inactive,
+    )
+
+    if isinstance(_summary_plan, pd.DataFrame) and not _summary_plan.empty:
+        _summary_cancel_mask = pd.Series(False, index=_summary_plan.index)
+        for _c in ["action", "status", "override_status", "reason"]:
+            if _c in _summary_plan.columns:
+                _vals = _summary_plan[_c].fillna("").astype(str).str.strip()
+                _summary_cancel_mask = _summary_cancel_mask | _vals.isin(
+                    ["キャンセル", "取消", "取消済み", "キャンセル済み", "削除"]
+                )
+        for _c in ["cancelled", "is_cancelled"]:
+            if _c in _summary_plan.columns:
+                _vals = _summary_plan[_c]
+                _summary_cancel_mask = _summary_cancel_mask | _vals.map(
+                    lambda v: (
+                        v is True
+                        or str(v).strip().lower() in ["true", "1", "yes"]
+                    )
+                ).fillna(False)
+        _summary_plan = _summary_plan.loc[~_summary_cancel_mask].copy()
+
+    _summary_att_df = load_attendance_log().copy()
+    _summary_skip_df = load_progress_skip_ok().copy()
+    _summary_curr_done = curr_prog[curr_prog.apply(is_progress_task_completed, axis=1)].copy()
+    _summary_kentei_done = kentei_prog[kentei_prog.apply(is_progress_task_completed, axis=1)].copy()
+
+    # d399: 最終確認にサブ課題・タイピングチェックも含める。
+    # サブ課題は、今日の出席登録から日別確認行を同期してから判定する。
+    try:
+        sync_sub_daily_pending_for_date(_summary_att_df, _summary_today)
+    except Exception:
+        pass
+
+    _summary_sub_df = load_sub_daily_check().copy()
+    _summary_typing_df = load_typing_log().copy()
+
+    def _summary_attendance_kind(student_id: str) -> str:
+        if _summary_att_df is None or _summary_att_df.empty:
+            return ""
+        sid = str(student_id).strip()
+        ds = str(_summary_today)
+        _tmp = _summary_att_df.copy()
+        _tmp["student_id"] = _tmp["student_id"].astype(str).fillna("").str.strip()
+        _tmp["date"] = _tmp["date"].astype(str).fillna("").str.strip()
+        if "kind" not in _tmp.columns:
+            return ""
+        _tmp["kind"] = _tmp["kind"].astype(str).fillna("").str.strip().str.lower()
+        _hit = _tmp[(_tmp["student_id"] == sid) & (_tmp["date"] == ds)]
+        if _hit.empty:
+            return ""
+        return str(_hit.iloc[-1]["kind"]).strip().lower()
+
+    _summary_rows = []
+    if isinstance(_summary_plan, pd.DataFrame) and not _summary_plan.empty:
+        for _sid in (
+            _summary_plan.get("student_id", pd.Series(dtype=str))
+            .fillna("").astype(str).str.strip()
+        ):
+            if not _sid:
+                continue
+            _att_done = is_attendance_done_today(_summary_att_df, _sid, _summary_today)
+            _kind = _summary_attendance_kind(_sid)
+            if _kind in ["self", "selfstudy", "自習", "absence", "欠席", "cancel", "キャンセル"]:
+                _prog_done = True
+            else:
+                _prog_done = bool(
+                    is_progress_done_today(_summary_curr_done, _sid, _summary_today)
+                    or is_progress_done_today(_summary_kentei_done, _sid, _summary_today)
+                    or is_progress_skip_ok_today(_summary_skip_df, _sid, _summary_today)
+                )
+            _summary_rows.append({
+                "student_id": _sid,
+                "出欠完了": bool(_att_done),
+                "進捗完了": bool(_prog_done),
+            })
+
+    _summary_status_df = pd.DataFrame(_summary_rows)
+    if not _summary_status_df.empty:
+        _summary_status_df = _summary_status_df.drop_duplicates(
+            subset=["student_id"], keep="last"
+        )
+        _summary_att_pending = int((~_summary_status_df["出欠完了"]).sum())
+        _summary_prog_pending = int((
+            _summary_status_df["出欠完了"]
+            & ~_summary_status_df["進捗完了"]
+        ).sum())
+    else:
+        _summary_att_pending = 0
+        _summary_prog_pending = 0
+
+    # d399: サブ課題の日別確認 pending を集計。
+    _summary_sub_today_pending = 0
+    _summary_sub_overdue_pending = 0
+    if isinstance(_summary_sub_df, pd.DataFrame) and not _summary_sub_df.empty:
+        _sub = _summary_sub_df.copy()
+        for _c in SUB_DAILY_CHECK_COLS:
+            if _c not in _sub.columns:
+                _sub[_c] = ""
+            _sub[_c] = _sub[_c].fillna("").astype(str).str.strip()
+        _sub_pending = _sub[_sub["status"].str.lower().eq("pending")].copy()
+        if not _sub_pending.empty:
+            _summary_sub_today_pending = int(
+                _sub_pending["date"].eq(str(_summary_today)).sum()
+            )
+            _summary_sub_overdue_pending = int(
+                (_sub_pending["date"] < str(_summary_today)).sum()
+            )
+
+    # d399: タイピングは「出席済みなのに done/skip がない」生徒を未入力とする。
+    _summary_typing_today_pending = 0
+    _summary_typing_yesterday_pending = 0
+    if isinstance(_summary_att_df, pd.DataFrame) and not _summary_att_df.empty:
+        _att = _summary_att_df.copy()
+        for _c in ["date", "student_id", "kind"]:
+            if _c not in _att.columns:
+                _att[_c] = ""
+            _att[_c] = _att[_c].fillna("").astype(str).str.strip()
+        _att["kind_norm"] = _att["kind"].map(normalize_attendance_kind_for_lock)
+
+        def _typing_pending_count_for_date(_d) -> int:
+            _ds = str(_d)
+            _ids = (
+                _att[
+                    _att["date"].eq(_ds)
+                    & _att["kind_norm"].isin(["lesson", "selfstudy"])
+                ]["student_id"]
+                .astype(str).str.strip()
+                .drop_duplicates().tolist()
+            )
+            _count = 0
+            for _sid in _ids:
+                _rec = get_typing_today(_summary_typing_df, _sid, _d)
+                _status = str((_rec or {}).get("status", "")).strip().lower()
+                if _status not in ["done", "skip"]:
+                    _count += 1
+            return _count
+
+        _summary_typing_today_pending = _typing_pending_count_for_date(_summary_today)
+        _summary_typing_yesterday_pending = _typing_pending_count_for_date(
+            _summary_today - dt.timedelta(days=1)
+        )
+
+    _summary_unfinished = (
+        _summary_att_pending
+        + _summary_prog_pending
+        + _summary_sub_today_pending
+        + _summary_typing_today_pending
+    )
+    _summary_carryover = (
+        _summary_sub_overdue_pending
+        + _summary_typing_yesterday_pending
+    )
+
+    if _summary_unfinished == 0 and _summary_carryover == 0:
+        _summary_message = "✅ 今日のタスクはすべて入力済みです"
+    elif _summary_unfinished == 0:
+        _summary_message = (
+            f"✅ 今日の入力は完了しています。"
+            f" ただし前日以前の確認漏れが {_summary_carryover}件あります "
+            f"（サブ {_summary_sub_overdue_pending} / タイピング {_summary_typing_yesterday_pending}）"
+        )
+    else:
+        _summary_message = (
+            f"⚠ 今日の未入力タスクが {_summary_unfinished}件あります "
+            f"（出欠 {_summary_att_pending} / 進捗 {_summary_prog_pending} / "
+            f"サブ {_summary_sub_today_pending} / タイピング {_summary_typing_today_pending}）"
+        )
+        if _summary_carryover > 0:
+            _summary_message += (
+                f"　前日以前の確認漏れ {_summary_carryover}件"
+                f"（サブ {_summary_sub_overdue_pending} / タイピング {_summary_typing_yesterday_pending}）"
+            )
+
+    st.markdown(
+        f'        <div style="\n            background: linear-gradient(90deg, #f1e8ff 0%, #eadcff 100%);\n            border: 2px solid #8b5cf6;\n            border-radius: 14px;\n            padding: 16px 20px;\n            margin: 4px 0 18px 0;\n            color: #3b1d70;\n        ">\n          <div style="font-size:1.12rem; font-weight:800; margin-bottom:5px;">🟣 最終確認｜今日の入力状況</div>\n          <div style="font-size:1.02rem; font-weight:650;">{_summary_message}</div>\n        </div>',
+        unsafe_allow_html=True,
+    )
+
+    # =========================================================
     # Upcoming exams (top)
     # =========================================================
     st.subheader("📌 検定予定（直近）")
@@ -9119,6 +9367,11 @@ if page == "閲覧":
             # 同じ生徒が複数コマにいる場合も、サブ課題の状態・操作は1回だけ表示する。
             _sub_progress_button_rendered = set()
 
+            # d393: 出席登録カードでも同じ「今日やる予定」を見られるよう、
+            # 次に見る候補で算出した表示文を生徒IDごとに共有する。
+            _today_task_hint_map = {}
+            _today_sub_hint_map = {}
+
             for i, (_, r) in enumerate(next_candidates.iterrows(), start=1):
                 name = str(r.get("display_name", "")).strip()
                 sid = str(r.get("student_id", "")).strip()
@@ -9500,20 +9753,59 @@ if page == "閲覧":
                     "自習", "🟦 自習", "self", "selfstudy", "self-study", "自"
                 ]
 
-                # d286:
+                # d286 / d393:
                 # 今日が検定日の生徒は、通常カリキュラムや検定練習課題よりも
-                # 「本日の検定」を最優先で表示する。
+                # 「本日の検定」を最優先。表示文は出席登録カードでも再利用する。
+                _today_hint_text = ""
                 if sid in today_exam_ids:
                     if _today_exam_grade:
-                        st.caption(f"今日やる候補：🎫 検定（{_today_exam_grade}級）")
+                        _today_hint_text = f"🎫 検定（{_today_exam_grade}級）"
                     else:
-                        st.caption("今日やる候補：🎫 検定")
+                        _today_hint_text = "🎫 検定"
                 elif _candidate_is_selfstudy:
-                    st.caption("今日やる候補：自習（通常課題の準備対象外）")
+                    _today_hint_text = "自習（通常課題の準備対象外）"
                 else:
                     task_hint = _today_task_hint(sid)
                     if task_hint:
-                        st.caption(f"今日やる候補：{task_hint}")
+                        _today_hint_text = task_hint
+
+                if _today_hint_text:
+                    st.caption(f"今日やる候補：{_today_hint_text}")
+
+                    # d394:
+                    # 同じ生徒に「授業＋自習」がある場合、候補行の並び順に左右されず
+                    # 出席登録カードでは授業カリキュラム（または本日の検定）を優先する。
+                    # d393では後から処理された自習行が「自習（通常課題の準備対象外）」で
+                    # 授業内容を上書きする場合があった。
+                    _hint_key = str(sid).strip()
+                    _prev_hint = str(_today_task_hint_map.get(_hint_key, "")).strip()
+
+                    _new_is_exam = _today_hint_text.startswith("🎫 検定")
+                    _new_is_self = _today_hint_text == "自習（通常課題の準備対象外）"
+                    _prev_is_exam = _prev_hint.startswith("🎫 検定")
+                    _prev_is_self = _prev_hint == "自習（通常課題の準備対象外）"
+
+                    _should_replace = False
+                    if not _prev_hint:
+                        _should_replace = True
+                    elif _new_is_exam:
+                        _should_replace = True
+                    elif _prev_is_exam:
+                        _should_replace = False
+                    elif _prev_is_self and not _new_is_self:
+                        # 自習→授業の順なら授業内容へ更新
+                        _should_replace = True
+                    elif (not _prev_is_self) and _new_is_self:
+                        # 授業→自習の順でも授業内容を保持
+                        _should_replace = False
+                    else:
+                        # 同種なら従来どおり後の値で更新
+                        _should_replace = True
+
+                    if _should_replace:
+                        _today_task_hint_map[_hint_key] = _today_hint_text
+
+                    st.session_state["today_task_hint_map"] = dict(_today_task_hint_map)
 
                 # d300:
                 # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
@@ -9524,8 +9816,10 @@ if page == "閲覧":
                     sub_daily_state.get("status", "")
                 ).strip().lower()
 
+                _today_sub_text = ""
                 if sub_task_hint:
-                    st.caption(sub_task_hint)
+                    _today_sub_text = str(sub_task_hint).strip()
+                    st.caption(_today_sub_text)
                 elif (
                     sub_state.get("configured")
                     and sub_state.get("today_count", 0) > 0
@@ -9535,9 +9829,12 @@ if page == "閲覧":
                     _finished_sub_name = str(
                         sub_state.get("sub_name", "")
                     ).strip()
-                    st.caption(
-                        f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
-                    )
+                    _today_sub_text = f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
+                    st.caption(_today_sub_text)
+
+                if _today_sub_text:
+                    _today_sub_hint_map[str(sid).strip()] = _today_sub_text
+                    st.session_state["today_sub_hint_map"] = dict(_today_sub_hint_map)
 
                 _show_sub_controls = bool(
                     sub_state.get("configured")
@@ -10367,9 +10664,9 @@ if page == "閲覧":
                             planned_kind_map[sid2] = "lesson"
                             planned_kind_label_map[sid2] = "授業"
 
-                # d368: 当日の有効スケジュールから、生徒ごとの「予定回数」を算出する。
-                # 授業予定が1件以上あれば授業コマ数を基準にし、授業が無い自習日だけ自習コマ数を使う。
-                # これにより「授業1＋自習1」を授業2回とは数えない。
+                # d400: 出欠登録の「回数」は、意味を「授業実績回数」に固定する。
+                # そのため予定側も「予定授業回数」として、授業コマだけを数える。
+                # 授業＋授業=2、授業＋自習=1、自習＋授業=1、自習のみ=0。
                 planned_count_map = {}
                 if not today_view.empty and {"student_id", "session_type"}.issubset(today_view.columns):
                     _count_tv = today_view[["student_id", "session_type"]].copy()
@@ -10380,11 +10677,7 @@ if page == "閲覧":
                         _lesson_count = int(
                             _g_count["session_type"].isin(["lesson", "授業", ""]).sum()
                         )
-                        _self_count = int(
-                            _g_count["session_type"].isin(["self", "selfstudy", "自習"]).sum()
-                        )
-                        _expected_count = _lesson_count if _lesson_count > 0 else _self_count
-                        planned_count_map[str(_sid_count).strip()] = max(1, int(_expected_count or 1))
+                        planned_count_map[str(_sid_count).strip()] = max(0, int(_lesson_count))
 
                 # 今日の予定を「未確認」「確認済み」に分ける
                 pending_ids = []
@@ -10428,38 +10721,36 @@ if page == "閲覧":
                 _count_mismatch_rows = []
                 for _sid_mismatch in done_ids:
                     _sid_mismatch_str = str(_sid_mismatch).strip()
-                    _expected_mismatch = int(planned_count_map.get(_sid_mismatch_str, 1) or 1)
+                    _expected_mismatch = int(planned_count_map.get(_sid_mismatch_str, 0) or 0)
                     try:
+                        _saved_rows = att_df[
+                            (att_df["student_id"].astype(str).str.strip() == _sid_mismatch_str)
+                            & (att_df["date"].astype(str).str.strip() == str(today))
+                        ].copy()
                         _saved_mismatch = int(
-                            len(
-                                att_df[
-                                    (att_df["student_id"].astype(str).str.strip() == _sid_mismatch_str)
-                                    & (att_df["date"].astype(str).str.strip() == str(today))
-                                ]
-                            )
+                            _saved_rows["kind"].astype(str).str.strip().isin(["lesson", "授業"]).sum()
                         )
                     except Exception:
-                        _saved_mismatch = 1
-                    _saved_mismatch = max(1, _saved_mismatch)
+                        _saved_mismatch = 0
 
                     if _saved_mismatch != _expected_mismatch:
                         _count_mismatch_rows.append({
                             "生徒": name_map.get(_sid_mismatch_str, _sid_mismatch_str),
-                            "予定回数": _expected_mismatch,
-                            "出欠回数": _saved_mismatch,
+                            "予定授業回数": _expected_mismatch,
+                            "授業実績回数": _saved_mismatch,
                             "差": _saved_mismatch - _expected_mismatch,
                         })
 
                 if _count_mismatch_rows:
                     st.warning(
-                        f"⚠ スケジュール回数と出欠回数が一致していない生徒が {len(_count_mismatch_rows)} 人います。"
+                        f"⚠ 予定授業回数と授業実績回数が一致していない生徒が {len(_count_mismatch_rows)} 人います。"
                     )
                     st.dataframe(
                         pd.DataFrame(_count_mismatch_rows),
                         use_container_width=True,
                         hide_index=True,
                     )
-                    st.caption("予定と実績が意図的に違う場合は問題ありません。未確認のズレがないかだけ確認してください。")
+                    st.caption("予定授業回数と授業実績回数が意図的に違う場合は問題ありません。未確認のズレがないかだけ確認してください。")
                 
                 
                 if pending_ids:
@@ -10615,13 +10906,17 @@ if page == "閲覧":
 
 
                         would_be = month_lesson_cnt
+                        _today_planned_lesson_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
                         if rec is None:
-                            would_be = month_lesson_cnt + 1
+                            would_be = month_lesson_cnt + _today_planned_lesson_count
 
 
-                        badge = f"今月の授業回数：{month_lesson_cnt}回"
-                        if rec is None:
-                            badge += f"（今日が授業なら {would_be}回目）"
+                        badge = f"今月の授業実績回数：{month_lesson_cnt}回"
+                        if rec is None and _today_planned_lesson_count > 0:
+                            if _today_planned_lesson_count == 1:
+                                badge += f"（今日の授業後は {would_be}回）"
+                            else:
+                                badge += f"（今日 {_today_planned_lesson_count}回予定 → 授業後は {would_be}回）"
                         else:
                             badge += "（本日は記録済み）"
 
@@ -10664,6 +10959,54 @@ if page == "閲覧":
 
                                 if memo:
                                     st.info(f"📝 次の準備：{memo}")
+
+                                # d393: 「準備完了」のすぐ横で今日やる予定を確認できるようにする。
+                                # 「次に見る候補」と同じ算出結果を使うため、二重管理にならない。
+                                _today_hint_for_att = str(
+                                    st.session_state.get("today_task_hint_map", {}).get(sid_str, "")
+                                ).strip()
+                                _today_sub_for_att = str(
+                                    st.session_state.get("today_sub_hint_map", {}).get(sid_str, "")
+                                ).strip()
+
+                                if _today_hint_for_att:
+                                    st.success(f"🎯 今日やる予定：{_today_hint_for_att}")
+                                if _today_sub_for_att:
+                                    st.caption(f"➕ {_today_sub_for_att}")
+
+                                # d395: 授業準備の確認をこのカード内で完結しやすくするため、
+                                # 今日の予定コマごとの座席番号も表示する。
+                                # 授業＋自習など複数コマがある場合は、各コマをまとめて表示する。
+                                _seat_parts_for_att = []
+                                try:
+                                    _seat_rows_for_att = today_view[
+                                        today_view["student_id"].astype(str).str.strip() == sid_str
+                                    ].copy()
+                                    _seen_seat_slots_for_att = set()
+                                    for _, _seat_r_for_att in _seat_rows_for_att.iterrows():
+                                        _seat_slot_for_att = normalize_slot(_seat_r_for_att.get("slot", ""))
+                                        if not _seat_slot_for_att or _seat_slot_for_att in _seen_seat_slots_for_att:
+                                            continue
+                                        _seen_seat_slots_for_att.add(_seat_slot_for_att)
+                                        _seat_label_for_att = _seat_label_for_today_candidate(
+                                            sid_str, _seat_slot_for_att
+                                        )
+                                        if _seat_label_for_att == "未配置":
+                                            _seat_display_for_att = "未配置"
+                                        elif _seat_label_for_att == "使用予定":
+                                            _seat_display_for_att = "使用予定"
+                                        else:
+                                            _seat_display_for_att = f"席{_seat_label_for_att}"
+                                        _seat_parts_for_att.append(
+                                            f"{_seat_slot_for_att}コマ：{_seat_display_for_att}"
+                                        )
+                                except Exception:
+                                    _seat_parts_for_att = []
+
+                                if _seat_parts_for_att:
+                                    st.caption("🪑 今日の座席：" + " / ".join(_seat_parts_for_att))
+                                else:
+                                    st.caption("🪑 今日の座席：未配置")
 
                                 # d256:
                                 # 既存の出欠ログが selfstudy だが、予定は授業＋自習の場合は警告する。
@@ -10740,42 +11083,44 @@ if page == "閲覧":
 
 
                             with c4:
-                                # d368: 未登録時は当日のスケジュール回数を初期値にする。
-                                # 記録済みの場合は、実績修正を壊さないよう保存済み回数を表示する。
-                                schedule_count = int(planned_count_map.get(str(sid).strip(), 1) or 1)
+                                # d400: 「回数」は授業実績回数。自習コマは含めない。
+                                # 未登録時は当日の予定授業回数を初期値にし、記録済みなら lesson 行数を表示する。
+                                schedule_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
                                 rec_count = schedule_count
                                 if rec and isinstance(rec, dict):
                                     try:
                                         sid2 = str(sid).strip()
                                         ds2 = str(today)
+                                        _rec_rows_for_count = att_df[
+                                            (att_df["student_id"].astype(str).str.strip() == sid2)
+                                            & (att_df["date"].astype(str).str.strip() == ds2)
+                                        ].copy()
                                         rec_count = int(
-                                            len(
-                                                att_df[
-                                                    (att_df["student_id"].astype(str).str.strip() == sid2)
-                                                    & (att_df["date"].astype(str).str.strip() == ds2)
-                                                ]
-                                            )
+                                            _rec_rows_for_count["kind"].astype(str).str.strip().isin(["lesson", "授業"]).sum()
                                         )
-                                        rec_count = max(1, rec_count)
                                     except Exception:
                                         rec_count = schedule_count
 
-                                # 5回を超える特殊ケースでも画面を壊さないよう、予定回数まで選択肢を拡張する。
+                                # 自習・欠席は0回を選べる。授業として記録する場合は1回以上。
+                                # 授業2コマ連続なら2回を初期値にする。
                                 _count_max = max(5, schedule_count, rec_count)
-                                _count_options = list(range(1, _count_max + 1))
+                                _count_min = 1 if str(picked_kind).strip().lower() == "lesson" else 0
+                                _count_options = list(range(_count_min, _count_max + 1))
+                                if rec_count not in _count_options:
+                                    rec_count = schedule_count if schedule_count in _count_options else _count_min
                                 count = st.selectbox(
-                                    "回数",
+                                    "授業実績回数",
                                     _count_options,
                                     index=_count_options.index(rec_count) if rec_count in _count_options else 0,
                                     key=f"att_count_{today}_{sid}",
-                                    help=f"当日のスケジュール上の予定回数は {schedule_count} 回です。通常はこの回数が自動で入ります。実績が違う場合だけ変更してください。",
+                                    help=f"当日の予定授業回数は {schedule_count} 回です。自習は含めません。通常はこの回数が自動で入ります。実績が違う場合だけ変更してください。",
                                 )
-                                st.caption(f"予定回数：{schedule_count}回（スケジュールから自動）")
+                                st.caption(f"予定授業回数：{schedule_count}回（自習は含めない）")
 
                                 count_mismatch = int(count) != int(schedule_count)
                                 if count_mismatch:
                                     st.warning(
-                                        f"⚠ 回数不一致：予定 {schedule_count}回 / 出欠 {count}回"
+                                        f"⚠ 回数不一致：予定授業 {schedule_count}回 / 授業実績 {count}回"
                                     )
                                     count_mismatch_confirmed = st.checkbox(
                                         "この回数で保存することを確認しました",
@@ -10824,7 +11169,7 @@ if page == "閲覧":
                                     key=f"att_save_{today}_{sid}",
                                     disabled=bool(count_mismatch and not count_mismatch_confirmed),
                                     help=(
-                                        "予定回数と出欠回数が違うため、回数欄の確認チェックを入れてから保存してください。"
+                                        "予定授業回数と授業実績回数が違うため、回数欄の確認チェックを入れてから保存してください。"
                                         if count_mismatch and not count_mismatch_confirmed
                                         else "出欠を保存／更新します。"
                                     ),
@@ -10842,6 +11187,14 @@ if page == "閲覧":
                                         == "授業＋自習"
                                     ):
                                         save_kind = "lesson"
+
+                                    # d400: attendance_log は「1行=1実績記録」なので、
+                                    # 自習・欠席は授業実績0回でも状態記録用に1行残す。
+                                    # 授業だけは選択した授業実績回数ぶん lesson 行を保存する。
+                                    _attendance_storage_count = int(count) if save_kind == "lesson" else 1
+                                    if save_kind == "lesson" and _attendance_storage_count < 1:
+                                        # 授業として保存する場合に0回は矛盾するため、最低1行。
+                                        _attendance_storage_count = 1
 
                                     if save_kind == "absence":
                                         absence_note = (
@@ -10870,7 +11223,7 @@ if page == "閲覧":
                                             today,
                                             "absence",
                                             memo,
-                                            count=count,
+                                            count=_attendance_storage_count,
                                         )
                                         save_attendance_log(att_df2)
                                         write_csv_atomic(
@@ -10918,7 +11271,7 @@ if page == "閲覧":
                                             today,
                                             save_kind,
                                             memo,
-                                            count=count,
+                                            count=_attendance_storage_count,
                                         )
                                         save_attendance_log(att_df2)
                                         st.success("出欠記録を上書き保存しました。")
@@ -13045,6 +13398,12 @@ if page == "閲覧":
                         if str(r["student_id"]).strip() == str(student_id).strip()
                         and str(r["course_id"]).strip() == str(selected_course_id).strip()
                     }
+                    recorded_at_map = {
+                        str(r["task_id"]).strip(): str(r.get("recorded_at", "")).strip()
+                        for _, r in p.iterrows()
+                        if str(r["student_id"]).strip() == str(student_id).strip()
+                        and str(r["course_id"]).strip() == str(selected_course_id).strip()
+                    }
 
 
                     st.markdown("### 課題一覧")
@@ -13061,6 +13420,7 @@ if page == "閲覧":
                         was_done = bool(done_map.get(task_id, False))
                         was_skip = bool(skip_map.get(task_id, False))
                         prev_done_date = str(done_date_map.get(task_id, "")).strip()
+                        prev_recorded_at = str(recorded_at_map.get(task_id, "")).strip()
                         task_label = (
                             f"{task_display_name}　（完了日：{prev_done_date}）"
                             if was_done and prev_done_date
@@ -13098,6 +13458,55 @@ if page == "閲覧":
                             format_func=status_label
                         )
 
+                        # d396: 普段は日付選択を増やさず、完了済み課題の編集ロックを解除した時だけ
+                        # 「実際の完了日」を修正できる。入力日時(recorded_at)は変更しない。
+                        if was_done and override_done_lock and prev_done_date:
+                            with st.expander(f"🗓 完了日を修正｜{task_display_name}", expanded=False):
+                                try:
+                                    _default_done_date = dt.datetime.strptime(prev_done_date, "%Y-%m-%d").date()
+                                except Exception:
+                                    _default_done_date = dt.date.today()
+                                _corrected_done_date = st.date_input(
+                                    "実際の完了日",
+                                    value=_default_done_date,
+                                    key=f"correct_done_date_{student_id}_{selected_course_id}_{task_id}",
+                                )
+                                _correction_reason = st.text_input(
+                                    "修正理由（任意）",
+                                    placeholder="例：前日に完了していたが登録を忘れた",
+                                    key=f"correct_done_date_reason_{student_id}_{selected_course_id}_{task_id}",
+                                )
+                                if prev_recorded_at:
+                                    st.caption(f"入力日時：{prev_recorded_at}（完了日を直してもこの日時は残ります）")
+                                else:
+                                    st.caption("旧データのため入力日時の記録はありません。")
+                                if st.button(
+                                    "完了日だけ修正する",
+                                    key=f"save_correct_done_date_{student_id}_{selected_course_id}_{task_id}",
+                                ):
+                                    _new_done_date = _corrected_done_date.isoformat()
+                                    if _new_done_date == prev_done_date:
+                                        st.info("完了日は変更されていません。")
+                                    else:
+                                        _prog_fix = curr_prog.copy()
+                                        for _c in ["student_id", "course_id", "task_id", "done_date", "recorded_at"]:
+                                            if _c not in _prog_fix.columns:
+                                                _prog_fix[_c] = ""
+                                        _mask_fix = (
+                                            (_prog_fix["student_id"].astype(str).str.strip() == str(student_id).strip())
+                                            & (_prog_fix["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                                            & (_prog_fix["task_id"].astype(str).str.strip() == task_id)
+                                        )
+                                        _prog_fix.loc[_mask_fix, "done_date"] = _new_done_date
+                                        write_csv_atomic(_prog_fix, CURRICULUM_PROGRESS_CSV)
+                                        append_progress_date_correction_log(
+                                            student_id, selected_course_id, task_id,
+                                            prev_done_date, _new_done_date, _correction_reason,
+                                        )
+                                        st.success(f"完了日を {prev_done_date} → {_new_done_date} に修正しました。")
+                                        st.rerun()
+
+                        _newly_completed = selected_state == "完了" and default_state != "完了"
                         updated_rows.append({
                             "student_id": student_id,
                             "course_id": str(selected_course_id).strip(),
@@ -13106,8 +13515,13 @@ if page == "閲覧":
                             "is_skip": "true" if selected_state == "スキップ" else "false",
                             "done_date": (
                                 dt.date.today().isoformat()
-                                if selected_state == "完了" and default_state != "完了"
+                                if _newly_completed
                                 else prev_done_date
+                            ) if selected_state == "完了" else "",
+                            "recorded_at": (
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                if _newly_completed
+                                else prev_recorded_at
                             ) if selected_state == "完了" else "",
                             "note": ""
                         })
@@ -13129,6 +13543,8 @@ if page == "閲覧":
 
                         if "is_skip" not in others.columns:
                             others["is_skip"] = "false"
+                        if "recorded_at" not in others.columns:
+                            others["recorded_at"] = ""
 
 
                         save_df = pd.concat([others, new_df], ignore_index=True)
@@ -21675,7 +22091,7 @@ elif page == "管理（入力）":
                 # d366: 回数確認をこの1か所に統合。カレンダーと同じ有効予定を使う。
                 # 📊 月スケジュール 回数チェック（保存済み予定ベース）
                 # =====================================================
-                with st.expander("📊 回数確認（予定ベース）", expanded=False):
+                with st.expander("📊 回数確認（予定＋実績）", expanded=False):
                     st.caption(
                         "保存済みの月スケジュールに当日例外（追加・キャンセル・時間変更）を重ねて、"
                         "有効な授業予定だけを月回数と比較します。"
@@ -21685,7 +22101,7 @@ elif page == "管理（入力）":
                         "【回数に含めない】キャンセル済み予定／自習／前月振替／補習・確認／"
                         "特典追加／その他回数外／回数外／月回数外\n"
                         "※ キャンセルは schedule_overrides.csv の状態を反映して除外します。\n"
-                        "※ この確認は予定表ベースです。実際の出席・欠席実績は数えていません。"
+                        "※ 予定回数は予定表、実績回数は attendance_log.csv の授業記録を数えます。自習はどちらの授業回数にも含めません。"
                     )
 
                     # d203: 回数チェックもカレンダーと同じ有効予定を使う。
@@ -21723,11 +22139,30 @@ elif page == "管理（入力）":
                             else {}
                         )
 
+                        # d400: 同じ月の授業実績回数も一覧で比較できるようにする。
+                        _att_month_for_count = load_attendance_log().copy()
+                        actual_lesson_count_map = {}
+                        if not _att_month_for_count.empty:
+                            for _c in ["date", "student_id", "kind"]:
+                                if _c not in _att_month_for_count.columns:
+                                    _att_month_for_count[_c] = ""
+                                _att_month_for_count[_c] = _att_month_for_count[_c].fillna("").astype(str).str.strip()
+                            _target_ym = f"{int(target_year):04d}-{int(target_month):02d}"
+                            _att_month_for_count = _att_month_for_count[
+                                _att_month_for_count["date"].str.slice(0, 7).eq(_target_ym)
+                                & _att_month_for_count["kind"].isin(["lesson", "授業"])
+                            ].copy()
+                            if not _att_month_for_count.empty:
+                                actual_lesson_count_map = (
+                                    _att_month_for_count["student_id"].astype(str).str.strip().value_counts().to_dict()
+                                )
+
                         count_rows = []
 
                         for sid in sorted(active_student_ids_for_month, key=lambda x: student_name_map_month.get(x, x)):
                             name = student_name_map_month.get(sid, sid)
                             current_count = int(lesson_count_map.get(sid, 0))
+                            actual_count = int(actual_lesson_count_map.get(sid, 0))
                             target_raw = str(student_target_count_map.get(sid, "")).strip()
 
                             try:
@@ -21765,10 +22200,11 @@ elif page == "管理（入力）":
 
                             count_rows.append({
                                 "生徒": name,
-                                "予定回数": current_count,
+                                "予定授業回数": current_count,
+                                "授業実績回数": actual_count,
                                 "月回数": target_raw if target_raw else "未設定",
-                                "判定": status,
-                                "差分": diff,
+                                "予定判定": status,
+                                "月回数との差": diff,
                                 "例外区分": reason_summary,
                                 "_sort": sort_key,
                             })
@@ -21777,7 +22213,7 @@ elif page == "管理（入力）":
                             count_df = pd.DataFrame(count_rows).sort_values(["_sort", "生徒"]).drop(columns=["_sort"])
 
                             def _style_month_count(row):
-                                status = str(row.get("判定", "")).strip()
+                                status = str(row.get("予定判定", "")).strip()
                                 if status == "少ない":
                                     return ["background-color:#fff3cd"] * len(row)
                                 if status == "多い":
@@ -21786,9 +22222,9 @@ elif page == "管理（入力）":
                                     return ["background-color:#e9f8ee"] * len(row)
                                 return ["background-color:#f3f3f3"] * len(row)
 
-                            shortage_count = int((count_df["判定"] == "少ない").sum())
-                            over_count = int((count_df["判定"] == "多い").sum())
-                            unset_count = int((count_df["判定"] == "月回数未設定").sum())
+                            shortage_count = int((count_df["予定判定"] == "少ない").sum())
+                            over_count = int((count_df["予定判定"] == "多い").sum())
+                            unset_count = int((count_df["予定判定"] == "月回数未設定").sum())
                             need_check_statuses = ["少ない", "多い", "月回数未設定"]
 
                             if shortage_count or over_count or unset_count:
@@ -21796,21 +22232,22 @@ elif page == "管理（入力）":
                                     f"確認が必要：少ない {shortage_count}人 / 多い {over_count}人 / 月回数未設定 {unset_count}人"
                                 )
                             else:
-                                st.success("月回数と授業予定回数は大きくズレていません。")
+                                st.success("月回数と予定授業回数は大きくズレていません。")
 
                             only_need_check2 = st.checkbox(
                                 "確認が必要な生徒だけ表示",
                                 value=True,
                                 key=f"monthly_count_only_ng_{target_year}_{target_month}",
-                                help="予定回数ベースで、少ない・多い・月回数未設定だけを表示します。OFFにするとOKの生徒も表示します。",
+                                help="予定授業回数ベースで、少ない・多い・月回数未設定だけを表示します。OFFにするとOKの生徒も表示します。",
                             )
 
-                            st.caption("※ ↑の区分は予定回数に含めます。−の区分は予定回数に含めません。今月振替・追加授業はカウント、前月振替・自習・補習/確認・特典追加は除外します。")
+                            st.caption("※ 授業実績回数は、現時点までに出欠登録で『授業』として保存された回数です。自習は含めません。")
+                            st.caption("※ ↑の区分は予定授業回数に含めます。−の区分は含めません。今月振替・追加授業はカウント、前月振替・自習・補習/確認・特典追加は除外します。")
 
                             display_count_df = count_df.copy()
                             if only_need_check2:
                                 display_count_df = display_count_df[
-                                    display_count_df["判定"].isin(need_check_statuses)
+                                    display_count_df["予定判定"].isin(need_check_statuses)
                                 ].copy()
 
                             if display_count_df.empty:
