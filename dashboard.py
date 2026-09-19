@@ -3,6 +3,7 @@
 # - 授業＋授業=2、授業＋自習/自習＋授業=1、自習のみ=0。
 # - 月スケジュールの回数確認に「授業実績回数」を追加し、予定と実績を一覧比較できるようにする。
 
+# d409: 未完了の授業/自習表示修正＋過去日のタイピング記録修正
 # d399: 最終確認にサブ課題・タイピングチェックを追加
 # 1) 今日の予定生徒について、出欠未登録／進捗未登録を一番上の確認エリアで集計。
 # 2) 未入力が0件なら「今日のタスクはすべて入力済みです」を明示。
@@ -8357,8 +8358,10 @@ if page == "閲覧":
 
             # まず予定の種別
             session_type = str(r.get("session_label", "")).strip()
+            planned_mixed = session_type in ["授業 / 自習", "授業/自習"]
 
-            # その日の出欠実績があれば、実績の kind を優先する
+            # その日の出欠実績があれば、進捗判定には実績の kind を使う。
+            # ただし表示上は「授業＋自習」の予定情報を潰さない。
             actual_kind = ""
             att_row = att_df_check[
                 (att_df_check["date"].astype(str).str.strip() == d_str) &
@@ -8368,21 +8371,24 @@ if page == "閲覧":
             if not att_row.empty:
                 actual_kind = str(att_row.iloc[-1].get("kind", "")).strip().lower()
 
-            if actual_kind in ["lesson", "授業"]:
-                effective_kind = "lesson"
-                session_mark_text = "授業"
-            elif actual_kind in ["self", "selfstudy", "自習"]:
-                effective_kind = "self"
-                session_mark_text = "自習"
-            elif actual_kind in ["absence", "欠席"]:
+            if actual_kind in ["absence", "欠席"]:
                 effective_kind = "absence"
                 session_mark_text = "欠席"
             elif actual_kind in ["cancel", "キャンセル"]:
                 effective_kind = "cancel"
                 session_mark_text = "キャンセル"
+            elif actual_kind in ["lesson", "授業"]:
+                effective_kind = "lesson"
+                session_mark_text = "授業 / 自習" if planned_mixed else "授業"
+            elif actual_kind in ["self", "selfstudy", "自習"]:
+                effective_kind = "self"
+                session_mark_text = "授業 / 自習" if planned_mixed else "自習"
             else:
-                # 出欠実績が無いときだけ予定の種別を使う
-                if session_type in ["lesson", "授業", ""]:
+                # 出欠実績が無いときは予定の種別を使う。
+                if planned_mixed:
+                    effective_kind = "lesson"
+                    session_mark_text = "授業 / 自習"
+                elif session_type in ["lesson", "授業", ""]:
                     effective_kind = "lesson"
                     session_mark_text = "授業"
                 else:
@@ -11565,6 +11571,91 @@ if page == "閲覧":
                                 st.rerun()
                 else:
                     st.caption("未完了の生徒はいません。")
+
+                # d409: 過去日のタイピング記録を必要な時だけ修正できる。
+                # 通常運用は今日のチェックのまま。記録漏れに後から気づいた時だけ使う。
+                with st.expander("🕘 過去日のタイピング記録を修正", expanded=False):
+                    _past_default = today - dt.timedelta(days=1)
+                    _past_date = st.date_input(
+                        "対象日",
+                        value=_past_default,
+                        max_value=_past_default,
+                        key=f"typing_past_date_{today}",
+                        help="昨日以前で、タイピングの完了・免除を記録し忘れた日を選びます。",
+                    )
+
+                    _past_att = typing_att_df.copy()
+                    for _c in ["date", "student_id", "kind", "memo"]:
+                        if _c not in _past_att.columns:
+                            _past_att[_c] = ""
+                        _past_att[_c] = (
+                            _past_att[_c].fillna("").astype(str).str.strip()
+                        )
+
+                    if not _past_att.empty:
+                        _past_att["kind_norm"] = _past_att["kind"].map(
+                            normalize_attendance_kind_for_lock
+                        )
+                        _past_att = _past_att[
+                            _past_att["date"].eq(str(_past_date))
+                            & _past_att["kind_norm"].isin(["lesson", "selfstudy"])
+                        ].copy()
+
+                    _past_ids = []
+                    if not _past_att.empty:
+                        for _sid in _past_att["student_id"].astype(str).tolist():
+                            _sid = str(_sid).strip()
+                            if _sid and _sid not in _past_ids:
+                                _past_ids.append(_sid)
+
+                    if not _past_ids:
+                        st.info("この日の授業・自習の出席記録はありません。")
+                    else:
+                        _past_pending = []
+                        _past_done = []
+                        for _sid in _past_ids:
+                            _rec = get_typing_today(typing_df, _sid, _past_date)
+                            _status = str((_rec or {}).get("status", "")).strip().lower()
+                            if _status in ["done", "skip"]:
+                                _past_done.append((_sid, _rec))
+                            else:
+                                _past_pending.append(_sid)
+
+                        if _past_pending:
+                            st.warning(f"未記録：{len(_past_pending)}件")
+                            for _sid in _past_pending:
+                                _name = typing_student_name_map.get(_sid, "")
+                                _label = f"{_sid}｜{_name}" if _name else _sid
+                                pc1, pc2, pc3 = st.columns([4, 1.5, 1.5])
+                                with pc1:
+                                    st.write(f"・**{_label}**")
+                                with pc2:
+                                    if st.button(
+                                        "✅ 完了",
+                                        key=f"typing_past_done_{_past_date}_{_sid}",
+                                    ):
+                                        typing_df2 = upsert_typing_log(
+                                            typing_df, _sid, _past_date, "done", "過去日を後から記録"
+                                        )
+                                        save_typing_log(typing_df2)
+                                        st.success(f"{_label} の {_past_date} を完了にしました。")
+                                        st.rerun()
+                                with pc3:
+                                    if st.button(
+                                        "免除",
+                                        key=f"typing_past_skip_{_past_date}_{_sid}",
+                                    ):
+                                        typing_df2 = upsert_typing_log(
+                                            typing_df, _sid, _past_date, "skip", "過去日を後から免除"
+                                        )
+                                        save_typing_log(typing_df2)
+                                        st.success(f"{_label} の {_past_date} を免除にしました。")
+                                        st.rerun()
+                        else:
+                            st.success("この日のタイピング記録漏れはありません。")
+
+                        if _past_done:
+                            st.caption(f"記録済み：{len(_past_done)}件")
 
                 completed_count = len(typing_done_rows) + len(typing_skip_rows)
                 if completed_count:
