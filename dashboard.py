@@ -648,6 +648,51 @@ st.set_page_config(
 st.title("📚 Curriculum Dashboard（ローカル）")
 
 # =========================================================
+# d408: 操作部品CSSを安全側へ整理
+# - d407の機能修正（今日の未完了で「授業 / 自習」を両方表示）は継続
+# - d405で確認済みの未完了タスク／出欠判定修正は継続
+# - ボタンの太枠スタイルは維持
+# - チェックボックス／ラジオボタンへの独自背景・境界線・余白CSSを撤去し、
+#   Streamlit標準表示へ戻す（レイアウト崩れ・見出し誤装飾を防止）
+# =========================================================
+st.markdown(
+    """
+    <style>
+    /* Streamlit標準ボタンを全画面で統一 */
+    div[data-testid="stButton"] button,
+    div[data-testid="stDownloadButton"] button,
+    div[data-testid="stFormSubmitButton"] button,
+    button[data-testid^="stBaseButton"] {
+        border-width: 2px !important;
+        border-style: solid !important;
+        border-color: #5f6670 !important;
+        font-weight: 600 !important;
+        box-shadow: none !important;
+    }
+
+    div[data-testid="stButton"] button:hover,
+    div[data-testid="stDownloadButton"] button:hover,
+    div[data-testid="stFormSubmitButton"] button:hover,
+    button[data-testid^="stBaseButton"]:hover {
+        border-color: #2f343b !important;
+    }
+
+    div[data-testid="stButton"] button:focus-visible,
+    div[data-testid="stDownloadButton"] button:focus-visible,
+    div[data-testid="stFormSubmitButton"] button:focus-visible,
+    button[data-testid^="stBaseButton"]:focus-visible {
+        outline: 2px solid #2f343b !important;
+        outline-offset: 2px !important;
+    }
+
+    /* d408: チェックボックス／ラジオボタンはStreamlit標準表示を使用 */
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
 # Mode (Viewer / Admin) - UI統合版
 # - Streamlitの制約：widget生成後に同じkeyのsession_stateは変更できない
 #   → 内部状態(page_state) と widget(key=page_widget) を分離して安全にページ遷移する
@@ -8248,7 +8293,11 @@ if page == "閲覧":
         # -------------------------------------------------
         def pick_session_label(series):
             vals = [str(v).strip().lower() for v in series if str(v).strip() != ""]
-            if any(v in ["self", "selfstudy", "自習"] for v in vals):
+            has_lesson = any(v in ["lesson", "授業"] for v in vals)
+            has_selfstudy = any(v in ["self", "selfstudy", "自習"] for v in vals)
+            if has_lesson and has_selfstudy:
+                return "授業 / 自習"
+            if has_selfstudy:
                 return "自習"
             return "授業"
 
@@ -8426,8 +8475,11 @@ if page == "閲覧":
             name = str(row.get("生徒", "")).strip()
             kind_label = str(row.get("種別", "")).strip()
             status = str(row.get("状態", "")).strip()
-            attendance_done = "出欠未" not in status
-            progress_done = "進捗未" not in status
+            # d405: 状態文字の部分一致ではなく、未完了種別を明示判定する。
+            # 「❗出欠」は出欠未なのに "出欠未" という文字を含まないため、
+            # 旧判定では出欠済み扱いになり、出欠ボタンが押せなくなる不具合があった。
+            attendance_done = status not in ["🚨 出欠未 / 進捗未", "❗出欠"]
+            progress_done = status not in ["🚨 出欠未 / 進捗未", "❗進捗"]
 
             display_status = status
             if key_prefix == "overdue":
