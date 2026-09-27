@@ -3,6 +3,8 @@
 # - 授業＋授業=2、授業＋自習/自習＋授業=1、自習のみ=0。
 # - 月スケジュールの回数確認に「授業実績回数」を追加し、予定と実績を一覧比較できるようにする。
 
+# d410: 出欠種別に応じて授業実績回数を明確化。授業は1回以上を選択し、自習・欠席は0回固定表示。
+#       授業＋自習の予定でも、明示的に選んだ記録種別を尊重する。
 # d409: 未完了の授業/自習表示修正＋過去日のタイピング記録修正
 # d399: 最終確認にサブ課題・タイピングチェックを追加
 # 1) 今日の予定生徒について、出欠未登録／進捗未登録を一番上の確認エリアで集計。
@@ -11159,34 +11161,58 @@ if page == "閲覧":
                                     except Exception:
                                         rec_count = schedule_count
 
-                                # 自習・欠席は0回を選べる。授業として記録する場合は1回以上。
-                                # 授業2コマ連続なら2回を初期値にする。
-                                _count_max = max(5, schedule_count, rec_count)
-                                _count_min = 1 if str(picked_kind).strip().lower() == "lesson" else 0
-                                _count_options = list(range(_count_min, _count_max + 1))
-                                if rec_count not in _count_options:
-                                    rec_count = schedule_count if schedule_count in _count_options else _count_min
-                                count = st.selectbox(
-                                    "授業実績回数",
-                                    _count_options,
-                                    index=_count_options.index(rec_count) if rec_count in _count_options else 0,
-                                    key=f"att_count_{today}_{sid}",
-                                    help=f"当日の予定授業回数は {schedule_count} 回です。自習は含めません。通常はこの回数が自動で入ります。実績が違う場合だけ変更してください。",
-                                )
-                                st.caption(f"予定授業回数：{schedule_count}回（自習は含めない）")
-
-                                count_mismatch = int(count) != int(schedule_count)
-                                if count_mismatch:
-                                    st.warning(
-                                        f"⚠ 回数不一致：予定授業 {schedule_count}回 / 授業実績 {count}回"
+                                # d410: 「授業実績回数」は授業として保存する時だけ編集できる。
+                                # 自習・欠席は attendance_log に状態を1行残すが、授業実績は0回。
+                                # キャンセルの履歴も授業実績には算入しない（キャンセル操作は既存画面）。
+                                _is_lesson_for_count = str(picked_kind).strip().lower() == "lesson"
+                                if _is_lesson_for_count:
+                                    # 通常は予定授業回数。記録済みなら既存の授業実績回数。
+                                    # 非授業から授業に選び直した際は、0のままにならない。
+                                    _count_max = min(10, max(5, schedule_count, rec_count))
+                                    _count_options = list(range(1, _count_max + 1))
+                                    _count_default = rec_count if rec_count in _count_options else (
+                                        schedule_count if schedule_count in _count_options else 1
                                     )
-                                    count_mismatch_confirmed = st.checkbox(
-                                        "この回数で保存することを確認しました",
-                                        value=False,
-                                        key=f"att_count_mismatch_confirm_{today}_{sid}_{count}",
+                                    count = st.selectbox(
+                                        "授業実績回数",
+                                        _count_options,
+                                        index=_count_options.index(_count_default),
+                                        key=f"att_lesson_count_d410_{today}_{sid}",
+                                        help=(
+                                            f"予定授業回数は {schedule_count} 回です。"
+                                            "実際に受けた授業の回数だけを選んでください。自習は含めません。"
+                                        ),
                                     )
+                                    st.caption(f"予定授業回数：{schedule_count}回（自習は含めない）")
+                                    count_mismatch = int(count) != int(schedule_count)
+                                    if count_mismatch:
+                                        st.warning(
+                                            f"⚠ 回数不一致：予定授業 {schedule_count}回 / 授業実績 {count}回"
+                                        )
+                                        count_mismatch_confirmed = st.checkbox(
+                                            "この回数で保存することを確認しました",
+                                            value=False,
+                                            key=f"att_count_mismatch_confirm_d410_{today}_{sid}_{count}",
+                                        )
+                                    else:
+                                        count_mismatch_confirmed = True
                                 else:
+                                    count = 0
+                                    count_mismatch = False
                                     count_mismatch_confirmed = True
+                                    st.text_input(
+                                        "授業実績回数",
+                                        value="0回（自動）",
+                                        disabled=True,
+                                        key=f"att_nonlesson_count_d410_{today}_{sid}_{picked_kind}",
+                                        help="自習・欠席は授業実績に加算されません。",
+                                    )
+                                    st.caption("授業実績には加算されません（0回）。")
+                                    if (
+                                        picked_kind == "selfstudy"
+                                        and str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習"
+                                    ):
+                                        st.info("授業＋自習の予定です。自習として保存すると授業実績は0回です。")
 
                                 memo = st.text_input(
                                     "メモ（任意）",
@@ -11236,18 +11262,12 @@ if page == "閲覧":
                                     # 授業・自習・欠席を同じボタンで登録／上書きする。
                                     # 欠席へ変更した場合は予定取消と座席解除も行う。
                                     # 欠席から授業・自習へ戻した場合は、欠席時の予定取消を解除する。
+                                    # d410: 利用者が明示的に選んだ種別を保存する。
+                                    # 授業＋自習でも「自習」を選んだ場合に強制的に授業へ戻さない。
                                     save_kind = picked_kind
-                                    if (
-                                        save_kind != "absence"
-                                        and str(
-                                            planned_kind_label_map.get(sid, "")
-                                        ).strip()
-                                        == "授業＋自習"
-                                    ):
-                                        save_kind = "lesson"
 
                                     # d400: attendance_log は「1行=1実績記録」なので、
-                                    # 自習・欠席は授業実績0回でも状態記録用に1行残す。
+                                    # 自習・欠席は表示上の授業実績が0回でも状態記録用に1行残す。
                                     # 授業だけは選択した授業実績回数ぶん lesson 行を保存する。
                                     _attendance_storage_count = int(count) if save_kind == "lesson" else 1
                                     if save_kind == "lesson" and _attendance_storage_count < 1:
