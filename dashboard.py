@@ -320,6 +320,8 @@ import calendar as cal
 from datetime import date
 import os
 import secrets
+import json
+import tempfile
 
 import pandas as pd
 import numpy as np
@@ -846,13 +848,13 @@ def load_kentei_results() -> pd.DataFrame:
                     "memo",
                 ]
             ]
-        except Exception:
-            df = pd.DataFrame(columns=["student_id", "grade", "result", "score", "pass_date", "memo"])
-            write_csv_atomic(df, KENTEI_RESULTS_CSV)
-            return df
-    df = pd.DataFrame(columns=["student_id", "grade", "result", "score", "pass_date", "memo"])
-    write_csv_atomic(df, KENTEI_RESULTS_CSV)
-    return df
+        except Exception as e:
+            st.error(f"検定結果CSVの読み込みに失敗しました。元ファイルは変更していません: {KENTEI_RESULTS_CSV}\n{e}")
+            st.stop()
+    else:
+        df = pd.DataFrame(columns=["student_id", "grade", "result", "score", "pass_date", "memo"])
+        write_csv_atomic(df, KENTEI_RESULTS_CSV)
+        return df
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def save_kentei_results(df: pd.DataFrame) -> None:
@@ -1719,6 +1721,7 @@ SCHEDULE_CORRECTION_LOG_COLS = [
 
 # [STEP 2026-05] 月単位で確定した予定を保存するCSV（固定スケジュールと当日例外の間の層）
 MONTHLY_SCHEDULE_CSV = DATA_DIR / "monthly_schedule.csv"
+MONTHLY_SCHEDULE_CONFIRMATION_JSON = DATA_DIR / "monthly_schedule_confirmation.json"
 
 CURRICULUM_COURSES_CSV = DATA_DIR / "curriculum_courses.csv"
 CURRICULUM_TASKS_CSV = DATA_DIR / "curriculum_tasks.csv"
@@ -2208,21 +2211,18 @@ def _plan_hit(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
     ].copy()
 
 
-def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
-    """d384:
-    カレンダー表示用に残している「取消済み行」を除外し、
-    現在有効な予定だけを返す。
-    """
-    hit = _plan_hit(plan_df, sid, slot)
-    if hit.empty:
-        return hit
-
-    active = hit.copy()
+def _active_plan_rows(plan_df: pd.DataFrame) -> pd.DataFrame:
+    """元の表示用データを変更せず、取消済み行を除いた有効予定を返す。"""
+    if plan_df is None:
+        return pd.DataFrame()
+    active = plan_df.copy()
+    if active.empty:
+        return active
 
     # d381以降の取消線表示用行で使っている各種フラグをまとめて判定。
     cancel_mask = pd.Series(False, index=active.index)
 
-    for col in ["action", "status", "reason"]:
+    for col in ["action", "status", "reason", "override_status"]:
         if col in active.columns:
             vals = active[col].fillna("").astype(str).str.strip()
             cancel_mask = cancel_mask | vals.isin(
@@ -2241,6 +2241,11 @@ def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame
             cancel_mask = cancel_mask | bool_mask.fillna(False)
 
     return active.loc[~cancel_mask].copy()
+
+
+def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
+    """指定した生徒・コマのうち、現在有効な予定だけを返す。"""
+    return _active_plan_rows(_plan_hit(plan_df, sid, slot))
 
 
 def validate_seat_transfer_import_rows(
@@ -2269,6 +2274,9 @@ def validate_seat_transfer_import_rows(
     )
     dup_ids = set(work.loc[work["reservation_id"].duplicated(keep=False), "reservation_id"].tolist())
 
+    # 検証に通った先行行だけを仮反映し、後続行はその予定状態で検証する。
+    working_overrides = schedule_overrides_df.copy()
+    working_log = applied_log_df.copy()
     rows = []
     for _, r in work.iterrows():
         rid = str(r.get("reservation_id", "")).strip()
@@ -2323,14 +2331,14 @@ def validate_seat_transfer_import_rows(
                 students_df,
                 student_schedule_df,
                 monthly_schedule_df,
-                schedule_overrides_df,
+                working_overrides,
                 timeslots_df,
                 include_inactive=True,
             )
             source_hit = _plan_hit(source_plan, sid, src_slot)
 
             if source_hit.empty:
-                if _has_exact_cancel(schedule_overrides_df, sid, src_date, src_slot):
+                if _has_exact_cancel(working_overrides, sid, src_date, src_slot):
                     notes.append("元予定は既に取消済み")
                 else:
                     problems.append("元予定が見つかりません")
@@ -2363,7 +2371,7 @@ def validate_seat_transfer_import_rows(
                     students_df,
                     student_schedule_df,
                     monthly_schedule_df,
-                    schedule_overrides_df,
+                    working_overrides,
                     timeslots_df,
                     include_inactive=True,
                 )
@@ -2372,7 +2380,7 @@ def validate_seat_transfer_import_rows(
                 # 「現在有効な予定」ではないので重複扱いしない。
                 dest_hit = _plan_hit_active(dest_plan, sid, dst_slot)
                 if not dest_hit.empty:
-                    problems.append("追加先に同じ生徒の有効な予定が既にあります")
+                    problems.append("追加先に同じ生徒の有効な予定が既にあります（重複）")
 
         rows.append({
             "反映": "OK" if not problems else "不可",
@@ -2391,6 +2399,14 @@ def validate_seat_transfer_import_rows(
             "変更後種別": rule.get("dest_type", dst_type),
             "受付経路": reception_source,
         })
+        if not problems:
+            # 実反映と同じ処理を使う。返されたDataFrameのみ更新し、CSVには書かない。
+            working_overrides, working_log, _ = apply_confirmed_seat_transfers(
+                pd.DataFrame([rows[-1]]),
+                schedule_overrides_df=working_overrides,
+                import_source_df=pd.DataFrame([r]),
+                applied_log_df=working_log,
+            )
     return pd.DataFrame(rows)
 
 
@@ -2438,6 +2454,7 @@ def apply_confirmed_seat_transfers(
         if same_source_dest_conversion:
             # 同日同コマの種別変更は「キャンセル＋追加」だとキャンセルが勝つため、
             # 時間変更行1件として種別だけ上書きする。
+            # 既存形式の識別メモで、日次予定側では一日全体の時間変更と区別する。
             working = upsert_schedule_override_row(
                 working,
                 student_id=sid,
@@ -2621,9 +2638,9 @@ def build_bot_schedule_export(
             schedule_overrides_df,
             timeslots_df,
         )
-        if plan is None or plan.empty:
+        p = _active_plan_rows(plan)
+        if p.empty:
             continue
-        p = plan.copy()
         p["student_id"] = p["student_id"].fillna("").astype(str).str.strip()
         p["bot_student_id"] = p["student_id"].map(sid_to_bot).fillna("")
         p = p[p["bot_student_id"].ne("")].copy()
@@ -2726,9 +2743,7 @@ def build_seat_reservation_sync_export(
             schedule_overrides_df,
             timeslots_df,
         )
-        if effective is None:
-            effective = pd.DataFrame()
-        e = effective.copy()
+        e = _active_plan_rows(effective)
         if not e.empty:
             for c in ["student_id", "slot"]:
                 if c not in e.columns:
@@ -2741,6 +2756,9 @@ def build_seat_reservation_sync_export(
         else:
             effective_counts = {}
 
+        # 再追加で有効になった予定は、古い取消行が残っていても欠席に数えない。
+        active_keys = set(zip(e["student_id"], e["slot"])) if not e.empty else set()
+
         # 取消中の予定を「空いた席」として数える。重複取消は1人1コマにまとめる。
         cancel_day = ov[
             (ov["date"] == d_str)
@@ -2749,6 +2767,12 @@ def build_seat_reservation_sync_export(
             & (ov["slot"] != "")
         ].copy()
         if not cancel_day.empty:
+            cancel_day = cancel_day[
+                ~cancel_day.apply(
+                    lambda r: (r["student_id"], r["slot"]) in active_keys,
+                    axis=1,
+                )
+            ].copy()
             cancel_day = cancel_day.drop_duplicates(
                 subset=["student_id", "slot"], keep="last"
             )
@@ -2907,6 +2931,93 @@ def matches_week_pattern(d, pattern) -> bool:
         normalized,
         WEEK_PATTERN_TO_NUMBERS["毎週"],
     )
+
+
+def load_monthly_schedule_confirmation() -> dict:
+    """未記録の過去データは推測せず、明示的に保存した確定状態だけを読む。"""
+    path = MONTHLY_SCHEDULE_CONFIRMATION_JSON
+    if not path.exists():
+        return {"version": 1, "confirmed_months": [], "confirmed_dates": []}
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict) or state.get("version") != 1:
+            raise ValueError("確定状態の形式が不正です")
+        for key, fmt in [("confirmed_months", "%Y-%m"), ("confirmed_dates", "%Y-%m-%d")]:
+            values = state.get(key)
+            if not isinstance(values, list):
+                raise ValueError(f"{key} が一覧ではありません")
+            for value in values:
+                if not isinstance(value, str) or datetime.strptime(value, fmt).strftime(fmt) != value:
+                    raise ValueError(f"{key} の日付が不正です")
+        return state
+    except Exception as e:
+        st.error(f"月予定の確定状態を読み込めません。固定予定への切替を停止しました: {e}")
+        st.stop()
+
+
+def monthly_schedule_changed_dates(before: pd.DataFrame, after: pd.DataFrame) -> set[str]:
+    """追加・変更・最終行の削除があった日付を、行順に依存せず比較する。"""
+    def rows_by_date(df):
+        work = df.reindex(columns=MONTHLY_SCHEDULE_COLS, fill_value="").fillna("").astype(str)
+        work["date"] = pd.to_datetime(work["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        return {
+            d: sorted(map(tuple, group.to_numpy().tolist()))
+            for d, group in work.groupby("date")
+        }
+
+    old, new = rows_by_date(before), rows_by_date(after)
+    return {d for d in old.keys() | new.keys() if old.get(d, []) != new.get(d, [])}
+
+
+def save_monthly_schedule_with_confirmation(df: pd.DataFrame, confirmed_months=()) -> None:
+    """月予定と確定状態を保存する。状態の保存に失敗した場合は月予定を元に戻す。"""
+    state = load_monthly_schedule_confirmation()
+    csv_path = Path(MONTHLY_SCHEDULE_CSV)
+    state_path = MONTHLY_SCHEDULE_CONFIRMATION_JSON
+    old_bytes = csv_path.read_bytes() if csv_path.exists() else None
+    old_stat = csv_path.stat() if old_bytes is not None else None
+    before = (
+        pd.read_csv(csv_path, dtype=str).fillna("")
+        if old_bytes is not None else pd.DataFrame(columns=MONTHLY_SCHEDULE_COLS)
+    )
+    months = set(state["confirmed_months"]) | set(confirmed_months)
+    for month in months:
+        if datetime.strptime(month, "%Y-%m").strftime("%Y-%m") != month:
+            raise ValueError("確定する年月が不正です")
+    state["confirmed_months"] = sorted(months)
+    state["confirmed_dates"] = sorted(
+        set(state["confirmed_dates"]) | monthly_schedule_changed_dates(before, df)
+    )
+
+    tmp_path = None
+    csv_saved = False
+    try:
+        # 状態ファイルの書込みを準備できてから、月予定CSVを保存する。
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=state_path.parent,
+                                         prefix=state_path.name + ".", suffix=".tmp", delete=False) as f:
+            tmp_path = Path(f.name)
+            json.dump(state, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        old_rows = before.reindex(columns=MONTHLY_SCHEDULE_COLS, fill_value="").fillna("").astype(str).reset_index(drop=True)
+        new_rows = df.reindex(columns=MONTHLY_SCHEDULE_COLS, fill_value="").fillna("").astype(str).reset_index(drop=True)
+        # 確定状態だけを登録する操作では、CSVの改行や更新日時も維持する。
+        if old_bytes is None or not old_rows.equals(new_rows):
+            write_csv_atomic(df, csv_path)
+            csv_saved = True
+        tmp_path.replace(state_path)
+    except Exception:
+        if csv_saved:
+            if old_bytes is None:
+                csv_path.unlink()
+            else:
+                tmp_path.write_bytes(old_bytes)
+                tmp_path.replace(csv_path)
+                os.utime(csv_path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns))
+            clear_csv_cache()
+        raise
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
@@ -3179,7 +3290,7 @@ def build_daily_plan_for_date(
 
     優先順位：
     1. monthly_schedule.csv に対象日の予定があれば、それをベースにする
-    2. 対象日の月スケジュールが無い場合だけ、student_schedule.csv（固定週次）を使う
+    2. 確定済みの月・日は0件でも月予定を優先し、未確定の日だけ固定予定を使う
     3. schedule_overrides.csv の追加・キャンセル・時間変更を重ねる
 
     閲覧の今日の予定、未完了タスク、座席表が別々の予定ソースを見て
@@ -3241,9 +3352,14 @@ def build_daily_plan_for_date(
         _monthly_date_norm = pd.to_datetime(_monthly_date_raw, errors="coerce").dt.strftime("%Y-%m-%d")
         monthly["date"] = _monthly_date_norm.fillna(_monthly_date_raw)
 
-    monthly_day = monthly[monthly["date"] == target_str].copy() if not monthly.empty else pd.DataFrame()
+    monthly_day = monthly[monthly["date"] == target_str].copy()
+    confirmation = load_monthly_schedule_confirmation()
+    monthly_confirmed = (
+        target_str[:7] in confirmation["confirmed_months"]
+        or target_str in confirmation["confirmed_dates"]
+    )
 
-    if not monthly_day.empty:
+    if not monthly_day.empty or monthly_confirmed:
         plan = monthly_day.copy()
         plan["weekday"] = target_wd
         plan["slot"] = plan["slot"].map(normalize_slot)
@@ -3251,7 +3367,7 @@ def build_daily_plan_for_date(
         plan["date"] = target_str
     else:
         sched = student_schedule_df.copy() if student_schedule_df is not None else pd.DataFrame()
-        for c in ["student_id", "weekday", "slot", "session_type"]:
+        for c in ["student_id", "weekday", "slot", "session_type", "week_pattern"]:
             if c not in sched.columns:
                 sched[c] = ""
             sched[c] = sched[c].fillna("").astype(str).str.strip()
@@ -3260,6 +3376,12 @@ def build_daily_plan_for_date(
         else:
             sched["slot"] = sched["slot"].map(normalize_slot)
             plan = sched[sched["weekday"] == target_wd].copy()
+            # 月予定生成と同じ基準で週指定を適用する。列なし・空欄は従来どおり毎週。
+            plan = plan[
+                plan["week_pattern"].map(
+                    lambda pattern: matches_week_pattern(target_date_obj, pattern)
+                ).astype(bool)
+            ].copy()
             plan["date"] = target_str
             if "note" not in plan.columns:
                 plan["note"] = ""
@@ -3313,35 +3435,28 @@ def build_daily_plan_for_date(
                 add_change_df = add_change_df[add_change_df["student_id"].isin(active_ids)].copy()
 
             if not add_change_df.empty:
-                existing_student_ids = set()
-                if not plan.empty and "student_id" in plan.columns:
-                    existing_student_ids = set(plan["student_id"].astype(str).str.strip())
-
-                # 「追加」でも、対象日に既存予定がある生徒は時間変更扱いにする。
-                # 通常予定 + 当日追加が二重表示・二重カウントになる事故を防ぐため。
-                note_for_extra = add_change_df.get("note", pd.Series([""] * len(add_change_df), index=add_change_df.index)).fillna("").astype(str)
-                explicit_extra_mask = note_for_extra.str.contains("特別追加|追加で受講|2時間|連続", regex=True, na=False)
-                implicit_change_mask = (
-                    (add_change_df["action_norm"] == "追加")
-                    & (add_change_df["student_id"].isin(existing_student_ids))
-                    & (~explicit_extra_mask)
+                # 「追加」は既存予定の有無やメモにかかわらずコマ単位で反映する。
+                # 連携の同日同コマ種別変更は、既存CSVでも「時間変更」として
+                # 保存されているため、保存済みの識別メモで一日全体の変更と区別する。
+                change_notes = add_change_df["note"].fillna("").astype(str)
+                slot_type_change_mask = (
+                    add_change_df["action_norm"].eq("時間変更")
+                    & change_notes.str.contains("座席予約連携 ", regex=False, na=False)
+                    & change_notes.str.contains(" / 種別変更 / ", regex=False, na=False)
                 )
-                add_change_df.loc[implicit_change_mask, "action_norm"] = "時間変更"
-                add_change_df.loc[implicit_change_mask, "action"] = "時間変更"
-                add_change_df.loc[implicit_change_mask, "note"] = (
-                    add_change_df.loc[implicit_change_mask, "note"].fillna("").astype(str).str.strip()
-                    .apply(lambda x: (x + " / " if x else "") + "追加登録を時間変更として処理")
-                )
+                change_df = add_change_df[
+                    add_change_df["action_norm"].eq("時間変更") & ~slot_type_change_mask
+                ].copy()
+                add_df = add_change_df[
+                    add_change_df["action_norm"].eq("追加") | slot_type_change_mask
+                ].copy()
 
-                change_df = add_change_df[add_change_df["action_norm"] == "時間変更"].copy()
-                add_df = add_change_df[add_change_df["action_norm"] == "追加"].copy()
-
-                # 時間変更：その日のその生徒の既存予定を丸ごと置き換える
+                # 明示的な一日全体の時間変更は、従来どおり既存予定を置き換える。
                 if not change_df.empty and not plan.empty:
                     change_sids = set(change_df["student_id"].astype(str).str.strip())
                     plan = plan[~plan["student_id"].astype(str).str.strip().isin(change_sids)].copy()
 
-                # 追加：同じ student_id × slot だけ置き換える
+                # 追加・連携の種別変更：同じ student_id × slot だけ置き換える。
                 if not add_df.empty and not plan.empty:
                     add_keys = set(zip(add_df["student_id"].astype(str).str.strip(), add_df["slot"].map(normalize_slot)))
                     plan["student_id_key"] = plan["student_id"].astype(str).str.strip()
@@ -4173,6 +4288,50 @@ def _next_prefixed_id(existing_values, prefix: str, width: int = 3) -> str:
 
 
 
+def active_curriculum_task_mask(tasks_df: pd.DataFrame) -> pd.Series:
+    """通常課題の有効判定。旧データの空欄・列なしは従来どおり有効とする。"""
+    values = tasks_df.get("is_active", pd.Series("", index=tasks_df.index, dtype=str))
+    return (values.fillna("").astype(str).str.strip().str.lower()
+            .replace("", "true").isin(["true", "1", "yes", "on"]))
+
+
+def resolve_course_history_ids(log_df: pd.DataFrame, courses_df: pd.DataFrame) -> pd.DataFrame:
+    """旧履歴は genre_id と course_name が一意に一致する場合だけIDを補完する。"""
+    out = log_df.copy()
+    for c in ["course_id", "curriculum", "item", "note"]:
+        if c not in out.columns:
+            out[c] = ""
+        out[c] = out[c].fillna("").astype(str).str.strip()
+    courses = courses_df.reindex(columns=["course_id", "genre_id", "course_name"]).fillna("").astype(str)
+    courses = courses.apply(lambda col: col.str.strip())
+    unresolved = 0
+    for idx, row in out.iterrows():
+        if row["note"] not in ["course_done", "course_skip"] or row["course_id"]:
+            continue
+        ids = set(courses.loc[
+            courses["genre_id"].eq(row["curriculum"])
+            & courses["course_name"].eq(row["item"]), "course_id"
+        ]) - {""} if row["curriculum"] and row["item"] else set()
+        if len(ids) == 1:
+            out.at[idx, "course_id"] = next(iter(ids))
+        else:
+            unresolved += 1
+    if unresolved:
+        st.warning(f"コース完了・スキップ履歴 {unresolved} 件を course_id に一意に対応付けできません。旧名称とコース定義を確認してください。推測による紐付けは行いません。")
+    return out
+
+
+def course_history_mask(log_df: pd.DataFrame, student_id: str, course_id: str, status: str) -> pd.Series:
+    """表示名に依存せず、コース完了・スキップの履歴を照合する。"""
+    data = log_df.reindex(columns=["student_id", "course_id", "status", "note"]).fillna("").astype(str)
+    data = data.apply(lambda col: col.str.strip())
+    return (data["student_id"].eq(str(student_id).strip())
+            & data["course_id"].eq(str(course_id).strip())
+            & data["course_id"].ne("")
+            & data["status"].str.lower().eq(status)
+            & data["note"].eq("course_done" if status == "done" else "course_skip"))
+
+
 def get_main_course_label(course_id: str) -> str:
     """course_idから、画面表示用のコース名を返す。"""
     cid = str(course_id).strip()
@@ -4282,13 +4441,7 @@ def get_student_main_course_status(student_id: str, course_id: str) -> dict:
                 log_df[c] = ""
             log_df[c] = log_df[c].fillna("").astype(str).str.strip()
 
-        done_mask = (
-            log_df["student_id"].astype(str).str.strip().eq(sid)
-            & log_df["curriculum"].astype(str).str.strip().eq(genre_id)
-            & log_df["item"].astype(str).str.strip().eq(course_name)
-            & log_df["status"].astype(str).str.strip().str.lower().eq("done")
-            & log_df["note"].astype(str).str.strip().eq("course_done")
-        )
+        done_mask = course_history_mask(log_df, sid, cid, "done")
         is_course_done = bool(done_mask.any())
 
     # 対象生徒に適用される、使用中のメイン課題数
@@ -4307,15 +4460,7 @@ def get_student_main_course_status(student_id: str, course_id: str) -> dict:
                 tasks_df[c] = ""
             tasks_df[c] = tasks_df[c].fillna("").astype(str).str.strip()
 
-        active_task_mask = (
-            tasks_df["is_active"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .replace("", "true")
-            .isin(["true", "1", "yes", "on"])
-        )
+        active_task_mask = active_curriculum_task_mask(tasks_df)
         applicable_student_mask = (
             tasks_df["student_id"].astype(str).str.strip().eq("")
             | tasks_df["student_id"].astype(str).str.strip().eq(sid)
@@ -5236,6 +5381,15 @@ def apply_absence_and_cancel_schedule(
     return att2, ov2, seat2, len(slots)
 
 
+def prepare_student_schedule_for_save(df: pd.DataFrame) -> pd.DataFrame:
+    """週次・システム設定共通。既存列を落とさず、メモの欠損だけ空欄にする。"""
+    out = df.copy()
+    if "note" not in out.columns:
+        out["note"] = ""
+    out["note"] = out["note"].fillna("")
+    return out
+
+
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def write_csv(df, path):
     df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -5401,6 +5555,8 @@ curr_courses = safe_read_csv(
     stop_on_missing=False,
 )
 
+log = resolve_course_history_ids(log, curr_courses)
+
 curr_tasks = safe_read_csv(
     CURRICULUM_TASKS_CSV,
     ["course_id", "task_id", "task_name", "order", "is_active", "student_id"],
@@ -5412,6 +5568,10 @@ curr_prog = safe_read_csv(
     ["student_id", "course_id", "task_id", "is_done", "is_skip", "done_date", "note"],
     stop_on_missing=False,
 )
+# 必須列の検証に成功したCSVは、0件でも初回登録に利用できる。
+# 読込失敗・未作成・必須列不足の場合は safe_read_csv が列なしで返す。
+curr_prog_available = len(curr_prog.columns) > 0
+
 # d396: 既存CSVとの互換性を保ちながら、完了を実際に入力した日時を別で保持する。
 if "recorded_at" not in curr_prog.columns:
     curr_prog["recorded_at"] = ""
@@ -5424,6 +5584,8 @@ kentei_prog = safe_read_csv(
     ["student_id", "grade", "task_id", "is_done", "is_skip", "done_date", "note"],
     stop_on_missing=False,
 )
+
+kentei_prog_available = len(kentei_prog.columns) > 0
 
 # done_date の表記ゆれ対策（Excel編集後でも YYYY-MM-DD にそろえる）
 if "done_date" in curr_prog.columns:
@@ -9523,34 +9685,7 @@ if page == "閲覧":
                             return _cname or _course_id
 
                         def _course_done_by_log(_course_id: str) -> bool:
-                            try:
-                                _course_id = str(_course_id).strip()
-                                _course_row = curr_courses[
-                                    curr_courses["course_id"].astype(str).str.strip() == _course_id
-                                ].copy()
-                                if _course_row.empty:
-                                    return False
-
-                                _genre_id = str(_course_row.iloc[0].get("genre_id", "")).strip()
-                                _course_name = str(_course_row.iloc[0].get("course_name", "")).strip()
-
-                                _log = log.copy()
-                                if _log.empty:
-                                    return False
-                                for _c in ["student_id", "curriculum", "item", "status"]:
-                                    if _c not in _log.columns:
-                                        _log[_c] = ""
-                                    _log[_c] = _log[_c].fillna("").astype(str).str.strip()
-
-                                _mask = (
-                                    (_log["student_id"].astype(str).str.strip() == _sid)
-                                    & (_log["curriculum"].astype(str).str.strip() == _genre_id)
-                                    & (_log["item"].astype(str).str.strip() == _course_name)
-                                    & (_log["status"].astype(str).str.strip().str.lower() == "done")
-                                )
-                                return bool(_mask.any())
-                            except Exception:
-                                return False
+                            return bool((course_history_mask(log, _sid, _course_id, "done")).any())
 
                         def _next_task_for_course(_course_id: str):
                             _course_id = str(_course_id).strip()
@@ -9571,9 +9706,7 @@ if page == "閲覧":
                                 )
                             ].copy()
 
-                            if "is_active" in _tasks.columns:
-                                _active = _tasks["is_active"].astype(str).str.strip().str.lower()
-                                _tasks = _tasks[_active.replace("", "true").isin(["true", "1", "yes"])].copy()
+                            _tasks = _tasks[active_curriculum_task_mask(_tasks)].copy()
 
                             if _tasks.empty:
                                 return None
@@ -12450,12 +12583,7 @@ if page == "閲覧":
                 errors="coerce",
             ).fillna(9999)
 
-            _fc_tasks["_active"] = (
-                _fc_tasks["is_active"]
-                .replace("", "true")
-                .str.lower()
-                .isin(["true", "1", "yes", "on"])
-            )
+            _fc_tasks["_active"] = active_curriculum_task_mask(_fc_tasks)
             _fc_tasks["_order"] = pd.to_numeric(
                 _fc_tasks["order"],
                 errors="coerce",
@@ -12504,21 +12632,9 @@ if page == "閲覧":
                     & _fc_log["status"].str.lower().isin(["done", "skip"])
                 ].copy()
 
-                for _, _closed in _closed_rows.iterrows():
-                    _closed_item = str(_closed.get("item", "")).strip()
-                    _closed_curriculum = str(_closed.get("curriculum", "")).strip()
-                    _match_courses = _fc_courses[
-                        _fc_courses["course_name"].eq(_closed_item)
-                    ]
-                    if _closed_curriculum:
-                        _match_courses = _match_courses[
-                            _match_courses["genre_id"].fillna("").astype(str).str.strip().eq(
-                                _closed_curriculum
-                            )
-                        ]
-                    _course_closed_ids.update(
-                        _match_courses["course_id"].fillna("").astype(str).str.strip().tolist()
-                    )
+                _course_closed_ids.update(
+                    _closed_rows.get("course_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip().tolist()
+                )
 
             _course_candidates = []
             for _, _cr in _fc_courses[
@@ -13017,7 +13133,7 @@ if page == "閲覧":
         st.subheader("✅ カリキュラム課題（進捗チェック）")
 
         st.caption("※ ここは『進捗チェック』です。課題そのものの登録/編集/削除は 管理（入力） → 📘 カリキュラム管理 で行います。")
-        if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
+        if curr_courses.empty or curr_tasks.empty or not curr_prog_available:
             st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
         elif selected_student == "（全員）":
             st.info("左のフィルタから、生徒を1人選んでください。")
@@ -13032,7 +13148,7 @@ if page == "閲覧":
 
                 can_render_tab0 = True
 
-                if curr_courses.empty or curr_tasks.empty or curr_prog.empty:
+                if curr_courses.empty or curr_tasks.empty or not curr_prog_available:
                     st.info("curriculum_courses/tasks/progress のCSVが揃っていないため、この機能はスキップします。")
                     can_render_tab0 = False
 
@@ -13104,48 +13220,7 @@ if page == "閲覧":
                     # 進捗登録画面のコース選択も「今日やる候補」と同じ考え方へ寄せる。
                     # 最新コースがコース完了済みなら、次の未完了課題があるコースを推奨する。
                     def _course_done_by_log_for_progress(_sid: str, _course_id: str) -> bool:
-                        # d356:
-                        # 「現在のコース」候補では、コース完了だけでなく
-                        # コース単位スキップも終了扱いとして除外する。
-                        try:
-                            _sid = str(_sid).strip()
-                            _course_id = str(_course_id).strip()
-
-                            _course_row = curr_courses[
-                                curr_courses["course_id"].astype(str).str.strip() == _course_id
-                            ].copy()
-                            if _course_row.empty:
-                                return False
-
-                            _genre_id = str(_course_row.iloc[0].get("genre_id", "")).strip()
-                            _course_name = str(_course_row.iloc[0].get("course_name", "")).strip()
-
-                            _log = log.copy()
-                            if _log.empty:
-                                return False
-                            for _c in ["student_id", "curriculum", "item", "status", "note"]:
-                                if _c not in _log.columns:
-                                    _log[_c] = ""
-                                _log[_c] = _log[_c].fillna("").astype(str).str.strip()
-
-                            _base_mask = (
-                                (_log["student_id"] == _sid)
-                                & (_log["curriculum"] == _genre_id)
-                                & (_log["item"] == _course_name)
-                            )
-                            _done_mask = (
-                                _base_mask
-                                & (_log["status"].str.lower() == "done")
-                                & (_log["note"] == "course_done")
-                            )
-                            _skip_mask = (
-                                _base_mask
-                                & (_log["status"].str.lower() == "skip")
-                                & (_log["note"] == "course_skip")
-                            )
-                            return bool((_done_mask | _skip_mask).any())
-                        except Exception:
-                            return False
+                        return bool((course_history_mask(log, _sid, _course_id, "done") | course_history_mask(log, _sid, _course_id, "skip")).any())
 
                     def _has_unfinished_task_for_progress(_sid: str, _course_id: str) -> bool:
                         try:
@@ -13168,9 +13243,7 @@ if page == "閲覧":
                                 )
                             ].copy()
 
-                            if "is_active" in _tasks.columns:
-                                _active = _tasks["is_active"].astype(str).str.strip().str.lower()
-                                _tasks = _tasks[_active.replace("", "true").isin(["true", "1", "yes"])].copy()
+                            _tasks = _tasks[active_curriculum_task_mask(_tasks)].copy()
 
                             if _tasks.empty:
                                 return False
@@ -13296,7 +13369,7 @@ if page == "閲覧":
                     is_locked_done_tasks = (not override_done_lock)
 
                     # tasks for course (common + student-specific)
-                    t = curr_tasks.copy()
+                    t = curr_tasks.loc[active_curriculum_task_mask(curr_tasks)].copy()
                     t["student_id"] = t["student_id"].fillna("").astype(str).str.strip()
                     t = t[
                         (t["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
@@ -13308,7 +13381,7 @@ if page == "閲覧":
 
 
                     if t.empty:
-                        st.info("このコースの課題が登録されていません。")
+                        st.info("このコースに表示対象の課題はありません。")
                     else:
 
 
@@ -13334,32 +13407,14 @@ if page == "閲覧":
                             log[_c] = ""
                         log[_c] = log[_c].fillna("").astype(str).str.strip()
 
-                    course_done_mask = (
-                        log["student_id"].astype(str).str.strip() == str(student_id).strip()
-                    ) & (
-                        log["curriculum"].astype(str).str.strip() == str(genre_id).strip()
-                    ) & (
-                        log["item"].astype(str).str.strip() == str(course_name).strip()
-                    ) & (
-                        log["status"].astype(str).str.strip().str.lower() == "done"
-                    ) & (
-                        log["note"].astype(str).str.strip() == "course_done"
-                    )
+                    course_done_mask = course_history_mask(log, student_id, selected_course_id, "done")
+
 
                     # d355:
                     # コース単位のスキップは progress_log.csv に
                     # status=skip / note=course_skip として保存する。
-                    course_skip_mask = (
-                        log["student_id"].astype(str).str.strip() == str(student_id).strip()
-                    ) & (
-                        log["curriculum"].astype(str).str.strip() == str(genre_id).strip()
-                    ) & (
-                        log["item"].astype(str).str.strip() == str(course_name).strip()
-                    ) & (
-                        log["status"].astype(str).str.strip().str.lower() == "skip"
-                    ) & (
-                        log["note"].astype(str).str.strip() == "course_skip"
-                    )
+                    course_skip_mask = course_history_mask(log, student_id, selected_course_id, "skip")
+
 
                     is_course_done = bool(course_done_mask.any())
                     is_course_skip = bool(course_skip_mask.any())
@@ -13408,13 +13463,8 @@ if page == "閲覧":
                                                 df_log[_c] = ""
                                             df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
 
-                                        cancel_mask = (
-                                            (df_log["student_id"].astype(str).str.strip() == str(student_id).strip())
-                                            & (df_log["curriculum"].astype(str).str.strip() == str(genre_id).strip())
-                                            & (df_log["item"].astype(str).str.strip() == str(course_name).strip())
-                                            & (df_log["status"].astype(str).str.strip().str.lower() == "done")
-                                            & (df_log["note"].astype(str).str.strip() == "course_done")
-                                        )
+                                        cancel_mask = course_history_mask(df_log, student_id, selected_course_id, "done")
+
                                         df_log = df_log.loc[~cancel_mask].reset_index(drop=True)
                                         write_csv_atomic(df_log, PROGRESS_LOG_CSV)
                                         st.success("コース完了を取り消しました。課題ごとの完了・スキップ記録は残っています。")
@@ -13438,13 +13488,8 @@ if page == "閲覧":
                                                 df_log[_c] = ""
                                             df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
 
-                                        cancel_skip_mask = (
-                                            (df_log["student_id"].astype(str).str.strip() == str(student_id).strip())
-                                            & (df_log["curriculum"].astype(str).str.strip() == str(genre_id).strip())
-                                            & (df_log["item"].astype(str).str.strip() == str(course_name).strip())
-                                            & (df_log["status"].astype(str).str.strip().str.lower() == "skip")
-                                            & (df_log["note"].astype(str).str.strip() == "course_skip")
-                                        )
+                                        cancel_skip_mask = course_history_mask(df_log, student_id, selected_course_id, "skip")
+
                                         df_log = df_log.loc[~cancel_skip_mask].reset_index(drop=True)
                                         write_csv_atomic(df_log, PROGRESS_LOG_CSV)
                                         st.success("カリキュラムのスキップを取り消しました。")
@@ -13470,6 +13515,7 @@ if page == "閲覧":
                                 new_row = {
                                     'date': today_str,
                                     'student_id': str(student_id).strip(),
+                                    'course_id': str(selected_course_id).strip(),
                                     'curriculum': str(genre_id).strip(),
                                     'item': str(course_name).strip(),
                                     'status': 'done',
@@ -13480,13 +13526,7 @@ if page == "閲覧":
                                 if df_log.empty:
                                     df_log = pd.DataFrame([new_row])
                                 else:
-                                    mask = (
-                                        df_log['student_id'].astype(str).str.strip() == str(student_id).strip()
-                                    ) & (
-                                        df_log['curriculum'].astype(str).str.strip() == str(genre_id).strip()
-                                    ) & (
-                                        df_log['item'].astype(str).str.strip() == str(course_name).strip()
-                                    )
+                                    mask = course_history_mask(df_log, student_id, selected_course_id, "done")
                                     if mask.any():
                                         df_log.loc[mask, 'date'] = today_str
                                         df_log.loc[mask, 'status'] = 'done'
@@ -13507,6 +13547,7 @@ if page == "閲覧":
                                 new_row = {
                                     'date': today_str,
                                     'student_id': str(student_id).strip(),
+                                    'course_id': str(selected_course_id).strip(),
                                     'curriculum': str(genre_id).strip(),
                                     'item': str(course_name).strip(),
                                     'status': 'skip',
@@ -13525,10 +13566,8 @@ if page == "閲覧":
                                         df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
 
                                     course_state_mask = (
-                                        (df_log["student_id"] == str(student_id).strip())
-                                        & (df_log["curriculum"] == str(genre_id).strip())
-                                        & (df_log["item"] == str(course_name).strip())
-                                        & (df_log["note"].isin(["course_done", "course_skip"]))
+                                        course_history_mask(df_log, student_id, selected_course_id, "done")
+                                        | course_history_mask(df_log, student_id, selected_course_id, "skip")
                                     )
                                     df_log = df_log.loc[~course_state_mask].copy()
                                     df_log = pd.concat(
@@ -13692,14 +13731,17 @@ if page == "閲覧":
 
 
 
-                    if st.button("💾 保存（カリキュラム課題）"):
+                    if st.button("💾 保存（カリキュラム課題）", disabled=not updated_rows):
                         new_df = pd.DataFrame(updated_rows)
 
 
+                        # 非表示課題の履歴は残し、今回入力した課題だけ置き換える。
+                        updated_task_ids = new_df["task_id"].astype(str).str.strip()
                         others = curr_prog[
                             ~(
                                 (curr_prog["student_id"].astype(str).str.strip() == student_id)
                                 & (curr_prog["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                                & curr_prog["task_id"].astype(str).str.strip().isin(updated_task_ids)
                             )
                         ].copy()
 
@@ -13733,7 +13775,7 @@ if page == "閲覧":
 
         st.subheader("📝 検定課題の進捗（チェック入力）")
 
-        if kentei_tasks.empty or kentei_prog.empty:
+        if kentei_tasks.empty or not kentei_prog_available:
             st.info("kentei_tasks / kentei_progress が揃っていないため、この機能はスキップします。")
         elif selected_student == "（全員）":
             st.info("左のフィルタから、生徒を1人選んでください。")
@@ -17398,7 +17440,11 @@ elif page == "管理（入力）":
                     "session_type",
                 ],
             )
+            # 編集しないメモは空白を含めて読み込んだ値を保持する。
+            notes = loaded["note"].copy() if "note" in loaded.columns else None
             loaded = sanitize_df(loaded)
+            if notes is not None:
+                loaded["note"] = notes
             if "week_pattern" not in loaded.columns:
                 loaded["week_pattern"] = "毎週"
             for col in [
@@ -17643,21 +17689,12 @@ elif page == "管理（入力）":
                 )
             else:
                 edited = st.session_state[schedule_edit_key].copy()
-                edited = edited.reindex(
-                    columns=[
-                        "student_id",
-                        "weekday",
-                        "slot",
-                        "session_type",
-                        "week_pattern",
-                    ]
-                )
                 edited["week_pattern"] = (
                     edited["week_pattern"]
                     .fillna("")
                     .map(normalize_week_pattern)
                 )
-                write_csv(edited, STUDENT_SCHEDULE_CSV)
+                write_csv(prepare_student_schedule_for_save(edited), STUDENT_SCHEDULE_CSV)
 
                 # 保存後は次回の再表示でCSVから読み直す。
                 for key in [
@@ -20152,6 +20189,22 @@ elif page == "管理（入力）":
                         "course_name が空のコースがあるため保存できません。"
                     )
                 else:
+                    # 名称変更前の定義で旧履歴のIDを確定する。読込失敗時はコース保存も止める。
+                    if PROGRESS_LOG_CSV.exists():
+                        try:
+                            try:
+                                history_before = pd.read_csv(PROGRESS_LOG_CSV, dtype=str).fillna("")
+                            except UnicodeDecodeError:
+                                history_before = pd.read_csv(PROGRESS_LOG_CSV, dtype=str, encoding="cp932").fillna("")
+                            required = {"date", "student_id", "curriculum", "item", "status", "note"}
+                            if not required.issubset(history_before.columns):
+                                raise ValueError("進捗履歴の必須列が不足しています")
+                            history_with_ids = resolve_course_history_ids(history_before, curr_courses)
+                            if not history_with_ids.equals(history_before):
+                                write_csv_atomic(history_with_ids, PROGRESS_LOG_CSV)
+                        except Exception as exc:
+                            st.error(f"コース履歴のID保存に失敗したため、コース定義は保存しません: {exc}")
+                            st.stop()
                     backup_file(CURRICULUM_COURSES_CSV)
                     write_csv(
                         edited_courses,
@@ -20795,12 +20848,15 @@ elif page == "管理（入力）":
         monthly_dirty_key = "monthly_schedule_edit_dirty"
         monthly_base_signature_key = "monthly_schedule_edit_base_signature"
         monthly_pending_override_cleanup_key = "monthly_schedule_pending_override_cleanup"
+        monthly_pending_confirmation_key = "monthly_schedule_pending_confirmation_months"
 
         def _monthly_schedule_file_signature():
             try:
-                p = Path(MONTHLY_SCHEDULE_CSV)
-                stat = p.stat()
-                return (int(stat.st_mtime_ns), int(stat.st_size))
+                signatures = []
+                for p in [Path(MONTHLY_SCHEDULE_CSV), MONTHLY_SCHEDULE_CONFIRMATION_JSON]:
+                    stat = p.stat() if p.exists() else None
+                    signatures.append((int(stat.st_mtime_ns), int(stat.st_size)) if stat else None)
+                return tuple(signatures)
             except Exception:
                 return None
 
@@ -20820,6 +20876,7 @@ elif page == "管理（入力）":
                 _monthly_schedule_file_signature()
             )
             st.session_state[monthly_pending_override_cleanup_key] = []
+            st.session_state[monthly_pending_confirmation_key] = []
 
         # この画面内の表示・追加・修正・削除は、すべて編集用データを使う。
         monthly_schedule = _normalize_monthly_edit_df(
@@ -20841,6 +20898,24 @@ elif page == "管理（入力）":
                 "回数確認は「📅 編集」内に1か所だけ表示します。"
             ),
         )
+
+        if monthly_view_mode in ("📅 編集", "⚙ 生成"):
+            confirmation = load_monthly_schedule_confirmation()
+            target_month_key = f"{target_year:04d}-{target_month:02d}"
+            with st.expander("月の確定状態", expanded=False):
+                if target_month_key in confirmation["confirmed_months"]:
+                    st.caption("この月は確定済みです。月予定にない日は予定0件として扱います。")
+                elif target_month_key in st.session_state.get(monthly_pending_confirmation_key, []):
+                    st.caption("この月の確定は未保存です。画面下の保存で確定します。")
+                else:
+                    st.caption("この月全体の確定状態は未記録です。過去の予定から自動判定はしません。")
+                st.caption("現在の月予定を変えずに、予定のない日も含めて確定できます。個別編集の保存では変更した日だけが確定します。")
+                if st.button("この月を確定対象にする（0件の日も含む）", key=f"confirm_month_{target_month_key}"):
+                    pending_months = set(st.session_state.get(monthly_pending_confirmation_key, []))
+                    pending_months.add(target_month_key)
+                    st.session_state[monthly_pending_confirmation_key] = sorted(pending_months)
+                    st.session_state[monthly_dirty_key] = True
+                    st.rerun()
 
         if monthly_view_mode == "📅 編集":
             st.info("カレンダーから予定を選び、追加・修正・削除を行います。回数確認もこの画面内で行えます。")
@@ -23468,6 +23543,9 @@ elif page == "管理（入力）":
                             _normalize_monthly_edit_df(save_df)
                         )
                         st.session_state[monthly_dirty_key] = True
+                        pending_months = set(st.session_state.get(monthly_pending_confirmation_key, []))
+                        pending_months.add(f"{target_year:04d}-{target_month:02d}")
+                        st.session_state[monthly_pending_confirmation_key] = sorted(pending_months)
                         st.success(
                             f"{target_year}年{target_month}月の固定スケジュールを"
                             "編集用カレンダーに反映しました。最後に一括保存してください。"
@@ -23599,7 +23677,7 @@ elif page == "管理（入力）":
 
                 if current_signature != base_signature:
                     st.error(
-                        "編集中にmonthly_schedule.csvが別の処理で更新されました。"
+                        "編集中に月予定または確定状態が別の処理で更新されました。"
                         "安全のため保存していません。"
                         "「編集を破棄」で最新データを読み直してから、"
                         "もう一度変更してください。"
@@ -23608,10 +23686,14 @@ elif page == "管理（入力）":
                     edited_monthly = _normalize_monthly_edit_df(
                         st.session_state[monthly_edit_key]
                     )
-                    write_csv_atomic(
-                        edited_monthly,
-                        MONTHLY_SCHEDULE_CSV,
-                    )
+                    try:
+                        save_monthly_schedule_with_confirmation(
+                            edited_monthly,
+                            st.session_state.get(monthly_pending_confirmation_key, []),
+                        )
+                    except Exception as e:
+                        st.error(f"月予定と確定状態を保存できませんでした: {e}")
+                        st.stop()
 
                     # 月予定の完全削除に関連する例外行も、この時点でまとめて整理する。
                     pending_cleanup = list(
@@ -23651,6 +23733,7 @@ elif page == "管理（入力）":
                         monthly_dirty_key,
                         monthly_base_signature_key,
                         monthly_pending_override_cleanup_key,
+                        monthly_pending_confirmation_key,
                     ]:
                         st.session_state.pop(key, None)
 
@@ -23663,6 +23746,7 @@ elif page == "管理（入力）":
                     monthly_dirty_key,
                     monthly_base_signature_key,
                     monthly_pending_override_cleanup_key,
+                    monthly_pending_confirmation_key,
                 ]:
                     st.session_state.pop(key, None)
                 st.rerun()
@@ -23710,8 +23794,11 @@ elif page == "管理（入力）":
                 stop_on_missing=False,
             #    show_message=False,
             )
-            if sched.empty:
+            if len(sched.columns) == 0:
                 sched = pd.DataFrame(columns=["student_id", "weekday", "slot", "session_type", "note"])
+
+            # CSVの整数列に文字列を代入しないよう、編集用のコマを文字列へ統一する。
+            sched["slot"] = sched["slot"].map(normalize_slot).astype(str)
 
             # 列を揃える（将来拡張も壊れない）
             for c in ["note"]:
@@ -23785,7 +23872,7 @@ elif page == "管理（入力）":
                         }
                         _backup(STUDENT_SCHEDULE_CSV)
                         sched2 = pd.concat([sched, pd.DataFrame([new_row])], ignore_index=True)
-                        write_csv_atomic(sched2, STUDENT_SCHEDULE_CSV)
+                        write_csv_atomic(prepare_student_schedule_for_save(sched2), STUDENT_SCHEDULE_CSV)
                         st.success("追加しました。")
                         st.rerun()
 
@@ -23862,7 +23949,7 @@ elif page == "管理（入力）":
                                 sched.loc[sel_idx, "slot"] = normalize_slot(e_slot)
                                 sched.loc[sel_idx, "session_type"] = str(e_sess).strip()
                                 sched.loc[sel_idx, "note"] = str(e_note).strip()
-                                write_csv_atomic(sched, STUDENT_SCHEDULE_CSV)
+                                write_csv_atomic(prepare_student_schedule_for_save(sched), STUDENT_SCHEDULE_CSV)
                                 st.success("保存しました。")
                                 st.rerun()
 
@@ -23870,7 +23957,7 @@ elif page == "管理（入力）":
                         if st.button("削除", key="ss_edit_del"):
                             _backup(STUDENT_SCHEDULE_CSV)
                             sched3 = sched.drop(index=sel_idx).reset_index(drop=True)
-                            write_csv_atomic(sched3, STUDENT_SCHEDULE_CSV)
+                            write_csv_atomic(prepare_student_schedule_for_save(sched3), STUDENT_SCHEDULE_CSV)
                             st.success("削除しました。")
                             st.rerun()
 
