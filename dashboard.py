@@ -861,8 +861,8 @@ def save_kentei_results(df: pd.DataFrame) -> None:
     write_csv_atomic(df, KENTEI_RESULTS_CSV)
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
-def is_kentei_passed(student_id: str, grade: str) -> bool:
-    df = load_kentei_results()
+def is_kentei_passed(student_id: str, grade: str, *, results_df: pd.DataFrame | None = None) -> bool:
+    df = load_kentei_results() if results_df is None else results_df
     if df.empty:
         return False
     sid = str(student_id).strip()
@@ -906,8 +906,8 @@ def save_kentei_training_status(df: pd.DataFrame) -> None:
             df2[c] = ""
     write_csv_atomic(df2[KENTEI_TRAINING_STATUS_COLS].fillna(""), KENTEI_TRAINING_STATUS_CSV)
 
-def is_kentei_training_active(student_id: str) -> bool:
-    df = load_kentei_training_status()
+def is_kentei_training_active(student_id: str, *, training_df: pd.DataFrame | None = None) -> bool:
+    df = load_kentei_training_status() if training_df is None else training_df
     if df.empty:
         return False
     sid = str(student_id).strip()
@@ -917,8 +917,8 @@ def is_kentei_training_active(student_id: str) -> bool:
     v = str(tmp.iloc[-1].get("is_training", "")).strip().lower()
     return v in ["true", "1", "yes", "on", "検定練習中"]
 
-def get_kentei_training_grade(student_id: str) -> str:
-    df = load_kentei_training_status()
+def get_kentei_training_grade(student_id: str, *, training_df: pd.DataFrame | None = None) -> str:
+    df = load_kentei_training_status() if training_df is None else training_df
     if df.empty:
         return ""
     sid = str(student_id).strip()
@@ -4754,7 +4754,7 @@ def complete_and_advance_student_sub_task(student_id: str) -> tuple[bool, str]:
 
 
 
-def get_student_sub_ui_state(student_id: str) -> dict:
+def get_student_sub_ui_state(student_id: str, *, progress_df: pd.DataFrame | None = None, masters_df: pd.DataFrame | None = None, items_df: pd.DataFrame | None = None, log_df: pd.DataFrame | None = None) -> dict:
     """閲覧画面用に、サブ課題の現在位置・本日の登録・直前の完了をまとめる。"""
     state = {
         "configured": False,
@@ -4776,7 +4776,7 @@ def get_student_sub_ui_state(student_id: str) -> dict:
         if not sid:
             return state
 
-        progress = load_student_sub_progress()
+        progress = load_student_sub_progress() if progress_df is None else progress_df
         if progress.empty:
             return state
 
@@ -4800,8 +4800,8 @@ def get_student_sub_ui_state(student_id: str) -> dict:
             in ["true", "1", "yes", "on"]
         )
 
-        masters = load_sub_curricula()
-        items = load_sub_curriculum_items()
+        masters = load_sub_curricula() if masters_df is None else masters_df
+        items = load_sub_curriculum_items() if items_df is None else items_df
 
         sub_name = sub_id
         if not masters.empty:
@@ -4827,7 +4827,7 @@ def get_student_sub_ui_state(student_id: str) -> dict:
             current_item_id, current_item_id
         )
 
-        log_df = load_sub_progress_log()
+        log_df = load_sub_progress_log() if log_df is None else log_df
         if log_df.empty:
             return state
 
@@ -4974,14 +4974,14 @@ def undo_latest_student_sub_completion(student_id: str) -> tuple[bool, str]:
         return False, f"完了の取り消しでエラーが発生しました：{e}"
 
 
-def get_student_sub_task_hint(student_id: str) -> str:
+def get_student_sub_task_hint(student_id: str, *, progress_df: pd.DataFrame | None = None, masters_df: pd.DataFrame | None = None, items_df: pd.DataFrame | None = None) -> str:
     """進行中のサブ課題があれば「サブ：教材名 / 次の項目」を返す。"""
     try:
         sid = str(student_id).strip()
         if not sid:
             return ""
 
-        progress = load_student_sub_progress()
+        progress = load_student_sub_progress() if progress_df is None else progress_df
         if progress.empty:
             return ""
 
@@ -5001,8 +5001,8 @@ def get_student_sub_task_hint(student_id: str) -> str:
         if not sub_id:
             return ""
 
-        masters = load_sub_curricula()
-        items = load_sub_curriculum_items()
+        masters = load_sub_curricula() if masters_df is None else masters_df
+        items = load_sub_curriculum_items() if items_df is None else items_df
 
         sub_name = sub_id
         if not masters.empty:
@@ -9910,8 +9910,9 @@ if page == "閲覧":
                         _sid = str(_sid).strip()
                         _grade = _recommended_kentei_grade_for_candidate(_sid)
 
-                        _is_training = is_kentei_training_active(_sid)
-                        _training_grade = get_kentei_training_grade(_sid)
+                        _hint_training = load_kentei_training_status()
+                        _is_training = is_kentei_training_active(_sid, training_df=_hint_training)
+                        _training_grade = get_kentei_training_grade(_sid, training_df=_hint_training)
                         if _is_training and _training_grade:
                             _grade = _training_grade
 
@@ -10002,8 +10003,24 @@ if page == "閲覧":
 
                 # d300:
                 # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
-                sub_state = get_student_sub_ui_state(sid)
-                sub_task_hint = get_student_sub_task_hint(sid)
+                # 隣接する表示判定だけで共有し、保存操作・次の生徒へは持ち越さない。
+                _sub_progress_for_row = load_student_sub_progress()
+                _sub_masters_for_row = _sub_items_for_row = _sub_log_for_row = None
+                _sub_hit_for_row = _sub_progress_for_row[
+                    _sub_progress_for_row["student_id"].astype(str).str.strip().eq(str(sid).strip())
+                ]
+                if not _sub_hit_for_row.empty and str(_sub_hit_for_row.iloc[-1].get("sub_id", "")).strip():
+                    _sub_masters_for_row = load_sub_curricula()
+                    _sub_items_for_row = load_sub_curriculum_items()
+                    _sub_log_for_row = load_sub_progress_log()
+                sub_state = get_student_sub_ui_state(
+                    sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
+                    items_df=_sub_items_for_row, log_df=_sub_log_for_row,
+                )
+                sub_task_hint = get_student_sub_task_hint(
+                    sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
+                    items_df=_sub_items_for_row,
+                )
                 sub_daily_state = get_sub_daily_check_row(sid, today)
                 sub_daily_status = str(
                     sub_daily_state.get("status", "")
@@ -12443,26 +12460,6 @@ if page == "閲覧":
 
 
     # =========================================================
-    # Latest per item
-    # =========================================================
-    log_all_sorted = log_all.copy()
-    log_all_sorted["date_dt"] = pd.to_datetime(log_all_sorted["date"], errors="coerce")
-    log_all_sorted = log_all_sorted.dropna(subset=["date_dt"]).copy()
-    log_all_sorted = log_all_sorted.sort_values(by=["student_id", "curriculum", "item", "date_dt"])
-    latest = log_all_sorted.groupby(["student_id", "curriculum", "item"], as_index=False).tail(1)
-
-    latest_filtered = latest.copy()
-    if selected_grade != "（全て）":
-        latest_filtered = latest_filtered[latest_filtered["grade"] == selected_grade]
-    if selected_student != "（全員）":
-        latest_filtered = latest_filtered[latest_filtered["display_name"] == selected_student_raw]
-    if selected_curriculum != "（全て）":
-        latest_filtered = latest_filtered[latest_filtered["curriculum"] == selected_curriculum]
-    if selected_status != "（全て）":
-        latest_filtered = latest_filtered[norm_lower(latest_filtered["status"]) == selected_status]
-        
-        
-    # =========================================================
     # 表示切替（整理版）
     # ---------------------------------------------------------
     # d225:
@@ -13810,6 +13807,7 @@ if page == "閲覧":
 
             # 合格済み級を取得
             _passed_grades = set()
+            _results_for_grade = None
             try:
                 _results_for_grade = load_kentei_results().copy()
                 if not _results_for_grade.empty:
@@ -13897,8 +13895,10 @@ if page == "閲覧":
 
             # d250:
             # 検定練習中フラグがONで級が保存されている場合は、その級を推奨級として扱う。
-            _training_active_for_student = is_kentei_training_active(student_id)
-            _training_grade_for_student = get_kentei_training_grade(student_id)
+            # この描画内だけ共有する。以下の保存操作後は既存どおりrerunする。
+            _training_for_view = load_kentei_training_status()
+            _training_active_for_student = is_kentei_training_active(student_id, training_df=_training_for_view)
+            _training_grade_for_student = get_kentei_training_grade(student_id, training_df=_training_for_view)
             if _training_active_for_student and _training_grade_for_student in grade_options:
                 _recommended_k_grade = _training_grade_for_student
                 _recommended_k_reason = "検定練習中フラグがONのため、この級を表示しています。"
@@ -13936,7 +13936,7 @@ if page == "閲覧":
 
             # d250:
             # このチェックがONなら、次に見る候補・出欠後の動線で検定課題を優先する。
-            _training_before = is_kentei_training_active(student_id)
+            _training_before = is_kentei_training_active(student_id, training_df=_training_for_view)
             _training_now = st.checkbox(
                 "この子は検定練習中（次に見る候補で検定課題を優先）",
                 value=_training_before,
@@ -13954,7 +13954,7 @@ if page == "閲覧":
                 st.rerun()
 
             if _training_now:
-                _saved_training_grade = get_kentei_training_grade(student_id)
+                _saved_training_grade = get_kentei_training_grade(student_id, training_df=_training_for_view)
                 if _saved_training_grade and _saved_training_grade != str(grade_sel):
                     st.warning(f"検定練習中の保存級は {_saved_training_grade}級 です。現在表示中は {grade_sel}級 です。")
                     if st.button("この級を検定練習中に更新", key=f"kentei_training_update_grade_{student_id}_{grade_sel}"):
@@ -13975,7 +13975,7 @@ if page == "閲覧":
             # 推奨級と違う級を見ている場合は、上のプルダウンから手動で推奨級を選び直す運用にする。
 
             # 合格ロック（判定は kentei_results.csv を唯一の正とする）
-            passed_this_grade = is_kentei_passed(student_id, grade_sel)
+            passed_this_grade = is_kentei_passed(student_id, grade_sel, results_df=_results_for_grade)
 
             is_locked = passed_this_grade and (not st.session_state.get("override_passed_lock", False))
 
@@ -15189,6 +15189,25 @@ if page == "閲覧":
         st.dataframe(show, use_container_width=True, hide_index=True)
 
     if sidebar_view_mode == "詳細（最新状態）":
+        # =========================================================
+        # Latest per item
+        # =========================================================
+        log_all_sorted = log_all.copy()
+        log_all_sorted["date_dt"] = pd.to_datetime(log_all_sorted["date"], errors="coerce")
+        log_all_sorted = log_all_sorted.dropna(subset=["date_dt"]).copy()
+        log_all_sorted = log_all_sorted.sort_values(by=["student_id", "curriculum", "item", "date_dt"])
+        latest = log_all_sorted.groupby(["student_id", "curriculum", "item"], as_index=False).tail(1)
+
+        latest_filtered = latest.copy()
+        if selected_grade != "（全て）":
+            latest_filtered = latest_filtered[latest_filtered["grade"] == selected_grade]
+        if selected_student != "（全員）":
+            latest_filtered = latest_filtered[latest_filtered["display_name"] == selected_student_raw]
+        if selected_curriculum != "（全て）":
+            latest_filtered = latest_filtered[latest_filtered["curriculum"] == selected_curriculum]
+        if selected_status != "（全て）":
+            latest_filtered = latest_filtered[norm_lower(latest_filtered["status"]) == selected_status]
+
         #with tab6:
         is_log_tab = True
         #詳細（最新状態）
