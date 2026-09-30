@@ -1,0 +1,276 @@
+{
+  "ui_preferences.csv": [
+    "key",
+    "value",
+    "updated_at"
+  ],
+  "curriculum_progress.csv": [
+    "student_id",
+    "course_id",
+    "task_id",
+    "is_done",
+    "is_skip",
+    "done_date",
+    "note",
+    "recorded_at"
+  ],
+  "schedule_correction_log.csv": [
+    "corrected_at",
+    "operation",
+    "source",
+    "student_id",
+    "date",
+    "slot",
+    "session_type",
+    "reason",
+    "note"
+  ],
+  "schedule_overrides.csv": [
+    "student_id",
+    "date",
+    "slot",
+    "action",
+    "start",
+    "end",
+    "session_type",
+    "note"
+  ],
+  "bot_student_map_private.csv": [
+    "student_id",
+    "bot_student_id"
+  ],
+  "sub_curriculum_items.csv": [
+    "sub_id",
+    "item_id",
+    "item_name",
+    "order",
+    "is_active",
+    "created_at",
+    "updated_at"
+  ],
+  "timeslots.csv": [
+    "weekday",
+    "slot",
+    "start",
+    "end"
+  ],
+  "default_seats.csv": [
+    "student_id",
+    "default_seat_no",
+    "note"
+  ],
+  "seat_reservation_sync.csv": [
+    "date",
+    "slot",
+    "base_count",
+    "absence_count"
+  ],
+  "transfer_inbox.csv": [
+    "request_id",
+    "created_at",
+    "request_type",
+    "student_id",
+    "source_date",
+    "source_slot",
+    "requested_date",
+    "slot",
+    "session_type",
+    "note",
+    "status",
+    "approved_at"
+  ],
+  "progress_date_correction_log.csv": [
+    "corrected_at",
+    "student_id",
+    "course_id",
+    "task_id",
+    "old_done_date",
+    "new_done_date",
+    "reason"
+  ],
+  "student_schedule.csv": [
+    "student_id",
+    "weekday",
+    "slot",
+    "session_type",
+    "note"
+  ],
+  "student_sub_progress.csv": [
+    "student_id",
+    "sub_id",
+    "current_item_id",
+    "is_active",
+    "updated_at",
+    "note"
+  ],
+  "kentei_results.csv": [
+    "student_id",
+    "grade",
+    "result",
+    "score",
+    "pass_date",
+    "memo"
+  ],
+  "progress_log.csv": [
+    "date",
+    "student_id",
+    "curriculum",
+    "item",
+    "status",
+    "note"
+  ],
+  "seat_assignments.csv": [
+    "date",
+    "slot",
+    "seat_no",
+    "student_id",
+    "note"
+  ],
+  "seat_transfer_import_log.csv": [
+    "reservation_id",
+    "bot_student_id",
+    "student_id",
+    "request_type",
+    "source_date",
+    "source_slot",
+    "requested_date",
+    "requested_slot",
+    "source_session_type",
+    "requested_session_type",
+    "reception_source",
+    "applied_at"
+  ],
+  "bot_schedule.csv": [
+    "bot_student_id",
+    "date",
+    "weekday",
+    "slot",
+    "start",
+    "end",
+    "session_type"
+  ],
+  "sub_progress_log.csv": [
+    "student_id",
+    "sub_id",
+    "item_id",
+    "completed_at",
+    "note"
+  ],
+  "attendance_log.csv": [
+    "date",
+    "student_id",
+    "kind",
+    "memo"
+  ],
+  "preparation_log.csv": [
+    "date",
+    "student_id",
+    "slot",
+    "prepared",
+    "prepared_at"
+  ],
+  "sub_daily_check.csv": [
+    "date",
+    "student_id",
+    "sub_id",
+    "item_id",
+    "status",
+    "checked_at",
+    "note"
+  ],
+  "kentei_training_status.csv": [
+    "student_id",
+    "is_training",
+    "grade",
+    "updated_at",
+    "note"
+  ],
+  "curriculum_tasks.csv": [
+    "course_id",
+    "task_id",
+    "task_name",
+    "order",
+    "is_active",
+    "student_id"
+  ],
+  "kentei_tasks.csv": [
+    "grade",
+    "task_id",
+    "task_name",
+    "order",
+    "student_id"
+  ],
+  "kentei_exam_schedule.csv": [
+    "student_id",
+    "exam_date",
+    "exam_type",
+    "grade",
+    "note",
+    "kentei",
+    "date"
+  ],
+  "kentei_progress.csv": [
+    "student_id",
+    "grade",
+    "task_id",
+    "is_done",
+    "is_skip",
+    "done_date",
+    "note"
+  ],
+  "curriculum_courses.csv": [
+    "course_id",
+    "genre_id",
+    "genre_name",
+    "course_name",
+    "course_order",
+    "is_active"
+  ],
+  "prep_memo.csv": [
+    "student_id",
+    "memo"
+  ],
+  "typing_log.csv": [
+    "date",
+    "student_id",
+    "status",
+    "completed_at",
+    "note"
+  ],
+  "sub_curricula.csv": [
+    "sub_id",
+    "sub_name",
+    "main_course_id",
+    "is_active",
+    "note",
+    "created_at",
+    "updated_at"
+  ],
+  "progress_skip_ok.csv": [
+    "date",
+    "student_id",
+    "note"
+  ],
+  "monthly_schedule.csv": [
+    "date",
+    "student_id",
+    "slot",
+    "session_type",
+    "reason",
+    "note",
+    "source"
+  ],
+  "students.csv": [
+    "student_id",
+    "display_name",
+    "grade",
+    "number_of_times",
+    "join_date",
+    "is_active",
+    "leave_date",
+    "note",
+    "weekday",
+    "slot",
+    "memo"
+  ]
+}
