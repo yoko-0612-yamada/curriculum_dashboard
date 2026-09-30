@@ -5742,6 +5742,20 @@ log_done = log_all[norm_lower(log_all["status"]) == "done"].copy()
 # =========================================================
 
 
+def move_selected_student_to_seat(day: str, slot: str, seat_no: str) -> None:
+    """選択変更のコールバック。同日同コマの生徒だけを選択先の1席にする。"""
+    selected_key = f"seat_grid_{day}_{slot}_{seat_no}"
+    sid = str(st.session_state.get(selected_key, "")).strip()
+    if not sid or sid == "__RESERVED__":
+        return
+    for other_seat in ["1", "2", "3", "4", "5"]:
+        if other_seat == str(seat_no):
+            continue
+        key = f"seat_grid_{day}_{slot}_{other_seat}"
+        if str(st.session_state.get(key, "")).strip() == sid:
+            st.session_state[key] = ""
+
+
 def render_integrated_seat_view(monthly_schedule):
     """d364: 月スケジュール内で表示する今日の座席管理。"""
     st.subheader("🪑 座席表（今日の配置）")
@@ -7316,218 +7330,233 @@ def render_integrated_seat_view(monthly_schedule):
     st.markdown("#### 配置入力")
 
 
-    header_cols = st.columns([0.6, 1, 1, 1, 1, 1])
-    with header_cols[0]:
-        st.markdown("**コマ**")
-
-    seat_colors = {
-        "1": "#e8d9f3",
-        "2": "#d9f0f3",
-        "3": "#fff7d6",
-        "4": "#fff0e5",
-        "5": "#e9f8ee",
+    st.markdown("""
+    <style>
+    .st-key-seat_grid_scroll > div:has(> .st-key-seat_grid_header) {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--background-color, white);
+        padding-bottom: 8px;
     }
+    </style>
+    """, unsafe_allow_html=True)
+    with st.container(height=500, border=False, key="seat_grid_scroll"):
+        with st.container(key="seat_grid_header"):
+            header_cols = st.columns([0.6, 1, 1, 1, 1, 1])
+            with header_cols[0]:
+                st.markdown("**コマ**")
 
-    for i, seat_no in enumerate(seat_cols, start=1):
-        with header_cols[i]:
-            seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+            seat_colors = {
+                "1": "#e8d9f3",
+                "2": "#d9f0f3",
+                "3": "#fff7d6",
+                "4": "#fff0e5",
+                "5": "#e9f8ee",
+            }
+
+            for i, seat_no in enumerate(seat_cols, start=1):
+                with header_cols[i]:
+                    seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+
+                    st.markdown(
+                        f"""
+                        <div style="
+                            background:{seat_bg};
+                            padding:8px 10px;
+                            border-radius:8px;
+                            text-align:center;
+                            font-weight:700;
+                        ">
+                            席{seat_no}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+        slot_bg = {
+            "1": "#f4f0ff",
+            "2": "#e8fbff",
+            "3": "#fff7d6",
+            "4": "#fff0e5",
+            "5": "#e9f8ee",
+            "6": "#fdebf3",
+            "7": "#f4f4f4",
+        }
+
+
+        for slot in slot_rows:
+
+            bg = slot_bg.get(slot, "#ffffff")
+
+            slot_start, slot_end = slot_time_map.get(str(slot).strip(), ("", ""))
+            slot_time_label = f"（{slot_start}〜{slot_end}）" if slot_start and slot_end else ""
+
+            slot_count = 0
+            selected_seat_keys = set()
+            duplicate_in_current_slot = False
+
+
+            for seat_no in seat_cols:
+                key = f"seat_grid_{today}_{slot}_{seat_no}"
+                sid = str(st.session_state.get(key, existing_grid.get((slot, seat_no), ""))).strip()
+
+
+                if sid:
+                    slot_count += 1
+
+
+                # 画面上の現在の選択状態で「同じ席の重複」を見る
+                # ただし通常UIでは1席に1つしか選べないので、ここでは保存済みCSV側の重複補助用
+                seat_key = str(seat_no).strip()
+                if sid and seat_key in selected_seat_keys:
+                    duplicate_in_current_slot = True
+                selected_seat_keys.add(seat_key)
+
+
+            # 人数に応じた強調色
+            if slot_count == 0:
+                bg = "#eeeeee"
+            elif slot_count == 4:
+                bg = "#fff3cd"
+            elif slot_count >= 5:
+                bg = "#d4edda"
+
+
+            # 未配置または重複があるコマは最優先で赤系にする
+            if str(slot).strip() in missing_slots or str(slot).strip() in duplicate_slots or duplicate_in_current_slot:
+                bg = "#f8d7da"
+
+
 
             st.markdown(
                 f"""
                 <div style="
-                    background:{seat_bg};
-                    padding:8px 10px;
+                    background:{bg};
+                    padding:6px 10px;
                     border-radius:8px;
-                    text-align:center;
+                    margin-top:8px;
                     font-weight:700;
                 ">
-                    席{seat_no}
+                    {slot}コマ {slot_time_label}
+
                 </div>
                 """,
-                unsafe_allow_html=True,
+                unsafe_allow_html=True
             )
 
-    slot_bg = {
-        "1": "#f4f0ff",
-        "2": "#e8fbff",
-        "3": "#fff7d6",
-        "4": "#fff0e5",
-        "5": "#e9f8ee",
-        "6": "#fdebf3",
-        "7": "#f4f4f4",
-    }
+            cols = st.columns([0.6, 1, 1, 1, 1, 1])
 
 
-    for slot in slot_rows:
+            with cols[0]:
+                st.markdown(f"**{slot}コマ（{slot_count}人 / 5席）**")
 
-        bg = slot_bg.get(slot, "#ffffff")
-
-        slot_start, slot_end = slot_time_map.get(str(slot).strip(), ("", ""))
-        slot_time_label = f"（{slot_start}〜{slot_end}）" if slot_start and slot_end else ""
-
-        slot_count = 0
-        selected_seat_keys = set()
-        duplicate_in_current_slot = False
+            selected_in_slot = []
 
 
-        for seat_no in seat_cols:
-            key = f"seat_grid_{today}_{slot}_{seat_no}"
-            sid = str(st.session_state.get(key, existing_grid.get((slot, seat_no), ""))).strip()
+            for i, seat_no in enumerate(seat_cols, start=1):
+                widget_key = f"seat_grid_{today}_{slot}_{seat_no}"
 
 
-            if sid:
-                slot_count += 1
-
-
-            # 画面上の現在の選択状態で「同じ席の重複」を見る
-            # ただし通常UIでは1席に1つしか選べないので、ここでは保存済みCSV側の重複補助用
-            seat_key = str(seat_no).strip()
-            if sid and seat_key in selected_seat_keys:
-                duplicate_in_current_slot = True
-            selected_seat_keys.add(seat_key)
-
-
-        # 人数に応じた強調色
-        if slot_count == 0:
-            bg = "#eeeeee"
-        elif slot_count == 4:
-            bg = "#fff3cd"
-        elif slot_count >= 5:
-            bg = "#d4edda"
-
-
-        # 未配置または重複があるコマは最優先で赤系にする
-        if str(slot).strip() in missing_slots or str(slot).strip() in duplicate_slots or duplicate_in_current_slot:
-            bg = "#f8d7da"
-
-
-
-        st.markdown(
-            f"""
-            <div style="
-                background:{bg};
-                padding:6px 10px;
-                border-radius:8px;
-                margin-top:8px;
-                font-weight:700;
-            ">
-                {slot}コマ {slot_time_label}
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-        cols = st.columns([0.6, 1, 1, 1, 1, 1])
-
-
-        with cols[0]:
-            st.markdown(f"**{slot}コマ（{slot_count}人 / 5席）**")
-
-        selected_in_slot = []
-
-
-        for i, seat_no in enumerate(seat_cols, start=1):
-            widget_key = f"seat_grid_{today}_{slot}_{seat_no}"
-
-
-            current_sid = str(
-                st.session_state.get(
-                    widget_key,
-                    existing_grid.get((slot, seat_no), "")
-                )
-            ).strip()
-
-
-            saved_sid = str(existing_grid.get((slot, seat_no), "")).strip()
-            slot_candidate_ids = build_seat_options_for_slot(
-                slot_value=slot,
-                current_sid_value=current_sid,
-                saved_sid_value=saved_sid,
-            )
-            default_index = slot_candidate_ids.index(current_sid) if current_sid in slot_candidate_ids else 0
-
-
-            with cols[i]:
-                seat_bg = seat_colors.get(str(seat_no), "#ffffff")
-
-                saved_sid = str(
-                    existing_grid.get((slot, seat_no), "")
+                current_sid = str(
+                    st.session_state.get(
+                        widget_key,
+                        existing_grid.get((slot, seat_no), "")
+                    )
                 ).strip()
 
-                is_changed = current_sid != saved_sid
 
-                if is_changed:
-                    seat_bg = "#fff4cc"
-                    border_style = "3px solid #f0a000"
-                else:
-                    border_style = "1px solid transparent"
-
-
-                st.markdown(
-                    f"""
-                    <div style="
-                        background:{seat_bg};
-                        padding:8px;
-                        border-radius:8px;
-                        border:{border_style};
-                    ">
-                    """,
-                    unsafe_allow_html=True
+                saved_sid = str(existing_grid.get((slot, seat_no), "")).strip()
+                slot_candidate_ids = build_seat_options_for_slot(
+                    slot_value=slot,
+                    current_sid_value=current_sid,
+                    saved_sid_value=saved_sid,
                 )
+                default_index = slot_candidate_ids.index(current_sid) if current_sid in slot_candidate_ids else 0
 
 
-                selected_sid = st.selectbox(
-                    f"{slot}コマ 席{seat_no}",
-                    slot_candidate_ids,
-                    index=default_index,
-                    key=widget_key,
-                    format_func=lambda sid: grid_student_labels.get(sid, sid),
-                    label_visibility="collapsed",
-                )
+                with cols[i]:
+                    seat_bg = seat_colors.get(str(seat_no), "#ffffff")
+
+                    saved_sid = str(
+                        existing_grid.get((slot, seat_no), "")
+                    ).strip()
+
+                    is_changed = current_sid != saved_sid
+
+                    if is_changed:
+                        seat_bg = "#fff4cc"
+                        border_style = "3px solid #f0a000"
+                    else:
+                        border_style = "1px solid transparent"
 
 
-                # selectboxで選ばれている値を、その場で表示する
-                selected_label = grid_student_labels.get(selected_sid, selected_sid)
-
-
-                if selected_sid == "":
-                    st.caption("△ 空席")
-                elif selected_sid == "__RESERVED__":
                     st.markdown(
-                        "<span style='color:#f0a000; font-weight:700;'>● 使用予定</span>",
-                        unsafe_allow_html=True,
-                    )
-                else:
-                    st.markdown(
-                        f"<span style='color:#00a6d6; font-weight:700;'>● {selected_label}</span>",
-                        unsafe_allow_html=True,
+                        f"""
+                        <div style="
+                            background:{seat_bg};
+                            padding:8px;
+                            border-radius:8px;
+                            border:{border_style};
+                        ">
+                        """,
+                        unsafe_allow_html=True
                     )
 
 
-                st.markdown("</div>", unsafe_allow_html=True)
+                    selected_sid = st.selectbox(
+                        f"{slot}コマ 席{seat_no}",
+                        slot_candidate_ids,
+                        index=default_index,
+                        key=widget_key,
+                        on_change=move_selected_student_to_seat,
+                        args=(today, slot, seat_no),
+                        format_func=lambda sid: grid_student_labels.get(sid, sid),
+                        label_visibility="collapsed",
+                    )
+
+
+                    # selectboxで選ばれている値を、その場で表示する
+                    selected_label = grid_student_labels.get(selected_sid, selected_sid)
+
+
+                    if selected_sid == "":
+                        st.caption("△ 空席")
+                    elif selected_sid == "__RESERVED__":
+                        st.markdown(
+                            "<span style='color:#f0a000; font-weight:700;'>● 使用予定</span>",
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f"<span style='color:#00a6d6; font-weight:700;'>● {selected_label}</span>",
+                            unsafe_allow_html=True,
+                        )
+
+
+                    st.markdown("</div>", unsafe_allow_html=True)
 
 
 
-            if selected_sid:
-                selected_in_slot.append(selected_sid)
-                grid_rows_to_save.append({
-                    "date": today,
-                    "slot": slot,
-                    "seat_no": seat_no,
-                    "student_id": selected_sid,
-                    "note": "",
-                })
+                if selected_sid:
+                    selected_in_slot.append(selected_sid)
+                    grid_rows_to_save.append({
+                        "date": today,
+                        "slot": slot,
+                        "seat_no": seat_no,
+                        "student_id": selected_sid,
+                        "note": "",
+                    })
 
 
-        dup_students = {
-            sid for sid in selected_in_slot
-            if sid and sid != "__RESERVED__" and selected_in_slot.count(sid) > 1
-        }
+            dup_students = {
+                sid for sid in selected_in_slot
+                if sid and sid != "__RESERVED__" and selected_in_slot.count(sid) > 1
+            }
 
-        if dup_students:
-            dup_names = [grid_student_labels.get(sid, sid) for sid in dup_students]
-            st.warning(f"{slot}コマで同じ生徒が複数席に入っています：{', '.join(dup_names)}")
+            if dup_students:
+                dup_names = [grid_student_labels.get(sid, sid) for sid in dup_students]
+                st.warning(f"{slot}コマで同じ生徒が複数席に入っています：{', '.join(dup_names)}")
 
     if st.button("💾 今日の配置表を保存", key=f"save_seat_grid_{today}"):
         others = seat_assignments[
