@@ -23195,313 +23195,341 @@ elif page == "管理（入力）":
                                     unsafe_allow_html=True,
                                 )
 
-                                if is_target_month:
-                                    if day_rows is not None and not day_rows.empty:
-                                        _rows = day_rows.copy()
-                                        _rows["_slot_num"] = pd.to_numeric(
-                                            _rows["slot"].astype(str).str.extract(r"(\d+)")[0],
-                                            errors="coerce",
+                        # 日付見出しとは別に、各コマを1つの横行として描画する。
+                        # 各行の高さは最も内容の多い曜日に合わせて自然に広がる。
+                        week_slots = set(monthly_slot_options)
+                        for day_date in week:
+                            if day_date.month == target_month:
+                                day_rows = rows_by_date.get(day_date, pd.DataFrame())
+                                if not day_rows.empty:
+                                    week_slots.update(day_rows["slot"].map(normalize_slot))
+
+                        def _calendar_slot_sort_key(value):
+                            match = re.search(r"\d+", str(value))
+                            return (int(match.group()) if match else float("inf"), str(value))
+
+                        for week_slot in sorted(week_slots, key=_calendar_slot_sort_key):
+                            st.markdown(f"**{week_slot}コマ**" if week_slot else "**コマ未設定**")
+                            slot_day_cols = st.columns(7)
+                            for i, day_date in enumerate(week):
+                                with slot_day_cols[i]:
+                                    is_target_month = day_date.month == target_month
+                                    day_rows = rows_by_date.get(day_date, pd.DataFrame()) if is_target_month else pd.DataFrame()
+                                    if day_rows.empty or not day_rows["slot"].map(normalize_slot).eq(week_slot).any():
+                                        # 空の曜日も同じ列を確保する。セル内スクロールは設けない。
+                                        st.markdown(
+                                            '<div aria-label="予定なし" style="min-height:38px;border:1px solid #eee;border-radius:6px;"></div>',
+                                            unsafe_allow_html=True,
                                         )
-                                        _rows = _rows.sort_values(["_slot_num", "student_id"], na_position="last")
+                                    if is_target_month:
+                                        if day_rows is not None and not day_rows.empty:
+                                            _rows = day_rows[
+                                                day_rows["slot"].map(normalize_slot).eq(week_slot)
+                                            ].copy()
+                                            _rows["_slot_num"] = pd.to_numeric(
+                                                _rows["slot"].astype(str).str.extract(r"(\d+)")[0],
+                                                errors="coerce",
+                                            )
+                                            _rows = _rows.sort_values(["_slot_num", "student_id"], na_position="last")
 
-                                        for row_idx, rr in _rows.iterrows():
-                                            sid = str(rr.get("student_id", "")).strip()
-                                            name = student_name_map_month.get(sid, sid)
-                                            slot = normalize_slot(rr.get("slot", ""))
-                                            typ = str(rr.get("session_type", "")).strip() or "授業"
-                                            reason = str(rr.get("reason", "")).strip() or "通常"
-                                            override_status = str(rr.get("override_status", "")).strip()
-                                            _origin_note = str(rr.get("note", "")).strip()
+                                            for row_idx, rr in _rows.iterrows():
+                                                sid = str(rr.get("student_id", "")).strip()
+                                                name = student_name_map_month.get(sid, sid)
+                                                slot = normalize_slot(rr.get("slot", ""))
+                                                typ = str(rr.get("session_type", "")).strip() or "授業"
+                                                reason = str(rr.get("reason", "")).strip() or "通常"
+                                                override_status = str(rr.get("override_status", "")).strip()
+                                                _origin_note = str(rr.get("note", "")).strip()
 
-                                            # d386: 状態の見た目は統一し、受付経路だけ絵文字で補足する。
-                                            # 💻 ツール内操作 / 😃 口頭受付 / 📱 LINE Bot
-                                            origin_icon = ""
-                                            if override_status in ["キャンセル", "追加", "変更"]:
-                                                if "座席予約連携" in _origin_note:
-                                                    _origin_note_lower = _origin_note.lower()
-                                                    if (
-                                                        "受付経路:line" in _origin_note_lower
-                                                        or "line bot" in _origin_note_lower
-                                                        or "linebot" in _origin_note_lower
-                                                    ):
-                                                        origin_icon = "📱"
+                                                # d386: 状態の見た目は統一し、受付経路だけ絵文字で補足する。
+                                                # 💻 ツール内操作 / 😃 口頭受付 / 📱 LINE Bot
+                                                origin_icon = ""
+                                                if override_status in ["キャンセル", "追加", "変更"]:
+                                                    if "座席予約連携" in _origin_note:
+                                                        _origin_note_lower = _origin_note.lower()
+                                                        if (
+                                                            "受付経路:line" in _origin_note_lower
+                                                            or "line bot" in _origin_note_lower
+                                                            or "linebot" in _origin_note_lower
+                                                        ):
+                                                            origin_icon = "📱"
+                                                        else:
+                                                            # 既存の座席予約連携データは現時点では口頭受付由来。
+                                                            origin_icon = "😃"
                                                     else:
-                                                        # 既存の座席予約連携データは現時点では口頭受付由来。
-                                                        origin_icon = "😃"
-                                                else:
-                                                    origin_icon = "💻"
+                                                        origin_icon = "💻"
 
-                                            attendance_locked = (
-                                                override_status != "キャンセル"
-                                                and is_attendance_locked_plan(monthly_attended_keys, sid, day_date)
-                                            )
-
-                                            label_parts = []
-                                            # d203: 「当日追加｜追加」のような二重ラベルを避ける。
-                                            # 例外ステータスがある場合はそれを優先し、通常の理由は補助扱いにする。
-                                            if override_status == "キャンセル":
-                                                label_parts.append("キャンセル")
-                                            elif override_status == "追加":
-                                                label_parts.append(
-                                                    "自習追加"
-                                                    if reason == "自習追加"
-                                                    else (
-                                                        "振替追加"
-                                                        if reason == "振替追加"
-                                                        else "当日追加"
-                                                    )
+                                                attendance_locked = (
+                                                    override_status != "キャンセル"
+                                                    and is_attendance_locked_plan(monthly_attended_keys, sid, day_date)
                                                 )
-                                            elif override_status == "変更":
-                                                label_parts.append("変更")
-                                            elif reason and reason != "通常":
-                                                label_parts.append(reason)
-                                            if attendance_locked:
-                                                label_parts.append("✅出席済")
-                                            reason_part = f"｜{'｜'.join(label_parts)}" if label_parts else ""
 
-                                            text_style = ""
-                                            opacity = "1"
-                                            is_highlighted_student = bool(selected_highlight_sid and sid == selected_highlight_sid)
-                                            highlight_style = ""
-                                            item_font_size = "12px"
-                                            item_weight = "600"
-
-                                            if override_status == "キャンセル":
-                                                item_bg = "#eeeeee"
-                                                item_border = "#999999"
-                                                item_icon = "⚪"
-                                                text_style = "text-decoration:line-through;"
-                                                opacity = "0.75"
-                                            elif override_status == "追加":
-                                                item_bg = "#fff0e5"
-                                                item_border = "#f0a000"
-                                                item_icon = "🟠"
-                                            elif override_status == "変更":
-                                                item_bg = "#f3e8ff"
-                                                item_border = "#9b5de5"
-                                                item_icon = "🟣"
-                                            elif typ == "自習":
-                                                item_bg = "#e9f8ee"
-                                                item_border = "#39a86b"
-                                                item_icon = "🟢"
-                                            else:
-                                                item_bg = "#e8f4ff"
-                                                item_border = "#3b82c4"
-                                                item_icon = "🔵"
-
-                                            # d204: 選択中の生徒は、授業/自習の色分けを残したまま強調する。
-                                            if is_highlighted_student and override_status != "キャンセル":
-                                                item_font_size = "13px"
-                                                item_weight = "800"
-                                                if typ == "自習":
-                                                    item_bg = "#dcfce7"
-                                                    item_border = "#16a34a"
-                                                    item_icon = "🟩"
-                                                    highlight_style = "border:2px solid #16a34a;border-left:7px solid #16a34a;box-shadow:0 0 0 2px #bbf7d0;"
-                                                else:
-                                                    item_bg = "#dbeafe"
-                                                    item_border = "#2563eb"
-                                                    item_icon = "🟦"
-                                                    highlight_style = "border:2px solid #2563eb;border-left:7px solid #2563eb;box-shadow:0 0 0 2px #bfdbfe;"
-
-                                            if not highlight_style:
-                                                highlight_style = f"border-left:4px solid {item_border};"
-
-                                            # d230:
-                                            # コマごとに色付きバッジを出して、文字を読まなくても
-                                            # 何コマ目か見分けやすくする。
-                                            _slot_color_map = {
-                                                "1": ("①", "#fff7cc", "#b77900"),
-                                                "2": ("②", "#e0f2fe", "#0369a1"),
-                                                "3": ("③", "#dcfce7", "#15803d"),
-                                                "4": ("④", "#fce7f3", "#be185d"),
-                                                "5": ("⑤", "#ede9fe", "#6d28d9"),
-                                                "6": ("⑥", "#ffedd5", "#c2410c"),
-                                                "7": ("⑦", "#e5e7eb", "#374151"),
-                                            }
-                                            _slot_badge_text, _slot_badge_bg, _slot_badge_fg = _slot_color_map.get(
-                                                str(slot).strip(),
-                                                (str(slot).strip() or "?", "#f3f4f6", "#374151")
-                                            )
-                                            slot_badge_html = (
-                                                f'<span style="display:inline-block;min-width:22px;text-align:center;'
-                                                f'border-radius:999px;padding:1px 5px;margin-right:4px;'
-                                                f'background:{_slot_badge_bg};color:{_slot_badge_fg};'
-                                                f'font-weight:900;border:1px solid {_slot_badge_fg};">'
-                                                f'{_slot_badge_text}</span>'
-                                            )
-
-                                            # d307:
-                                            # コマ固定レーンは使わず、予定は上から順に詰めて表示する。
-                                            # 生徒名だけ最大3行分の高さを確保し、できるだけフルネームが見えるようにする。
-                                            item_html = (
-                                                f'<div title="{origin_icon} {slot}コマ｜{name}｜{typ}{reason_part}" '
-                                                f'style="background:{item_bg};{highlight_style}'
-                                                f'border-radius:6px;padding:4px 6px;margin:4px 0 2px 0;'
-                                                f'height:72px;box-sizing:border-box;'
-                                                f'opacity:{opacity};{text_style}">'
-                                                f'<div style="display:flex;align-items:flex-start;min-width:0;">'
-                                                f'<span style="flex:0 0 auto;margin-right:2px;">{origin_icon}</span>'
-                                                f'<span style="flex:0 0 auto;margin-right:2px;">{item_icon}</span>'
-                                                f'{slot_badge_html}'
-                                                f'<span style="'
-                                                f'display:-webkit-box;'
-                                                f'-webkit-line-clamp:3;'
-                                                f'-webkit-box-orient:vertical;'
-                                                f'overflow:hidden;'
-                                                f'word-break:break-word;'
-                                                f'line-height:1.25;'
-                                                f'max-height:3.8em;'
-                                                f'font-size:{item_font_size};'
-                                                f'font-weight:{item_weight};'
-                                                f'color:#111;'
-                                                f'">{name}</span>'
-                                                f'</div>'
-                                                f'<div style="'
-                                                f'margin-top:4px;'
-                                                f'padding-left:2px;'
-                                                f'white-space:nowrap;'
-                                                f'overflow:hidden;'
-                                                f'text-overflow:ellipsis;'
-                                                f'font-size:10px;'
-                                                f'line-height:1.2;'
-                                                f'color:#555;'
-                                                f'">{slot}コマ｜{typ}{reason_part}</div>'
-                                                f'</div>'
-                                            )
-                                            st.markdown(item_html, unsafe_allow_html=True)
-
-                                            # d305:
-                                            # 名前の長さでボタンが2行にならないよう、ラベルを固定する。
-                                            btn_label = "選択"
-
-                                            # d324:
-                                            # ボタン押下時にStreamlitは自動再実行するため、
-                                            # 選択処理内で追加の st.rerun() は呼ばない。
-                                            # 二重描画を防ぎ、選択時の待ち時間を減らす。
-                                            def _pick_current_monthly_calendar_item():
-                                                st.session_state[f"monthly_sidebar_edit_date_{target_year}_{target_month}"] = day_date
-                                                st.session_state[f"monthly_sidebar_edit_slot_{target_year}_{target_month}"] = slot
-                                                st.session_state[_monthly_highlight_state_key] = sid
-                                                st.session_state[_monthly_highlight_sync_key] = True
-                                                _monthly_idx_raw = str(rr.get("__monthly_index", "")).strip()
-                                                _override_idx_raw = str(rr.get("__override_index", "")).strip()
-                                                if _monthly_idx_raw != "":
-                                                    try:
-                                                        _monthly_idx_value = int(float(_monthly_idx_raw))
-                                                    except Exception:
-                                                        _monthly_idx_value = _monthly_idx_raw
-                                                    st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
-                                                    st.session_state[f"monthly_sidebar_update_target_{target_year}_{target_month}"] = _monthly_idx_value
-                                                    st.session_state[f"monthly_sidebar_delete_target_{target_year}_{target_month}"] = _monthly_idx_value
-                                                    st.session_state.pop(
-                                                        f"monthly_calendar_override_target_{target_year}_{target_month}",
-                                                        None,
+                                                label_parts = []
+                                                # d203: 「当日追加｜追加」のような二重ラベルを避ける。
+                                                # 例外ステータスがある場合はそれを優先し、通常の理由は補助扱いにする。
+                                                if override_status == "キャンセル":
+                                                    label_parts.append("キャンセル")
+                                                elif override_status == "追加":
+                                                    label_parts.append(
+                                                        "自習追加"
+                                                        if reason == "自習追加"
+                                                        else (
+                                                            "振替追加"
+                                                            if reason == "振替追加"
+                                                            else "当日追加"
+                                                        )
                                                     )
-                                                elif _override_idx_raw != "":
-                                                    try:
-                                                        _override_idx_value = int(float(_override_idx_raw))
-                                                    except Exception:
-                                                        _override_idx_value = _override_idx_raw
-                                                    st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "override"
-                                                    st.session_state[f"monthly_calendar_override_target_{target_year}_{target_month}"] = _override_idx_value
-                                                    st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
-                                                    st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
-                                                else:
-                                                    st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
-                                                    st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
-                                                    st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
-                                                    st.session_state.pop(
-                                                        f"monthly_calendar_override_target_{target_year}_{target_month}",
-                                                        None,
-                                                    )
+                                                elif override_status == "変更":
+                                                    label_parts.append("変更")
+                                                elif reason and reason != "通常":
+                                                    label_parts.append(reason)
+                                                if attendance_locked:
+                                                    label_parts.append("✅出席済")
+                                                reason_part = f"｜{'｜'.join(label_parts)}" if label_parts else ""
 
-                                            def _uncancel_current_monthly_calendar_item():
-                                                _att_before = load_attendance_log().copy()
-                                                ov2, att2, _cleared_absence = (
-                                                    restore_cancelled_plan_and_clear_absence(
+                                                text_style = ""
+                                                opacity = "1"
+                                                is_highlighted_student = bool(selected_highlight_sid and sid == selected_highlight_sid)
+                                                highlight_style = ""
+                                                item_font_size = "12px"
+                                                item_weight = "600"
+
+                                                if override_status == "キャンセル":
+                                                    item_bg = "#eeeeee"
+                                                    item_border = "#999999"
+                                                    item_icon = "⚪"
+                                                    text_style = "text-decoration:line-through;"
+                                                    opacity = "0.75"
+                                                elif override_status == "追加":
+                                                    item_bg = "#fff0e5"
+                                                    item_border = "#f0a000"
+                                                    item_icon = "🟠"
+                                                elif override_status == "変更":
+                                                    item_bg = "#f3e8ff"
+                                                    item_border = "#9b5de5"
+                                                    item_icon = "🟣"
+                                                elif typ == "自習":
+                                                    item_bg = "#e9f8ee"
+                                                    item_border = "#39a86b"
+                                                    item_icon = "🟢"
+                                                else:
+                                                    item_bg = "#e8f4ff"
+                                                    item_border = "#3b82c4"
+                                                    item_icon = "🔵"
+
+                                                # d204: 選択中の生徒は、授業/自習の色分けを残したまま強調する。
+                                                if is_highlighted_student and override_status != "キャンセル":
+                                                    item_font_size = "13px"
+                                                    item_weight = "800"
+                                                    if typ == "自習":
+                                                        item_bg = "#dcfce7"
+                                                        item_border = "#16a34a"
+                                                        item_icon = "🟩"
+                                                        highlight_style = "border:2px solid #16a34a;border-left:7px solid #16a34a;box-shadow:0 0 0 2px #bbf7d0;"
+                                                    else:
+                                                        item_bg = "#dbeafe"
+                                                        item_border = "#2563eb"
+                                                        item_icon = "🟦"
+                                                        highlight_style = "border:2px solid #2563eb;border-left:7px solid #2563eb;box-shadow:0 0 0 2px #bfdbfe;"
+
+                                                if not highlight_style:
+                                                    highlight_style = f"border-left:4px solid {item_border};"
+
+                                                # d230:
+                                                # コマごとに色付きバッジを出して、文字を読まなくても
+                                                # 何コマ目か見分けやすくする。
+                                                _slot_color_map = {
+                                                    "1": ("①", "#fff7cc", "#b77900"),
+                                                    "2": ("②", "#e0f2fe", "#0369a1"),
+                                                    "3": ("③", "#dcfce7", "#15803d"),
+                                                    "4": ("④", "#fce7f3", "#be185d"),
+                                                    "5": ("⑤", "#ede9fe", "#6d28d9"),
+                                                    "6": ("⑥", "#ffedd5", "#c2410c"),
+                                                    "7": ("⑦", "#e5e7eb", "#374151"),
+                                                }
+                                                _slot_badge_text, _slot_badge_bg, _slot_badge_fg = _slot_color_map.get(
+                                                    str(slot).strip(),
+                                                    (str(slot).strip() or "?", "#f3f4f6", "#374151")
+                                                )
+                                                slot_badge_html = (
+                                                    f'<span style="display:inline-block;min-width:22px;text-align:center;'
+                                                    f'border-radius:999px;padding:1px 5px;margin-right:4px;'
+                                                    f'background:{_slot_badge_bg};color:{_slot_badge_fg};'
+                                                    f'font-weight:900;border:1px solid {_slot_badge_fg};">'
+                                                    f'{_slot_badge_text}</span>'
+                                                )
+
+                                                # d307:
+                                                # コマ固定レーンは使わず、予定は上から順に詰めて表示する。
+                                                # 生徒名だけ最大3行分の高さを確保し、できるだけフルネームが見えるようにする。
+                                                item_html = (
+                                                    f'<div title="{origin_icon} {slot}コマ｜{name}｜{typ}{reason_part}" '
+                                                    f'style="background:{item_bg};{highlight_style}'
+                                                    f'border-radius:6px;padding:4px 6px;margin:4px 0 2px 0;'
+                                                    f'height:72px;box-sizing:border-box;'
+                                                    f'opacity:{opacity};{text_style}">'
+                                                    f'<div style="display:flex;align-items:flex-start;min-width:0;">'
+                                                    f'<span style="flex:0 0 auto;margin-right:2px;">{origin_icon}</span>'
+                                                    f'<span style="flex:0 0 auto;margin-right:2px;">{item_icon}</span>'
+                                                    f'{slot_badge_html}'
+                                                    f'<span style="'
+                                                    f'display:-webkit-box;'
+                                                    f'-webkit-line-clamp:3;'
+                                                    f'-webkit-box-orient:vertical;'
+                                                    f'overflow:hidden;'
+                                                    f'word-break:break-word;'
+                                                    f'line-height:1.25;'
+                                                    f'max-height:3.8em;'
+                                                    f'font-size:{item_font_size};'
+                                                    f'font-weight:{item_weight};'
+                                                    f'color:#111;'
+                                                    f'">{name}</span>'
+                                                    f'</div>'
+                                                    f'<div style="'
+                                                    f'margin-top:4px;'
+                                                    f'padding-left:2px;'
+                                                    f'white-space:nowrap;'
+                                                    f'overflow:hidden;'
+                                                    f'text-overflow:ellipsis;'
+                                                    f'font-size:10px;'
+                                                    f'line-height:1.2;'
+                                                    f'color:#555;'
+                                                    f'">{slot}コマ｜{typ}{reason_part}</div>'
+                                                    f'</div>'
+                                                )
+                                                st.markdown(item_html, unsafe_allow_html=True)
+
+                                                # d305:
+                                                # 名前の長さでボタンが2行にならないよう、ラベルを固定する。
+                                                btn_label = "選択"
+
+                                                # d324:
+                                                # ボタン押下時にStreamlitは自動再実行するため、
+                                                # 選択処理内で追加の st.rerun() は呼ばない。
+                                                # 二重描画を防ぎ、選択時の待ち時間を減らす。
+                                                def _pick_current_monthly_calendar_item():
+                                                    st.session_state[f"monthly_sidebar_edit_date_{target_year}_{target_month}"] = day_date
+                                                    st.session_state[f"monthly_sidebar_edit_slot_{target_year}_{target_month}"] = slot
+                                                    st.session_state[_monthly_highlight_state_key] = sid
+                                                    st.session_state[_monthly_highlight_sync_key] = True
+                                                    _monthly_idx_raw = str(rr.get("__monthly_index", "")).strip()
+                                                    _override_idx_raw = str(rr.get("__override_index", "")).strip()
+                                                    if _monthly_idx_raw != "":
+                                                        try:
+                                                            _monthly_idx_value = int(float(_monthly_idx_raw))
+                                                        except Exception:
+                                                            _monthly_idx_value = _monthly_idx_raw
+                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
+                                                        st.session_state[f"monthly_sidebar_update_target_{target_year}_{target_month}"] = _monthly_idx_value
+                                                        st.session_state[f"monthly_sidebar_delete_target_{target_year}_{target_month}"] = _monthly_idx_value
+                                                        st.session_state.pop(
+                                                            f"monthly_calendar_override_target_{target_year}_{target_month}",
+                                                            None,
+                                                        )
+                                                    elif _override_idx_raw != "":
+                                                        try:
+                                                            _override_idx_value = int(float(_override_idx_raw))
+                                                        except Exception:
+                                                            _override_idx_value = _override_idx_raw
+                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "override"
+                                                        st.session_state[f"monthly_calendar_override_target_{target_year}_{target_month}"] = _override_idx_value
+                                                        st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
+                                                        st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
+                                                    else:
+                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
+                                                        st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
+                                                        st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
+                                                        st.session_state.pop(
+                                                            f"monthly_calendar_override_target_{target_year}_{target_month}",
+                                                            None,
+                                                        )
+
+                                                def _uncancel_current_monthly_calendar_item():
+                                                    _att_before = load_attendance_log().copy()
+                                                    ov2, att2, _cleared_absence = (
+                                                        restore_cancelled_plan_and_clear_absence(
+                                                            schedule_overrides,
+                                                            _att_before,
+                                                            student_id=sid,
+                                                            d=day_date,
+                                                            slot=slot,
+                                                        )
+                                                    )
+                                                    write_csv_atomic(
+                                                        ov2,
+                                                        SCHEDULE_OVERRIDES_CSV,
+                                                    )
+                                                    if _cleared_absence:
+                                                        save_attendance_log(att2)
+
+                                                    _msg = (
+                                                        "キャンセルを解除しました。"
+                                                        "元の予定を復活させます。"
+                                                    )
+                                                    if _cleared_absence:
+                                                        _msg += (
+                                                            " 欠席・取消の出欠記録も"
+                                                            "未登録へ戻しました。"
+                                                        )
+                                                    st.success(_msg)
+                                                    st.caption(
+                                                        "※ キャンセル時に座席を空席にしていた場合、"
+                                                        "座席は必要に応じて再登録してください。"
+                                                    )
+                                                    st.rerun()
+
+                                                def _cancel_current_monthly_calendar_item():
+                                                    ov2 = upsert_schedule_override_row(
                                                         schedule_overrides,
-                                                        _att_before,
                                                         student_id=sid,
                                                         d=day_date,
                                                         slot=slot,
+                                                        action="キャンセル",
+                                                        note="月カレンダーからキャンセル（出席済み修正）" if attendance_locked else "月カレンダーからキャンセル",
                                                     )
-                                                )
-                                                write_csv_atomic(
-                                                    ov2,
-                                                    SCHEDULE_OVERRIDES_CSV,
-                                                )
-                                                if _cleared_absence:
-                                                    save_attendance_log(att2)
-
-                                                _msg = (
-                                                    "キャンセルを解除しました。"
-                                                    "元の予定を復活させます。"
-                                                )
-                                                if _cleared_absence:
-                                                    _msg += (
-                                                        " 欠席・取消の出欠記録も"
-                                                        "未登録へ戻しました。"
+                                                    write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
+                                                    seat2 = remove_seat_assignment_for_plan(
+                                                        seat_assignments,
+                                                        d=day_date,
+                                                        student_id=sid,
+                                                        slot=slot,
                                                     )
-                                                st.success(_msg)
-                                                st.caption(
-                                                    "※ キャンセル時に座席を空席にしていた場合、"
-                                                    "座席は必要に応じて再登録してください。"
-                                                )
-                                                st.rerun()
+                                                    write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
+                                                    st.success("キャンセルしました。今日の予定にも反映します。")
+                                                    if attendance_locked:
+                                                        st.caption("※ 出席ログ自体を直す必要がある場合は、出席記録の取消も確認してください。")
+                                                    st.rerun()
 
-                                            def _cancel_current_monthly_calendar_item():
-                                                ov2 = upsert_schedule_override_row(
-                                                    schedule_overrides,
-                                                    student_id=sid,
-                                                    d=day_date,
-                                                    slot=slot,
-                                                    action="キャンセル",
-                                                    note="月カレンダーからキャンセル（出席済み修正）" if attendance_locked else "月カレンダーからキャンセル",
+                                                # d273:
+                                                # カレンダー内は「予定を選択するだけ」にする。
+                                                # 取消線・解除・削除などの修正操作は、右/左の操作パネルへ集約して誤操作を減らす。
+                                                st.markdown(
+                                                    """
+                                                    <style>
+                                                    div[data-testid="stButton"] > button {
+                                                        min-height: 38px;
+                                                        height: 38px;
+                                                        padding-top: 0;
+                                                        padding-bottom: 0;
+                                                        white-space: nowrap;
+                                                    }
+                                                    div[data-testid="stButton"] > button p {
+                                                        white-space: nowrap;
+                                                        overflow: hidden;
+                                                        text-overflow: ellipsis;
+                                                    }
+                                                    </style>
+                                                    """,
+                                                    unsafe_allow_html=True,
                                                 )
-                                                write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                                seat2 = remove_seat_assignment_for_plan(
-                                                    seat_assignments,
-                                                    d=day_date,
-                                                    student_id=sid,
-                                                    slot=slot,
-                                                )
-                                                write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
-                                                st.success("キャンセルしました。今日の予定にも反映します。")
-                                                if attendance_locked:
-                                                    st.caption("※ 出席ログ自体を直す必要がある場合は、出席記録の取消も確認してください。")
-                                                st.rerun()
-
-                                            # d273:
-                                            # カレンダー内は「予定を選択するだけ」にする。
-                                            # 取消線・解除・削除などの修正操作は、右/左の操作パネルへ集約して誤操作を減らす。
-                                            st.markdown(
-                                                """
-                                                <style>
-                                                div[data-testid="stButton"] > button {
-                                                    min-height: 38px;
-                                                    height: 38px;
-                                                    padding-top: 0;
-                                                    padding-bottom: 0;
-                                                    white-space: nowrap;
-                                                }
-                                                div[data-testid="stButton"] > button p {
-                                                    white-space: nowrap;
-                                                    overflow: hidden;
-                                                    text-overflow: ellipsis;
-                                                }
-                                                </style>
-                                                """,
-                                                unsafe_allow_html=True,
-                                            )
-                                            if st.button(
-                                                btn_label,
-                                                key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
-                                                use_container_width=True,
-                                                help=f"{name}の予定を選択",
-                                            ):
-                                                _pick_current_monthly_calendar_item()
-                                                _open_monthly_edit_dialog()
+                                                if st.button(
+                                                    btn_label,
+                                                    key=f"monthly_calendar_pick_{target_year}_{target_month}_{row_idx}",
+                                                    use_container_width=True,
+                                                    help=f"{name}の予定を選択",
+                                                ):
+                                                    _pick_current_monthly_calendar_item()
+                                                    _open_monthly_edit_dialog()
 
 
         # =====================================================
