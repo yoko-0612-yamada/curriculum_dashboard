@@ -23609,7 +23609,7 @@ elif page == "管理（入力）":
             )
             save_monthly_batch = False
             discard_monthly_batch = False
-            open_monthly_add_from_fixed = False
+            open_monthly_add_from_fixed = None
 
             # d392: 編集画面では「新しい予定」も固定バーへ配置。
             # カレンダー下部を確認している途中でも、上へ戻らず追加できる。
@@ -23644,12 +23644,13 @@ elif page == "管理（入力）":
                         if monthly_has_unsaved:
                             (
                                 fixed_status_col,
-                                fixed_add_col,
+                                fixed_lesson_col,
+                                fixed_selfstudy_col,
                                 fixed_save_col,
                                 fixed_discard_col,
-                            ) = st.columns([2.0, 1.2, 1.35, 0.95])
+                            ) = st.columns([2.0, 1.2, 1.2, 1.35, 0.95])
                         else:
-                            fixed_status_col, fixed_add_col = st.columns([3.4, 1.4])
+                            fixed_status_col, fixed_lesson_col, fixed_selfstudy_col = st.columns([3.4, 1.4, 1.4])
 
                         with fixed_status_col:
                             if monthly_has_unsaved:
@@ -23661,16 +23662,21 @@ elif page == "管理（入力）":
                                     "**📅 月スケジュール編集中**"
                                 )
 
-                        with fixed_add_col:
-                            open_monthly_add_from_fixed = st.button(
-                                "➕ 新しい予定",
-                                type=("secondary" if monthly_has_unsaved else "primary"),
-                                use_container_width=True,
-                                key=(
-                                    f"monthly_open_add_dialog_fixed_"
-                                    f"{target_year}_{target_month}"
-                                ),
-                            )
+                        for add_col, add_type in [
+                            (fixed_lesson_col, "授業"),
+                            (fixed_selfstudy_col, "自習"),
+                        ]:
+                            with add_col:
+                                if st.button(
+                                    f"{add_type}を追加",
+                                    type=("secondary" if monthly_has_unsaved else "primary"),
+                                    use_container_width=True,
+                                    key=(
+                                        f"monthly_open_add_dialog_fixed_{add_type}_"
+                                        f"{target_year}_{target_month}"
+                                    ),
+                                ):
+                                    open_monthly_add_from_fixed = add_type
 
                         if monthly_has_unsaved:
                             with fixed_save_col:
@@ -23715,6 +23721,10 @@ elif page == "管理（入力）":
                 )
 
             if open_monthly_add_from_fixed:
+                # 入口を押すたびに種別を指定し、前回の選択値を引き継がない。
+                st.session_state[
+                    f"monthly_add_type_{target_year}_{target_month}"
+                ] = open_monthly_add_from_fixed
                 _open_monthly_add_dialog()
 
             if save_monthly_batch:
