@@ -2019,7 +2019,7 @@ def build_seat_current_state_sync_df(
                 monthly_schedule_df,
                 schedule_overrides_df,
                 timeslots_df,
-                include_inactive=True,
+                apply_enrollment_dates=True,
             )
         return plan_cache[d_str]
 
@@ -2243,6 +2243,19 @@ def _active_plan_rows(plan_df: pd.DataFrame) -> pd.DataFrame:
     return active.loc[~cancel_mask].copy()
 
 
+def calendar_effective_rows(history_df, students_df):
+    """表示履歴を変更せず、カレンダー人数用の有効予定だけを返す。"""
+    active = _active_plan_rows(history_df)
+    if active.empty:
+        return active
+    keep = pd.Series(False, index=active.index)
+    for day, rows in active.groupby("date", dropna=False):
+        mask = student_enrollment_mask(students_df, day)
+        ids = set(students_df.loc[mask, "student_id"].astype(str).str.strip())
+        keep.loc[rows.index] = rows["student_id"].astype(str).str.strip().isin(ids)
+    return active.loc[keep].copy()
+
+
 def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame:
     """指定した生徒・コマのうち、現在有効な予定だけを返す。"""
     return _active_plan_rows(_plan_hit(plan_df, sid, slot))
@@ -2324,6 +2337,12 @@ def validate_seat_transfer_import_rows(
             problems.append("元種別がrequest_typeと不一致")
         if dst_type and rule["dest_type"] and dst_type != rule["dest_type"]:
             problems.append("変更後種別がrequest_typeと不一致")
+
+        if sid and not problems and rule["needs_dest"]:
+            try:
+                validate_schedule_destination(students_df, sid, dst_date)
+            except ValueError as exc:
+                problems.append(str(exc))
 
         if sid and not problems and rule["needs_source"]:
             source_plan = build_daily_plan_for_date(
@@ -2567,25 +2586,20 @@ def _new_bot_student_id(used_ids: set[str]) -> str:
             return candidate
 
 
-def ensure_bot_student_map_private(students_df: pd.DataFrame) -> pd.DataFrame:
-    """在籍生徒に匿名IDを割り当て、ローカル専用対応表へ保持する。"""
-    current = load_bot_student_map_private()
-    current = current.copy()
+def bot_id_eligible_students(students_df, *, target_dates=None):
+    """通常は今日。出力時のみ、指定予定日の在籍者もID発行対象に含める。"""
+    mask = student_enrollment_mask(students_df, dt.date.today())
+    if target_dates is not None:
+        for day in target_dates:
+            mask = mask | student_enrollment_mask(students_df, day)
+    return students_df.loc[mask].copy()
 
-    active = students_df.copy() if students_df is not None else pd.DataFrame()
-    if "student_id" not in active.columns:
-        active["student_id"] = ""
+
+def ensure_bot_student_map_private(students_df: pd.DataFrame, *, target_dates=None) -> pd.DataFrame:
+    """必要な匿名IDだけ補完する。既存IDは退会後も保持する。"""
+    active = bot_id_eligible_students(students_df, target_dates=target_dates)
+    current = load_bot_student_map_private().copy()
     active["student_id"] = active["student_id"].fillna("").astype(str).str.strip()
-    if "is_active" in active.columns:
-        active = active[
-            active["is_active"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .replace("", "true")
-            .isin(["true", "1", "yes"])
-        ].copy()
     active_ids = [x for x in active["student_id"].tolist() if x]
 
     existing_by_sid = dict(zip(current["student_id"], current["bot_student_id"]))
@@ -2601,7 +2615,8 @@ def ensure_bot_student_map_private(students_df: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame(rows, columns=BOT_STUDENT_MAP_COLS)
     out = out.drop_duplicates(subset=["student_id"], keep="last")
-    write_csv_atomic(out, BOT_STUDENT_MAP_PRIVATE_CSV)
+    if not out.equals(current):
+        write_csv_atomic(out, BOT_STUDENT_MAP_PRIVATE_CSV)
     return out
 
 
@@ -2637,6 +2652,7 @@ def build_bot_schedule_export(
             monthly_schedule_df,
             schedule_overrides_df,
             timeslots_df,
+            apply_enrollment_dates=True,
         )
         p = _active_plan_rows(plan)
         if p.empty:
@@ -2732,6 +2748,7 @@ def build_seat_reservation_sync_export(
     for ts_date in pd.date_range(start_obj.date(), end_obj.date(), freq="D"):
         d = ts_date.date()
         d_str = d.isoformat()
+        enrolled_ids = set(seat_enrolled_students(students_df, d)["student_id"].astype(str).str.strip())
 
         # 最終予定（キャンセル反映後）。授業・自習など、実際に席を使う予定は
         # すべて1席として数える。
@@ -2742,6 +2759,7 @@ def build_seat_reservation_sync_export(
             monthly_schedule_df,
             schedule_overrides_df,
             timeslots_df,
+            apply_enrollment_dates=True,
         )
         e = _active_plan_rows(effective)
         if not e.empty:
@@ -2763,7 +2781,7 @@ def build_seat_reservation_sync_export(
         cancel_day = ov[
             (ov["date"] == d_str)
             & (ov["action_norm"] == "キャンセル")
-            & (ov["student_id"] != "")
+            & ov["student_id"].isin(enrolled_ids)
             & (ov["slot"] != "")
         ].copy()
         if not cancel_day.empty:
@@ -3284,9 +3302,11 @@ def build_daily_plan_for_date(
     timeslots_df: pd.DataFrame,
     *,
     include_inactive: bool = False,
+    apply_enrollment_dates: bool = False,
 ) -> pd.DataFrame:
     """
     date × student_id × slot の予定を1か所で作る共通関数。
+    既定は従来のis_active判定。対象日判定は専用入口から明示的に有効化する。
 
     優先順位：
     1. monthly_schedule.csv に対象日の予定があれば、それをベースにする
@@ -3297,6 +3317,11 @@ def build_daily_plan_for_date(
     食い違わないようにするための安全化。
     """
     weekday_map_local = ["月", "火", "水", "木", "金", "土", "日"]
+
+    if apply_enrollment_dates:
+        target_date = _student_enrollment_date(target_date, "予定対象日")
+        if target_date is None:
+            raise ValueError("予定対象日が必要です")
 
     if isinstance(target_date, str):
         target_dt = pd.to_datetime(target_date, errors="coerce")
@@ -3310,14 +3335,20 @@ def build_daily_plan_for_date(
     target_wd = weekday_map_local[target_date_obj.weekday()]
 
     # 生徒マスタ（在籍中だけを基本にする）
-    base_students = students_df.copy() if students_df is not None else pd.DataFrame()
+    if students_df is None or not {"student_id", "display_name"}.issubset(students_df.columns):
+        raise ValueError("日次予定の生徒マスタを取得できていません")
+    base_students = students_df.copy()
     for c in ["student_id", "display_name", "grade", "number_of_times", "join_date", "is_active"]:
         if c not in base_students.columns:
             base_students[c] = ""
     base_students["student_id"] = base_students["student_id"].fillna("").astype(str).str.strip()
     base_students["display_name"] = base_students["display_name"].fillna("").astype(str).str.strip()
 
-    if not include_inactive and "is_active" in base_students.columns:
+    if apply_enrollment_dates:
+        # 日付はis_activeより優先。include_inactiveでも期間制限は解除しない。
+        # 取消表示用履歴の復元・保存済みCSV自体の変更は行わない。
+        base_students = base_students[student_enrollment_mask(base_students, target_date_obj)].copy()
+    elif not include_inactive and "is_active" in base_students.columns:
         base_students = base_students[
             base_students["is_active"]
             .fillna("")
@@ -3390,8 +3421,7 @@ def build_daily_plan_for_date(
         plan["student_id"] = plan["student_id"].fillna("").astype(str).str.strip()
         plan["slot"] = plan["slot"].fillna("").astype(str).str.strip().map(normalize_slot)
         plan = plan[(plan["student_id"] != "") & (plan["slot"] != "")].copy()
-        if active_ids:
-            plan = plan[plan["student_id"].isin(active_ids)].copy()
+        plan = filter_student_ids(plan, active_ids)
         plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
 
     # 生徒情報を付ける
@@ -3431,8 +3461,7 @@ def build_daily_plan_for_date(
             add_change_df["student_id"] = add_change_df["student_id"].astype(str).str.strip()
             add_change_df["slot"] = add_change_df["slot"].map(normalize_slot)
             add_change_df = add_change_df[(add_change_df["student_id"] != "") & (add_change_df["slot"] != "")].copy()
-            if active_ids:
-                add_change_df = add_change_df[add_change_df["student_id"].isin(active_ids)].copy()
+            add_change_df = filter_student_ids(add_change_df, active_ids)
 
             if not add_change_df.empty:
                 # 「追加」は既存予定の有無やメモにかかわらずコマ単位で反映する。
@@ -3762,6 +3791,197 @@ def build_daily_plan_for_date(
     return plan
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
+def build_enrolled_daily_plan_for_date(
+    target_date,
+    students_df: pd.DataFrame,
+    student_schedule_df: pd.DataFrame,
+    monthly_schedule_df: pd.DataFrame,
+    schedule_overrides_df: pd.DataFrame,
+    timeslots_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """対象日在籍判定を使う日次予定専用入口。未変換の生徒マスタを渡す。
+
+    既存の出席・座席・Bot・カレンダーはこの入口に切り替えない。
+    予定の優先順位・追加・振替・取消履歴は共通処理をそのまま使用する。
+    """
+    return build_daily_plan_for_date(
+        target_date, students_df, student_schedule_df, monthly_schedule_df,
+        schedule_overrides_df, timeslots_df, apply_enrollment_dates=True,
+    )
+
+
+def student_legacy_active_mask(students_df: pd.DataFrame) -> pd.Series:
+    """生徒専用の従来判定。日付は適用しない。正常0行と取得失敗を区別する。"""
+    if students_df is None or "student_id" not in students_df.columns:
+        raise ValueError("生徒データを取得できていません（student_id列が必要です）")
+    values = students_df.get("is_active", pd.Series("", index=students_df.index))
+    return values.fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(
+        ["true", "1", "yes"]
+    )
+
+
+def _student_enrollment_date(value, field: str):
+    """空欄以外はISO日付または日付型のみ。曖昧な日付を推測しない。"""
+    if value is None or pd.isna(value) or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            pass
+    raise ValueError(f"{field}が不正です。YYYY-MM-DD形式で指定してください: {value!r}")
+
+
+def student_is_enrolled_on(student, target_date) -> bool:
+    """将来適用する生徒専用判定（既存画面にはまだ接続しない）。
+
+    開始日・最終在籍日とも含む。片側空欄はその側の制限なし。
+    両方未設定の旧データだけis_activeへフォールバックする。
+    日付がある場合は期間を正とし、現在のis_activeで過去を消さない。
+    不正日付・逆転期間・対象日未指定はValueError。呼出側で表示/停止する。
+    """
+    target = _student_enrollment_date(target_date, "対象日")
+    start = _student_enrollment_date(student.get("join_date", ""), "join_date")
+    end = _student_enrollment_date(student.get("leave_date", ""), "leave_date")
+    if target is None:
+        raise ValueError("対象日が必要です")
+    if start is not None and end is not None and start > end:
+        raise ValueError("join_dateがleave_dateより後です")
+    if start is None and end is None:
+        legacy = pd.DataFrame([{"student_id": student.get("student_id", ""),
+                                "is_active": student.get("is_active", "")}])
+        return bool(student_legacy_active_mask(legacy).iloc[0])
+    return (start is None or start <= target) and (end is None or target <= end)
+
+
+def validate_schedule_destination(students_df, student_id, target_date):
+    """新規予定の追加先だけを検証。取消元・保存済み履歴には適用しない。"""
+    if students_df is None or "student_id" not in students_df.columns:
+        raise ValueError("生徒データを取得できません")
+    rows = students_df.loc[students_df["student_id"].astype(str).str.strip().eq(str(student_id).strip())]
+    if len(rows) != 1:
+        raise ValueError("対象生徒を一意に確認できません")
+    row = rows.iloc[0]
+    if student_is_enrolled_on(row, target_date):
+        return
+    target = _student_enrollment_date(target_date, "追加先日")
+    start = _student_enrollment_date(row.get("join_date", ""), "join_date")
+    end = _student_enrollment_date(row.get("leave_date", ""), "leave_date")
+    if start is not None and target < start:
+        raise ValueError(f"この生徒は {start} から在籍のため、{target} の予定は追加できません。")
+    if end is not None and target > end:
+        raise ValueError(f"この生徒は {end} まで在籍のため、{target} の予定は追加できません。")
+    raise ValueError(f"この生徒は旧データの在籍状態が対象外のため、{target} の予定は追加できません。")
+
+
+def require_schedule_destination(students_df, student_id, target_date):
+    """UIは変更・保存前に停止し、振替元だけが取消されることを防ぐ。"""
+    try:
+        validate_schedule_destination(students_df, student_id, target_date)
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+
+
+def stage_student_leave_date(students_df, student_id, leave_date):
+    """退会予定UIの編集用コピーだけを更新。判定は既存の共通関数に委譲する。"""
+    edited = students_df.copy(deep=True)
+    matches = edited["student_id"].astype(str).str.strip().eq(str(student_id).strip())
+    if int(matches.sum()) != 1:
+        raise ValueError("対象生徒を一意に確認できません")
+    end = _student_enrollment_date(leave_date, "最終在籍日")
+    candidate = edited.loc[matches].iloc[0].copy()
+    candidate["leave_date"] = end.isoformat() if end is not None else ""
+    student_is_enrolled_on(candidate, dt.date.today())  # 不正日付・期間逆転を既存ルールで検証
+    if "leave_date" in edited.columns:
+        edited["leave_date"] = edited["leave_date"].astype(object)
+    edited.loc[matches, "leave_date"] = candidate["leave_date"]
+    return edited
+
+
+def saved_schedule_count_after(student_id, leave_date, monthly_df, overrides_df):
+    """確認用の保存済み予定位置数。取消履歴も含み、固定予定の未来展開は数えない。"""
+    end = _student_enrollment_date(leave_date, "最終在籍日")
+    positions = set()
+    for frame, is_override in [(monthly_df, False), (overrides_df, True)]:
+        if frame is None or frame.empty:
+            continue
+        for _, row in frame.iterrows():
+            if str(row.get("student_id", "")).strip() != str(student_id).strip():
+                continue
+            if is_override and normalize_action_value(row.get("action", "")) not in ["追加", "時間変更"]:
+                continue
+            day = _student_enrollment_date(row.get("date", ""), "保存済み予定日")
+            if day is not None and day > end:
+                positions.add((day, normalize_slot(row.get("slot", ""))))
+    return len(positions)
+
+
+def student_status_display(students_df, target_date):
+    """表示専用。在籍フラグや日付を更新せず、矛盾・不正値も見える形にする。"""
+    rows = []
+    for _, student in students_df.iterrows():
+        try:
+            enrolled = student_is_enrolled_on(student, target_date)
+            target = _student_enrollment_date(target_date, "表示対象日")
+            start = _student_enrollment_date(student.get("join_date", ""), "join_date")
+            end = _student_enrollment_date(student.get("leave_date", ""), "leave_date")
+            legacy = bool(student_legacy_active_mask(pd.DataFrame([student])).iloc[0])
+            if enrolled:
+                label = f"退会予定：{end:%m/%d}まで" if end is not None and end > target else "在籍"
+            else:
+                label = "入会前" if start is not None and target < start else "退会"
+            warning = "日付による在籍判定とis_activeが不一致（自動修正しません）" if (start is not None or end is not None) and enrolled != legacy else ""
+            rows.append({"状態": label, "状態確認": warning, "__enrolled_today": enrolled})
+        except ValueError as exc:
+            rows.append({"状態": "要確認", "状態確認": str(exc), "__enrolled_today": False})
+    return pd.DataFrame(rows, index=students_df.index, columns=["状態", "状態確認", "__enrolled_today"])
+
+
+def student_enrollment_mask(students_df: pd.DataFrame, target_date) -> pd.Series:
+    """生徒一覧用。取得失敗を0人に変換せず、正常0人は空のbool Series。"""
+    if students_df is None or "student_id" not in students_df.columns:
+        raise ValueError("生徒データを取得できていません（student_id列が必要です）")
+    if _student_enrollment_date(target_date, "対象日") is None:
+        raise ValueError("対象日が必要です")
+    return pd.Series(
+        [student_is_enrolled_on(row, target_date) for _, row in students_df.iterrows()],
+        index=students_df.index, dtype=bool,
+    )
+
+
+def split_past_attendance_plan(plan, attendance, students_df, target_date):
+    """保存済み実績は在籍判定から分離。新規候補のエラーでも履歴は返す。"""
+    recorded_ids = set(attendance.loc[
+        attendance["date"].astype(str).str.strip().eq(str(target_date)),
+        "student_id",
+    ].astype(str).str.strip())
+    recorded = plan["student_id"].astype(str).str.strip().isin(recorded_ids)
+    saved = plan.loc[recorded].copy()
+    try:
+        mask = student_enrollment_mask(students_df, target_date)
+    except ValueError as exc:
+        return saved, plan.iloc[0:0].copy(), str(exc)
+    eligible_ids = set(students_df.loc[mask, "student_id"].astype(str).str.strip())
+    candidates = plan.loc[
+        ~recorded & plan["student_id"].astype(str).str.strip().isin(eligible_ids)
+    ].copy()
+    return saved, candidates, ""
+
+
+def filter_student_ids(rows: pd.DataFrame, student_ids) -> pd.DataFrame:
+    """確定した候補集合で絞る。空集合は0件、None（取得失敗）はエラー。"""
+    if student_ids is None:
+        raise ValueError("対象生徒IDを取得できていません")
+    if rows is None or "student_id" not in rows.columns:
+        raise ValueError("絞り込み対象にstudent_id列がありません")
+    return rows[rows["student_id"].fillna("").astype(str).str.strip().isin(student_ids)].copy()
+
+
 def ensure_students_optional_cols(students: pd.DataFrame) -> pd.DataFrame:
     students = students.copy()
     students.columns = students.columns.astype(str).str.strip()
@@ -5498,6 +5718,12 @@ def next_transfer_request_id(df: pd.DataFrame) -> str:
 # Load data
 # =========================================================
 students = safe_read_csv(STUDENTS_CSV, ["student_id", "display_name"])
+# 読込失敗は列なしで返る。正常なヘッダーのみの0件CSVとは区別する。
+if not {"student_id", "display_name"}.issubset(students.columns):
+    st.error("生徒マスタを読み込めないため処理を停止しました。0人として続行しません。")
+    st.stop()
+# join_dateのcoerce変換前を保持。第2段階の予定生成だけで厳密に検証する。
+students_enrollment_source = students.copy(deep=True)
 students = sanitize_df(students)
 
 students = ensure_students_optional_cols(students)
@@ -5677,43 +5903,13 @@ else:
     default_seats["default_seat_no"] = default_seats["default_seat_no"].astype(str).str.strip()
     default_seats["note"] = default_seats["note"].astype(str).str.strip()
 
-# d300:
-# 退会済み生徒が過去に基本席へ残っていても、自動配置や座席確認へ混ざらないよう整理する。
-_active_ids_for_default_seat = set()
-_can_cleanup_default_seats = (
-    not students.empty and "student_id" in students.columns
+# 保存用の全件と、表示・自動配置用の対象行を分離する。
+# 在籍フィルタだけでは基本席CSVへ書き戻さない。
+default_seats_all = default_seats.copy()
+_active_ids_for_default_seat = set(
+    students.loc[student_legacy_active_mask(students), "student_id"].astype(str).str.strip()
 )
-if _can_cleanup_default_seats:
-    _active_students_for_default_seat = students.copy()
-    if "is_active" in _active_students_for_default_seat.columns:
-        _active_students_for_default_seat = _active_students_for_default_seat[
-            _active_students_for_default_seat["is_active"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .replace("", "true")
-            .isin(["true", "1", "yes"])
-        ].copy()
-    _active_ids_for_default_seat = set(
-        _active_students_for_default_seat["student_id"]
-        .astype(str)
-        .str.strip()
-        .tolist()
-    )
-
-if _can_cleanup_default_seats and not default_seats.empty:
-    _default_before_count = len(default_seats)
-    default_seats = default_seats[
-        default_seats["student_id"].astype(str).str.strip().isin(
-            _active_ids_for_default_seat
-        )
-    ].copy()
-    if len(default_seats) != _default_before_count:
-        write_csv_atomic(
-            default_seats[DEFAULT_SEAT_COLS].fillna(""),
-            DEFAULT_SEATS_CSV,
-        )
+default_seats = filter_student_ids(default_seats_all, _active_ids_for_default_seat)
 
 
 if seat_assignments.empty:
@@ -5754,6 +5950,43 @@ def move_selected_student_to_seat(day: str, slot: str, seat_no: str) -> None:
         key = f"seat_grid_{day}_{slot}_{other_seat}"
         if str(st.session_state.get(key, "")).strip() == sid:
             st.session_state[key] = ""
+
+
+def kentei_entry_students(students_df, target_date):
+    """新規検定入力専用。日付エラーでも既存履歴の描画は止めない。"""
+    try:
+        return students_df.loc[student_enrollment_mask(students_df, target_date)].copy()
+    except ValueError as exc:
+        st.error(f"検定の新規入力候補を作成できません: {exc}")
+        return students_df.iloc[0:0].copy()
+
+
+def seat_enrolled_students(students_df, target_date):
+    """座席専用の対象日在籍一覧。未変換の生徒マスタを渡す。"""
+    return students_df.loc[student_enrollment_mask(students_df, target_date)].copy()
+
+
+def preserve_ineligible_seat_history(original, proposed, target_date, eligible_ids):
+    """対象外の保存済み配置は再生成せず元行を保持する。上書き衝突は停止。"""
+    ids = original["student_id"].astype(str).str.strip()
+    protected = original.loc[
+        original["date"].astype(str).eq(str(target_date))
+        & ~ids.isin(set(eligible_ids) | {"", "__RESERVED__"})
+    ].copy()
+    result = proposed.copy()
+    for _, row in protected.iterrows():
+        same = (result["date"].astype(str).eq(str(target_date))
+                & result["slot"].map(normalize_slot).eq(normalize_slot(row["slot"]))
+                & result["seat_no"].astype(str).eq(str(row["seat_no"])))
+        if (result.loc[same, "student_id"].astype(str) != str(row["student_id"])).any():
+            raise ValueError("在籍対象外の保存済み配置と重なるため保存できません")
+        result = result.loc[~same]
+    invalid_new = result["date"].astype(str).eq(str(target_date)) & ~result[
+        "student_id"
+    ].astype(str).str.strip().isin(set(eligible_ids) | {"", "__RESERVED__"})
+    if invalid_new.any():
+        raise ValueError("在籍対象外の生徒を新たに配置することはできません")
+    return pd.concat([result, protected], ignore_index=True)
 
 
 def render_integrated_seat_view(monthly_schedule):
@@ -5820,25 +6053,14 @@ def render_integrated_seat_view(monthly_schedule):
     )
 
 
-    _seat_page_active_ids = set()
-    if not students.empty and "student_id" in students.columns:
-        _seat_page_active_students = students.copy()
-        if "is_active" in _seat_page_active_students.columns:
-            _seat_page_active_students = _seat_page_active_students[
-                _seat_page_active_students["is_active"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .replace("", "true")
-                .isin(["true", "1", "yes"])
-            ].copy()
-        _seat_page_active_ids = set(
-            _seat_page_active_students["student_id"]
-            .astype(str)
-            .str.strip()
-            .tolist()
-        )
+    try:
+        seat_students = seat_enrolled_students(students_enrollment_source, today)
+    except ValueError as exc:
+        st.error(f"座席の在籍判定エラー: {exc}")
+        return
+    _seat_page_active_ids = set(seat_students["student_id"].astype(str).str.strip())
+    # 表示・自動配置用だけ絞る。保存・明示削除は従来の全行を使う。
+    default_seats = filter_student_ids(default_seats_all, _seat_page_active_ids)
 
     today_seats = seat_assignments[
         (seat_assignments["date"].astype(str).str.strip() == today)
@@ -5847,7 +6069,7 @@ def render_integrated_seat_view(monthly_schedule):
             seat_assignments["student_id"]
             .astype(str)
             .str.strip()
-            .isin(_seat_page_active_ids)
+            .isin(_seat_page_active_ids | {"__RESERVED__"})
         )
     ].copy()
 
@@ -5875,7 +6097,7 @@ def render_integrated_seat_view(monthly_schedule):
         sid = seat_map.get(str(seat_no), "")
         if not sid:
             return "空席"
-        return student_name_map.get(sid, sid)
+        return "使用予定" if sid == "__RESERVED__" else student_name_map.get(sid, sid)
 
 
     def seat_box(seat_no: str):
@@ -5960,13 +6182,15 @@ def render_integrated_seat_view(monthly_schedule):
     # 補助登録の候補だけでなく、今日の予定 / 月スケジュール / 例外追加を同じ共通ロジックで表示する。
     seat_plan_today_for_display = build_daily_plan_for_date(
         dt.date.today(),
-        students,
+        students_enrollment_source,
         student_schedule,
         monthly_schedule,
         schedule_overrides,
         timeslots,
         include_inactive=False,
+        apply_enrollment_dates=True,
     )
+    seat_plan_today_for_display = filter_student_ids(seat_plan_today_for_display, _seat_page_active_ids)
 
     display_slot_norm = normalize_slot(seat_slot_sel)
     display_rows = []
@@ -6033,7 +6257,7 @@ def render_integrated_seat_view(monthly_schedule):
     def _append_top_candidate(_sid, _slot, _stype, _status):
         _sid = str(_sid).strip()
         _slot = normalize_slot(_slot)
-        if not _sid or _slot != display_slot_norm:
+        if not _sid or _slot != display_slot_norm or _sid not in _seat_page_active_ids:
             return
         _key = (_sid, _slot)
         if _key in top_existing_keys:
@@ -6152,13 +6376,15 @@ def render_integrated_seat_view(monthly_schedule):
         # 振替・当日追加の生徒が候補に出ない事故を防ぐ。
         seat_plan_today = build_daily_plan_for_date(
             dt.date.today(),
-            students,
+            students_enrollment_source,
             student_schedule,
             monthly_schedule,
             schedule_overrides,
             timeslots,
             include_inactive=False,
+            apply_enrollment_dates=True,
         )
+        seat_plan_today = filter_student_ids(seat_plan_today, _seat_page_active_ids)
 
         today_student_ids = set()
         today_slot_student_ids = set()
@@ -6231,7 +6457,7 @@ def render_integrated_seat_view(monthly_schedule):
             help="振替・追加の生徒が見つからない時に、全在籍生徒からも選べるようにします。",
         )
 
-        active_students_for_seat = students.copy()
+        active_students_for_seat = seat_students.copy()
 
         if include_all_active_for_seat:
             pass
@@ -6245,24 +6471,6 @@ def render_integrated_seat_view(monthly_schedule):
             ].copy()
         else:
             active_students_for_seat = active_students_for_seat.iloc[0:0].copy()
-
-
-        if "status" in active_students_for_seat.columns:
-            active_students_for_seat = active_students_for_seat[
-                active_students_for_seat["status"].astype(str).str.strip() != "退会"
-            ].copy()
-
-
-        if "is_active" in active_students_for_seat.columns:
-            active_students_for_seat = active_students_for_seat[
-                active_students_for_seat["is_active"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .replace("", "true")
-                .isin(["true", "1", "yes"])
-            ].copy()
 
 
         seat_student_options = [("", "空席")]
@@ -6295,6 +6503,10 @@ def render_integrated_seat_view(monthly_schedule):
         for seat_no in ["1", "2", "3", "4", "5"]:
             current_sid = current_by_seat.get(seat_no, "")
             default_index = seat_student_ids.index(current_sid) if current_sid in seat_student_ids else 0
+
+            if current_sid and current_sid not in _seat_page_active_ids and current_sid != "__RESERVED__":
+                st.caption(f"席{seat_no}: {student_name_map.get(current_sid, current_sid)}（在籍対象外・保存済み配置を保持）")
+                continue
 
             selected_sid = st.selectbox(
                 f"席{seat_no}",
@@ -6361,6 +6573,11 @@ def render_integrated_seat_view(monthly_schedule):
             save_df = save_df[SEAT_ASSIGNMENT_COLS].fillna("")
 
 
+            try:
+                save_df = preserve_ineligible_seat_history(seat_assignments, save_df, today, _seat_page_active_ids)
+            except ValueError as exc:
+                st.error(str(exc))
+                st.stop()
             write_csv_atomic(save_df, SEAT_ASSIGNMENTS_CSV)
 
 
@@ -6390,29 +6607,7 @@ def render_integrated_seat_view(monthly_schedule):
             )
         )
     # 在籍中の生徒IDだけを座席確認に出す
-    active_student_ids_for_seat = set()
-
-
-    if not students.empty and "student_id" in students.columns:
-        students_active_for_seat = students.copy()
-
-
-        if "is_active" in students_active_for_seat.columns:
-            students_active_for_seat = students_active_for_seat[
-                students_active_for_seat["is_active"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .replace("", "true")
-                .isin(["true", "1", "yes"])
-            ].copy()
-
-
-        active_student_ids_for_seat = set(
-            students_active_for_seat["student_id"].astype(str).str.strip()
-        )
-
+    active_student_ids_for_seat = set(_seat_page_active_ids)
 
     # コマ時間マップ
     slot_time_map = {}
@@ -6442,13 +6637,15 @@ def render_integrated_seat_view(monthly_schedule):
     if "seat_plan_today" not in locals():
         seat_plan_today = build_daily_plan_for_date(
             dt.date.today(),
-            students,
+            students_enrollment_source,
             student_schedule,
             monthly_schedule,
             schedule_overrides,
             timeslots,
             include_inactive=False,
+            apply_enrollment_dates=True,
         )
+        seat_plan_today = filter_student_ids(seat_plan_today, _seat_page_active_ids)
 
     if not seat_plan_today.empty:
         for _, r in seat_plan_today.iterrows():
@@ -6457,7 +6654,7 @@ def render_integrated_seat_view(monthly_schedule):
             if not sid or not slot:
                 continue
 
-            if active_student_ids_for_seat and sid not in active_student_ids_for_seat:
+            if sid not in active_student_ids_for_seat:
                 continue
 
             start = str(r.get("start", "") or "").strip()
@@ -6728,20 +6925,7 @@ def render_integrated_seat_view(monthly_schedule):
         st.caption("生徒ごとの基本席を登録します。今日の自動配置の土台になります。")
 
 
-        active_students = students.copy()
-
-
-        if "is_active" in active_students.columns:
-            active_students = active_students[
-                active_students["is_active"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .replace("", "true")
-                .isin(["true", "1", "yes"])
-            ].copy()
-
+        active_students = seat_students.copy()
 
         active_students = active_students.sort_values("display_name")
 
@@ -6799,7 +6983,7 @@ def render_integrated_seat_view(monthly_schedule):
 
             with col1:
                 if st.button("💾 基本席を保存", key="save_default_seat"):
-                    df = default_seats.copy()
+                    df = default_seats_all.copy()
                     df = df[df["student_id"].astype(str).str.strip() != target_sid].copy()
 
 
@@ -6822,7 +7006,7 @@ def render_integrated_seat_view(monthly_schedule):
 
             with col2:
                 if st.button("🗑 基本席を削除", key="delete_default_seat"):
-                    df = default_seats.copy()
+                    df = default_seats_all.copy()
                     df = df[df["student_id"].astype(str).str.strip() != target_sid].copy()
                     df = df[DEFAULT_SEAT_COLS].fillna("")
                     write_csv_atomic(df, DEFAULT_SEATS_CSV)
@@ -7026,13 +7210,15 @@ def render_integrated_seat_view(monthly_schedule):
     # 1) 最終的な今日の予定（キャンセル反映後）
     grid_plan_today = build_daily_plan_for_date(
         grid_today_date_obj,
-        students,
+        students_enrollment_source,
         student_schedule,
         monthly_schedule,
         schedule_overrides,
         timeslots,
         include_inactive=False,
+        apply_enrollment_dates=True,
     )
+    grid_plan_today = filter_student_ids(grid_plan_today, _seat_page_active_ids)
 
     if not grid_plan_today.empty and "student_id" in grid_plan_today.columns:
         today_student_ids_for_grid |= set(
@@ -7181,7 +7367,7 @@ def render_integrated_seat_view(monthly_schedule):
         help="今日の予定・振替・追加の候補に出ない生徒がいる場合だけONにします。",
     )
 
-    grid_students = students.copy()
+    grid_students = seat_students.copy()
 
     if include_all_active_for_grid:
         pass
@@ -7191,24 +7377,6 @@ def render_integrated_seat_view(monthly_schedule):
         ].copy()
     else:
         grid_students = grid_students.iloc[0:0].copy()
-
-
-    if "status" in grid_students.columns:
-        grid_students = grid_students[
-            grid_students["status"].astype(str).str.strip() != "退会"
-        ].copy()
-
-
-    if "is_active" in grid_students.columns:
-        grid_students = grid_students[
-            grid_students["is_active"]
-            .fillna("")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .replace("", "true")
-            .isin(["true", "1", "yes"])
-        ].copy()
 
 
     grid_options = [("", "空席"), ("__RESERVED__", "使用予定")]
@@ -7248,12 +7416,12 @@ def render_integrated_seat_view(monthly_schedule):
             base_ids = ["", "__RESERVED__"]
             for _sid in slot_ids:
                 _sid = str(_sid).strip()
-                if _sid and _sid in grid_student_labels and _sid not in base_ids:
+                if _sid in _seat_page_active_ids and _sid in grid_student_labels and _sid not in base_ids:
                     base_ids.append(_sid)
 
         for _sid in [saved_sid_value, current_sid_value]:
             _sid = str(_sid).strip()
-            if _sid and _sid in grid_student_labels and _sid not in base_ids:
+            if _sid in _seat_page_active_ids and _sid in grid_student_labels and _sid not in base_ids:
                 base_ids.append(_sid)
 
         ordered = []
@@ -7402,7 +7570,7 @@ def render_integrated_seat_view(monthly_schedule):
                 sid = str(st.session_state.get(key, existing_grid.get((slot, seat_no), ""))).strip()
 
 
-                if sid:
+                if sid in _seat_page_active_ids or sid == "__RESERVED__":
                     slot_count += 1
 
 
@@ -7467,6 +7635,10 @@ def render_integrated_seat_view(monthly_schedule):
 
 
                 saved_sid = str(existing_grid.get((slot, seat_no), "")).strip()
+                if saved_sid and saved_sid not in _seat_page_active_ids and saved_sid != "__RESERVED__":
+                    with cols[i]:
+                        st.caption(f"{student_name_map.get(saved_sid, saved_sid)}（在籍対象外・保存済み配置を保持）")
+                    continue
                 slot_candidate_ids = build_seat_options_for_slot(
                     slot_value=slot,
                     current_sid_value=current_sid,
@@ -7570,6 +7742,11 @@ def render_integrated_seat_view(monthly_schedule):
         save_df = save_df[SEAT_ASSIGNMENT_COLS].fillna("")
 
 
+        try:
+            save_df = preserve_ineligible_seat_history(seat_assignments, save_df, today, _seat_page_active_ids)
+        except ValueError as exc:
+            st.error(str(exc))
+            st.stop()
         write_csv_atomic(save_df, SEAT_ASSIGNMENTS_CSV)
 
 
@@ -7921,6 +8098,17 @@ if page == "閲覧":
     # 普段の success / warning と区別しやすいよう紫系の確認パネルに統一。
     # =========================================================
     _summary_today = dt.date.today()
+    _today_unfinished_ids = set()
+    _today_unfinished_error = ""
+    try:
+        _today_unfinished_mask = student_enrollment_mask(students_enrollment_source, _summary_today)
+        _today_unfinished_ids = set(
+            students_enrollment_source.loc[_today_unfinished_mask, "student_id"].astype(str).str.strip()
+        )
+    except ValueError as exc:
+        _today_unfinished_error = str(exc)
+        st.error(f"今日の未完了・入力状況を作成できません: {exc}")
+
     _summary_plan = build_daily_plan_for_date(
         _summary_today,
         students,
@@ -7928,8 +8116,11 @@ if page == "閲覧":
         monthly_schedule,
         schedule_overrides,
         timeslots,
-        include_inactive=include_inactive,
+        include_inactive=True,  # 在籍判定前に現在フラグで除外しない
     )
+
+    # 現在フラグで先行除外せず作った予定を、対象日在籍IDで絞る。
+    _summary_plan = filter_student_ids(_summary_plan, _today_unfinished_ids)
 
     if isinstance(_summary_plan, pd.DataFrame) and not _summary_plan.empty:
         _summary_cancel_mask = pd.Series(False, index=_summary_plan.index)
@@ -7949,6 +8140,8 @@ if page == "閲覧":
                     )
                 ).fillna(False)
         _summary_plan = _summary_plan.loc[~_summary_cancel_mask].copy()
+
+    _summary_target_ids = set(_summary_plan["student_id"].astype(str).str.strip())
 
     _summary_att_df = load_attendance_log().copy()
     _summary_skip_df = load_progress_skip_ok().copy()
@@ -8031,7 +8224,8 @@ if page == "閲覧":
         _sub_pending = _sub[_sub["status"].str.lower().eq("pending")].copy()
         if not _sub_pending.empty:
             _summary_sub_today_pending = int(
-                _sub_pending["date"].eq(str(_summary_today)).sum()
+                (_sub_pending["date"].eq(str(_summary_today))
+                 & _sub_pending["student_id"].isin(_summary_target_ids)).sum()
             )
             _summary_sub_overdue_pending = int(
                 (_sub_pending["date"] < str(_summary_today)).sum()
@@ -8058,6 +8252,8 @@ if page == "閲覧":
                 .astype(str).str.strip()
                 .drop_duplicates().tolist()
             )
+            if _d == _summary_today:
+                _ids = [sid for sid in _ids if sid in _summary_target_ids]
             _count = 0
             for _sid in _ids:
                 _rec = get_typing_today(_summary_typing_df, _sid, _d)
@@ -8101,6 +8297,9 @@ if page == "閲覧":
                 f"　前日以前の確認漏れ {_summary_carryover}件"
                 f"（サブ {_summary_sub_overdue_pending} / タイピング {_summary_typing_yesterday_pending}）"
             )
+
+    if _today_unfinished_error:
+        _summary_message = "⚠ 在籍日付エラーのため、今日の入力状況は集計できません。"
 
     st.markdown(
         f'        <div style="\n            background: linear-gradient(90deg, #f1e8ff 0%, #eadcff 100%);\n            border: 2px solid #8b5cf6;\n            border-radius: 14px;\n            padding: 16px 20px;\n            margin: 4px 0 18px 0;\n            color: #3b1d70;\n        ">\n          <div style="font-size:1.12rem; font-weight:800; margin-bottom:5px;">🟣 最終確認｜今日の入力状況</div>\n          <div style="font-size:1.02rem; font-weight:650;">{_summary_message}</div>\n        </div>',
@@ -8442,8 +8641,24 @@ if page == "閲覧":
             monthly_schedule,
             schedule_overrides,
             timeslots,
-            include_inactive=include_inactive,
+            # 過去の新規候補は現在のis_activeではなく、対象日で判定する。
+            include_inactive=True,  # 今日も共通在籍判定を後段で適用する
         )
+
+        if d_date == today:
+            plan_day = filter_student_ids(plan_day, _today_unfinished_ids)
+
+        if d_date < today:
+            _past_saved, _past_new, _past_error = split_past_attendance_plan(
+                plan_day, att_df_check, students_enrollment_source, d_date,
+            )
+            if _past_error:
+                st.error(f"{d_str} の出席追加候補を作成できません: {_past_error}")
+            # 元の表示順を維持し、保存済み実績には日付判定をかけない。
+            _past_keep = set(_past_saved["student_id"].astype(str).str.strip()) | set(
+                _past_new["student_id"].astype(str).str.strip()
+            )
+            plan_day = filter_student_ids(plan_day, _past_keep)
 
         # d388:
         # 月カレンダーでは履歴確認のため取消線表示を残すが、
@@ -8477,7 +8692,9 @@ if page == "閲覧":
 
         # 名前付与
         plan_day["display_name"] = (
-            plan_day["student_id"].astype(str).map(student_name_map).fillna(plan_day["student_id"].astype(str))
+            plan_day["student_id"].astype(str).map(
+                dict(zip(students["student_id"].astype(str).str.strip(), students["display_name"]))
+            ).fillna(plan_day["student_id"].astype(str))
         )
 
 
@@ -8960,6 +9177,8 @@ if page == "閲覧":
                 else:
                     st.write(f"• {label} / {status}")
 
+    elif _today_unfinished_error:
+        st.info("在籍日付エラーのため、今日の未完了タスクは表示していません。")
     else:
         st.success("✅ 今日の未完了タスクはありません")
 
@@ -9338,7 +9557,7 @@ if page == "閲覧":
         monthly_schedule,
         schedule_overrides,
         timeslots,
-        include_inactive=include_inactive,
+        include_inactive=True,  # 在籍判定前に現在フラグで除外しない
     )
 
     # d387:
@@ -9365,6 +9584,18 @@ if page == "閲覧":
                 ).fillna(False)
 
         today_view = today_view.loc[~_cancel_mask_today].copy()
+
+    # 表示対象だけを日付で判定。today_viewは出席・座席等との共有データなので変更しない。
+    today_display_ids = set()
+    today_display_error = ""
+    try:
+        _today_display_mask = student_enrollment_mask(students_enrollment_source, today)
+        today_display_ids = set(
+            students_enrollment_source.loc[_today_display_mask, "student_id"].astype(str).str.strip()
+        )
+    except ValueError as e:
+        today_display_error = str(e)
+        st.error(f"今日の表示を作成できません。在籍日付を確認してください: {e}")
 
     if today_view.empty:
         st.info("今日の予定はありません。（月スケジュール / student_schedule.csv / schedule_overrides.csv を確認してね）")
@@ -9608,12 +9839,17 @@ if page == "閲覧":
             else:
                 st.success(_sub_progress_flash)
 
+        # 並び順・共有ヒントは従来どおり計算し、画面に出す行だけを制限する。
+        today_display_candidates = filter_student_ids(next_candidates, today_display_ids)
+        if today_display_candidates.empty and not today_display_error:
+            st.caption("今日の予定：0人（今日時点の在籍対象なし）")
         if next_candidates.empty:
             st.caption("候補なし")
         else:
             # d284:
             # 今日の予定にいる生徒を、自習・完了済みも含めて全員表示する。
-            st.caption(f"今日の予定：{len(next_candidates)}人（自習・完了済みを含めて全員表示）")
+            if not today_display_candidates.empty:
+                st.caption(f"今日の予定：{len(today_display_candidates)}人（自習・完了済みを含めて表示）")
 
             # 同じ生徒が複数コマにいる場合も、サブ課題の状態・操作は1回だけ表示する。
             _sub_progress_button_rendered = set()
@@ -9623,6 +9859,7 @@ if page == "閲覧":
             _today_task_hint_map = {}
             _today_sub_hint_map = {}
 
+            _today_display_number = 0
             for i, (_, r) in enumerate(next_candidates.iterrows(), start=1):
                 name = str(r.get("display_name", "")).strip()
                 sid = str(r.get("student_id", "")).strip()
@@ -9650,10 +9887,13 @@ if page == "閲覧":
                     _next_type_mark = "📝 自習"
                 else:
                     _next_type_mark = "📘 授業"
-                st.write(
-                    f"{i}. {slot}限 / {_next_type_mark} / 席：{seat_label} / "
-                    f"{_today_exam_mark}{name} / {status}"
-                )
+                _show_today_candidate = sid in today_display_ids
+                if _show_today_candidate:
+                    _today_display_number += 1
+                    st.write(
+                        f"{_today_display_number}. {slot}限 / {_next_type_mark} / 席：{seat_label} / "
+                        f"{_today_exam_mark}{name} / {status}"
+                    )
 
                 # d245:
                 # まずは「次に見る候補」に、今日やる候補を1行だけ表示して検証する。
@@ -9993,7 +10233,8 @@ if page == "閲覧":
                         _today_hint_text = task_hint
 
                 if _today_hint_text:
-                    st.caption(f"今日やる候補：{_today_hint_text}")
+                    if _show_today_candidate:
+                        st.caption(f"今日やる候補：{_today_hint_text}")
 
                     # d394:
                     # 同じ生徒に「授業＋自習」がある場合、候補行の並び順に左右されず
@@ -10058,7 +10299,8 @@ if page == "閲覧":
                 _today_sub_text = ""
                 if sub_task_hint:
                     _today_sub_text = str(sub_task_hint).strip()
-                    st.caption(_today_sub_text)
+                    if _show_today_candidate:
+                        st.caption(_today_sub_text)
                 elif (
                     sub_state.get("configured")
                     and sub_state.get("today_count", 0) > 0
@@ -10069,7 +10311,8 @@ if page == "閲覧":
                         sub_state.get("sub_name", "")
                     ).strip()
                     _today_sub_text = f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
-                    st.caption(_today_sub_text)
+                    if _show_today_candidate:
+                        st.caption(_today_sub_text)
 
                 if _today_sub_text:
                     _today_sub_hint_map[str(sid).strip()] = _today_sub_text
@@ -10084,7 +10327,7 @@ if page == "閲覧":
                 )
 
                 if (
-                    _show_sub_controls
+                    _show_today_candidate and _show_sub_controls
                     and sid not in _sub_progress_button_rendered
                 ):
                     _sub_progress_button_rendered.add(sid)
@@ -10215,7 +10458,7 @@ if page == "閲覧":
                                 st.session_state[_confirm_key] = False
                                 st.rerun()
 
-                if memo:
+                if _show_today_candidate and memo:
                     st.caption(f"📝 {memo}")
 
 
@@ -10947,11 +11190,20 @@ if page == "閲覧":
                     )
 
 
+                if today_display_error:
+                    st.error(
+                        "今日の出席入力候補を作成できません。在籍日付を確認してください: "
+                        + today_display_error
+                    )
+
                 for sid in ids_in_today:
                     rec = get_attendance_today(att_df, sid, today)
                     rec_map[sid] = rec
                     if rec is None:
-                        pending_ids.append(sid)
+                        # 新規入力だけ、今日の表示と同じ対象日在籍IDを使う。
+                        # 既存記録の閲覧・訂正（done_ids）には適用しない。
+                        if sid in today_display_ids:
+                            pending_ids.append(sid)
                     else:
                         done_ids.append(sid)
 
@@ -11091,7 +11343,10 @@ if page == "閲覧":
 
 
                 if not target_ids:
-                    st.success("未確認の出席記録はありません。")
+                    if today_display_error:
+                        st.info("日付エラーのため、新規の出席入力候補は表示していません。")
+                    else:
+                        st.success("未確認の出席記録はありません。")
                 else:
                     for sid in target_ids:
                         nm = name_map.get(sid, "")
@@ -12374,6 +12629,9 @@ if page == "閲覧":
                         save_action = "追加"
                         save_note = (save_note + " / " if save_note else "") + "特別追加"
 
+                    if save_action in ["追加", "時間変更"]:
+                        require_schedule_destination(students_enrollment_source, picked_sid, dstr)
+
                     ov2 = upsert_schedule_override_row(
                         ov_df,
                         student_id=str(picked_sid).strip(),
@@ -13164,7 +13422,7 @@ if page == "閲覧":
         elif selected_student == "（全員）":
             st.info("左のフィルタから、生徒を1人選んでください。")
         else:
-            student_row = students[students["display_name"] == selected_student].head(1)
+            student_row = students[students["display_name"] == selected_student_raw].head(1)
 
             if student_row.empty:
                 st.warning("生徒情報が見つかりません。")
@@ -13183,7 +13441,7 @@ if page == "閲覧":
                     can_render_tab0 = False
 
                 if can_render_tab0:
-                    student_row = students[students["display_name"] == selected_student].head(1)
+                    student_row = students[students["display_name"] == selected_student_raw].head(1)
                     if student_row.empty:
                         st.warning("生徒情報が見つかりません。")
                     else:
@@ -13192,12 +13450,26 @@ if page == "閲覧":
 
                         # ここから下の tab0 の残り処理をインデント1段下げて入れる
 
-                    student_row = students[students["display_name"] == selected_student].head(1)
+                    student_row = students[students["display_name"] == selected_student_raw].head(1)
                     if student_row.empty:
                         st.warning("生徒情報が見つかりません。")
                         st.stop()
                     student_id = str(student_row["student_id"].iloc[0]).strip()
                   #  st.markdown(f"👤 **編集対象**：{student_id}｜{selected_student}")
+
+                    # 通常の新規完了日は今日。保存済み履歴と完了日訂正は絞らない。
+                    curriculum_new_entry_allowed = False
+                    try:
+                        _curriculum_source = students_enrollment_source[
+                            students_enrollment_source["student_id"].astype(str).str.strip().eq(student_id)
+                        ]
+                        curriculum_new_entry_allowed = bool(
+                            student_enrollment_mask(_curriculum_source, dt.date.today()).any()
+                        )
+                    except ValueError as exc:
+                        st.error(f"通常進捗の新規入力候補を作成できません: {exc}")
+                    if not curriculum_new_entry_allowed:
+                        st.info("今日の新規進捗入力は対象外です。保存済み履歴の閲覧・訂正は引き続き利用できます。")
 
                     # Course selector with order
                     cc = curr_courses.copy()
@@ -13532,7 +13804,7 @@ if page == "閲覧":
 
                             if st.button(
                                 "完了を保存",
-                                disabled=(not mark_done) or mark_course_skip,
+                                disabled=(not curriculum_new_entry_allowed) or (not mark_done) or mark_course_skip,
                                 key=f"save_course_done_{student_id}_{selected_course_id}",
                             ):
                                 # 保存処理
@@ -13566,7 +13838,7 @@ if page == "閲覧":
 
                             if st.button(
                                 "⏭️ スキップを保存",
-                                disabled=(not mark_course_skip) or mark_done,
+                                disabled=(not curriculum_new_entry_allowed) or (not mark_course_skip) or mark_done,
                                 key=f"save_course_skip_{student_id}_{selected_course_id}",
                             ):
                                 today_str = datetime.now().strftime('%Y-%m-%d')
@@ -13663,6 +13935,12 @@ if page == "閲覧":
                         else:
                             default_state = "未実施"
 
+
+                        if not curriculum_new_entry_allowed and not (was_done or was_skip):
+                            # 未実施の保存済み行は閲覧だけ残し、新規完了入力にはしない。
+                            if task_id in done_map:
+                                st.caption(f"{task_display_name}：未実施（保存済み記録）")
+                            continue
 
                         disabled = (was_done and is_locked_done_tasks)
 
@@ -13806,7 +14084,7 @@ if page == "閲覧":
         elif selected_student == "（全員）":
             st.info("左のフィルタから、生徒を1人選んでください。")
         else:
-            student_row = students[students["display_name"] == selected_student].head(1)
+            student_row = students[students["display_name"] == selected_student_raw].head(1)
 
 
             if student_row.empty:
@@ -13831,6 +14109,13 @@ if page == "閲覧":
         #   2) 検定予定が合格済み級だけなら、次の未合格級
         #   3) 予定がなければ、次の未合格級
         #   4) 全級合格済みなら1級
+            _kentei_student_source = students_enrollment_source[
+                students_enrollment_source["student_id"].astype(str).str.strip().eq(student_id)
+            ]
+            kentei_new_allowed = not kentei_entry_students(_kentei_student_source, dt.date.today()).empty
+            if not kentei_new_allowed:
+                st.info("今日の検定進捗・練習開始は対象外です。保存済み履歴は引き続き確認できます。")
+
             grade_options = ["1", "2", "3", "4"]
             grade_progress_order = ["4", "3", "2", "1"]
 
@@ -13969,10 +14254,11 @@ if page == "閲覧":
             _training_now = st.checkbox(
                 "この子は検定練習中（次に見る候補で検定課題を優先）",
                 value=_training_before,
+                disabled=not (kentei_new_allowed or _training_before),
                 key=f"kentei_training_flag_{student_id}",
                 help="ONにすると、検定予定が未登録でもこの生徒は検定課題を優先表示します。",
             )
-            if _training_now != _training_before:
+            if _training_now != _training_before and (kentei_new_allowed or _training_before):
                 upsert_kentei_training_status(
                     student_id=student_id,
                     is_training=bool(_training_now),
@@ -14239,6 +14525,11 @@ if page == "閲覧":
                 else:
                     default_state = "未実施"
 
+                if not kentei_new_allowed and not (was_done or was_skip):
+                    if task_id in done_map:
+                        st.caption(f"{task_name}：未実施（保存済み記録）")
+                    continue
+
                 disabled = is_locked or (was_done and not override_done_lock)
 
                 selected_state = st.selectbox(
@@ -14265,7 +14556,7 @@ if page == "閲覧":
                 })
 
 
-            if st.button("💾 保存（検定課題）", disabled=is_locked):
+            if st.button("💾 保存（検定課題）", disabled=is_locked or not updated):
                 new_df = pd.DataFrame(updated)
 
 
@@ -14273,6 +14564,7 @@ if page == "閲覧":
                     ~(
                         (kentei_prog["student_id"].astype(str).str.strip() == student_id)
                         & (kentei_prog["grade"].astype(str).str.strip() == grade_sel)
+                        & kentei_prog["task_id"].astype(str).str.strip().isin(new_df["task_id"])
                     )
                 ].copy()
 
@@ -14489,10 +14781,13 @@ if page == "閲覧":
                 grade_for_pass = st.text_input("受験した級", value="", key="pass_new_grade")
                 score_for_pass = st.text_input("点数（任意）", value="", key="pass_new_score")
                 pass_date = st.date_input("受験日", value=date.today(), key="pass_new_date")
+                _result_entry_allowed = not kentei_entry_students(_kentei_student_source, pass_date).empty
+                if not _result_entry_allowed:
+                    st.info("この受験日は新規結果登録の在籍対象外です。保存済み結果は下で確認・編集できます。")
                 pass_memo = st.text_area("メモ（任意）", value="", key="pass_new_memo")
                 colA, colB = st.columns([1, 2])
                 with colA:
-                    if st.button("💾 検定結果を登録", key="pass_add_btn"):
+                    if st.button("💾 検定結果を登録", key="pass_add_btn", disabled=not _result_entry_allowed):
                         if result_for_exam == "後で登録":
                             st.info(
                                 "結果は保存していません。"
@@ -14741,15 +15036,9 @@ if page == "閲覧":
         if logs_df.empty or students.empty or curr_courses.empty:
             st.info("表示できるデータがありません")
         else:
-            active_students = students.copy()
-            if 'is_active' in active_students.columns:
-                try:
-                    active_students = active_students[active_students['is_active'] == True]
-                except Exception:
-                    pass
+            active_students = students[student_legacy_active_mask(students)].copy()
             if active_students.empty:
-                active_students = students.copy()
-
+                st.info("在籍中の対象生徒はいません。")
 
             active_students["student_id"] = active_students["student_id"].astype(str).str.strip()
             active_students["display_name"] = active_students["display_name"].astype(str).str.strip()
@@ -15168,6 +15457,10 @@ if page == "閲覧":
             scratch_best_small = pd.DataFrame(columns=["student_id", "scratch_best"])
 
         summary = students.copy()
+        _summary_status = student_status_display(students_enrollment_source, dt.date.today())
+        _status_by_id = students_enrollment_source[["student_id"]].copy()
+        _status_by_id[["状態", "状態確認"]] = _summary_status[["状態", "状態確認"]]
+        summary = summary.merge(_status_by_id, on="student_id", how="left")
         summary = summary.merge(done_counts, on="student_id", how="left")
         summary = summary.merge(scratch_best_small, on="student_id", how="left")
         summary = summary.merge(best_score_small, on="student_id", how="left")
@@ -15176,21 +15469,17 @@ if page == "閲覧":
         summary["scratch_best"] = summary["scratch_best"].fillna("—")
         summary["best_score"] = summary["best_score"].fillna("—")
 
-        # Apply grade/student filters
+        # 状態は全員一覧でも表示する。選択された生徒の履歴は現在状態で除外しない。
         if selected_grade != "（全て）":
             summary = summary[summary["grade"] == selected_grade]
         if selected_student != "（全員）":
-            summary = summary[summary["display_name"] == selected_student]
-
-            show_cols = ["grade", "display_name", "number_of_times", "scratch_best", "best_score", "done_total"]
-            summary_show = summary.sort_values(by=["join_date", "display_name"], na_position="last")[show_cols]
-            st.dataframe(summary_show, use_container_width=True, hide_index=True)
-            st.caption("done_total は progress_log.csv の status=done の行数（全コース合計）です。")
-
+            summary = summary[summary["display_name"] == selected_student_raw]
         if show_today_only:
-                summary = summary[
-                    summary["student_id"].astype(str).isin(today_ids)
-                ]
+            summary = summary[summary["student_id"].astype(str).isin(today_ids)]
+        show_cols = ["grade", "display_name", "状態", "状態確認", "number_of_times", "scratch_best", "best_score", "done_total"]
+        summary_show = summary.sort_values(by=["join_date", "display_name"], na_position="last")[show_cols]
+        st.dataframe(summary_show, use_container_width=True, hide_index=True)
+        st.caption("done_total は progress_log.csv の status=done の行数（全コース合計）です。")
 
 
     if sidebar_view_mode == "生徒別（done）":
@@ -15366,17 +15655,12 @@ elif page == "管理（入力）":
             )
 
         _bot_map_now = load_bot_student_map_private()
-        _bot_active = students.copy()
-        if "is_active" in _bot_active.columns:
-            _bot_active = _bot_active[
-                _bot_active["is_active"]
-                .fillna("")
-                .astype(str)
-                .str.strip()
-                .str.lower()
-                .replace("", "true")
-                .isin(["true", "1", "yes"])
-            ].copy()
+        _bot_id_dates = pd.date_range(_bot_start, _bot_end).date if 0 < _bot_days <= 120 else []
+        try:
+            _bot_active = bot_id_eligible_students(students_enrollment_source, target_dates=_bot_id_dates)
+        except ValueError as exc:
+            st.error(f"匿名ID対象の在籍日付を確認してください: {exc}")
+            _bot_active = students_enrollment_source.iloc[:0].copy()
         _bot_active_ids = set(
             _bot_active.get("student_id", pd.Series(dtype=str))
             .fillna("").astype(str).str.strip()
@@ -15388,7 +15672,7 @@ elif page == "管理（入力）":
         _bot_unmapped = len([sid for sid in _bot_active_ids if sid and sid not in _bot_mapped_ids])
 
         _m1, _m2, _m3 = st.columns(3)
-        _m1.metric("在籍生徒", len([x for x in _bot_active_ids if x]))
+        _m1.metric("今日または出力期間の在籍生徒", len([x for x in _bot_active_ids if x]))
         _m2.metric("匿名ID発行済み", len([x for x in _bot_active_ids if x in _bot_mapped_ids]))
         _m3.metric("未発行", _bot_unmapped)
 
@@ -15399,11 +15683,13 @@ elif page == "管理（入力）":
             key="generate_bot_anonymous_csv",
         ):
             try:
-                _bot_map = ensure_bot_student_map_private(students)
+                # 不正な在籍日付なら、匿名ID準備・CSV保存より前に止める。
+                student_enrollment_mask(students_enrollment_source, _bot_start)
+                _bot_map = ensure_bot_student_map_private(students_enrollment_source, target_dates=_bot_id_dates)
                 _bot_export = build_bot_schedule_export(
                     _bot_start,
                     _bot_end,
-                    students,
+                    students_enrollment_source,
                     student_schedule,
                     monthly_schedule,
                     schedule_overrides,
@@ -15539,7 +15825,7 @@ elif page == "管理（入力）":
                 _seat_sync_df = build_seat_reservation_sync_export(
                     _seat_sync_start,
                     _seat_sync_end,
-                    students,
+                    students_enrollment_source,
                     student_schedule,
                     monthly_schedule,
                     schedule_overrides,
@@ -15623,14 +15909,18 @@ elif page == "管理（入力）":
         )
 
         _state_log = load_seat_transfer_import_log()
-        _state_export, _state_preview = build_seat_current_state_sync_df(
-            students_df=students,
-            student_schedule_df=student_schedule,
-            monthly_schedule_df=monthly_schedule,
-            schedule_overrides_df=schedule_overrides,
-            timeslots_df=timeslots,
-            import_log_df=_state_log,
-        )
+        try:
+            _state_export, _state_preview = build_seat_current_state_sync_df(
+                students_df=students_enrollment_source,
+                student_schedule_df=student_schedule,
+                monthly_schedule_df=monthly_schedule,
+                schedule_overrides_df=schedule_overrides,
+                timeslots_df=timeslots,
+                import_log_df=_state_log,
+            )
+        except ValueError as exc:
+            st.error(f"現在状態CSV生成エラー: {exc}")
+            st.stop()
 
         if _state_log.empty:
             st.info("座席予約スケジュールから反映した受付履歴がまだありません。")
@@ -15710,7 +16000,7 @@ elif page == "管理（入力）":
                 _applied_transfer_log = load_seat_transfer_import_log()
                 _transfer_preview = validate_seat_transfer_import_rows(
                     _transfer_import_df,
-                    students_df=students,
+                    students_df=students_enrollment_source,
                     student_schedule_df=student_schedule,
                     monthly_schedule_df=monthly_schedule,
                     schedule_overrides_df=schedule_overrides,
@@ -16205,6 +16495,7 @@ elif page == "管理（入力）":
                                 monthly_schedule,
                                 schedule_overrides,
                                 timeslots,
+                                include_inactive=True,
                             )
                             if not _source_plan.empty:
                                 _source_plan_exists = bool(
@@ -16234,6 +16525,7 @@ elif page == "管理（入力）":
                                 monthly_schedule,
                                 schedule_overrides,
                                 timeslots,
+                                include_inactive=True,
                             )
                             if not _target_plan.empty:
                                 _target_plan_exists = bool(
@@ -16333,6 +16625,8 @@ elif page == "管理（入力）":
                         st.rerun()
 
                     if approve_clicked:
+                        if _rtype != "欠席":
+                            require_schedule_destination(students_enrollment_source, _sid, _d)
                         fresh_overrides = safe_read_csv(
                             SCHEDULE_OVERRIDES_CSV,
                             [
@@ -16964,10 +17258,10 @@ elif page == "管理（入力）":
             )
 
             students_view = students_edit.copy()
+            _student_status = student_status_display(students_view, dt.date.today())
+            students_view["状態"] = _student_status["状態"]
             if not admin_include_inactive:
-                students_view = students_view[
-                    students_view["is_active"].eq(True)
-                ].copy()
+                students_view = students_view.loc[_student_status["__enrolled_today"] | _student_status["状態"].eq("要確認")].copy()
 
             if students_view.empty:
                 st.info("編集できる生徒がいません。")
@@ -16976,9 +17270,7 @@ elif page == "管理（入力）":
                     students_view["student_id"].astype(str)
                     + " | "
                     + students_view["display_name"].astype(str)
-                    + students_view["is_active"].map(
-                        lambda x: "" if bool(x) else " | 退会"
-                    )
+                    + " | " + students_view["状態"]
                 )
                 edit_ids = students_view["student_id"].tolist()
                 selected_id = st.selectbox(
@@ -17000,6 +17292,52 @@ elif page == "管理（入力）":
                 st.markdown(
                     f"**生徒ID：{selected_id}**（変更不可）"
                 )
+
+                with st.expander("📅 退会予定を登録・変更・取消", expanded=True):
+                    st.caption("最終在籍日を含めて在籍し、翌日から退会扱いになります。is_activeは変更せず、基本席・保存済み予定・過去履歴も削除しません。")
+                    st.info("従来の手動退会は下の「在籍中」をOFFにする操作です。基本席解除など従来の処理はそのままです。ただし日付が設定されている生徒の在籍判定は日付を優先します。")
+                    _leave_raw = ui_str(cur.get("leave_date", "")).strip()
+                    _leave_value = None
+                    try:
+                        _leave_value = _student_enrollment_date(_leave_raw, "最終在籍日")
+                    except ValueError as exc:
+                        st.error(f"現在の退会予定は要確認です: {exc}")
+                    if _leave_value is not None:
+                        _leave_label = "退会" if dt.date.today() > _leave_value else ("在籍（最終日）" if dt.date.today() == _leave_value else "退会予定")
+                        st.markdown(f"**{_leave_label}：{_leave_value:%Y/%m/%d}まで在籍**")
+                    elif not _leave_raw:
+                        st.caption("退会予定は未設定です（終了制限なし）。")
+                    _leave_input = st.date_input(
+                        "最終在籍日", value=_leave_value, format="YYYY/MM/DD",
+                        key=f"student_leave_date_{selected_id}_{_leave_raw}",
+                    )
+                    _leave_error = ""
+                    if _leave_input is not None:
+                        try:
+                            stage_student_leave_date(students_edit, selected_id, _leave_input)
+                            _leave_next = _leave_input + dt.timedelta(days=1)
+                            st.info(f"{_leave_input:%Y/%m/%d}まで在籍、{_leave_next:%Y/%m/%d}から退会扱いになります。")
+                        except (ValueError, OverflowError) as exc:
+                            _leave_error = str(exc)
+                            st.error(f"退会予定を登録できません: {exc}")
+                        if not _leave_error:
+                            try:
+                                _future_count = saved_schedule_count_after(selected_id, _leave_input, monthly_schedule, schedule_overrides)
+                                st.caption(f"最終在籍日より後の保存済み予定：{_future_count}件（同日・同コマの重複を除く。取消履歴を含み、固定予定の未来展開は含みません）。自動削除しません。")
+                            except ValueError as exc:
+                                st.warning(f"保存済み予定の件数を確認できません: {exc}")
+                    _leave_set = st.button("退会予定を一覧へ反映", key=f"stage_leave_{selected_id}", disabled=_leave_input is None or bool(_leave_error))
+                    _leave_clear = st.button("退会予定を取り消す", key=f"clear_leave_{selected_id}", disabled=not bool(_leave_raw))
+                    if _leave_set or _leave_clear:
+                        try:
+                            _leave_edited = stage_student_leave_date(students_edit, selected_id, "" if _leave_clear else _leave_input)
+                        except ValueError as exc:
+                            st.error(f"退会予定を反映できません: {exc}")
+                        else:
+                            st.session_state[student_edit_key] = _leave_edited
+                            st.session_state[student_dirty_key] = True
+                            st.rerun()
+                    st.caption("ここでは編集用一覧に反映します。最後に「生徒一覧を保存」で確定してください。取消はleave_dateだけを空欄に戻します。日付が両方未設定になる場合はis_activeの旧互換判定になります。")
 
                 cur_grade = str(cur.get("grade", "") or "").strip()
                 edit_grade_options = list(grade_options)
@@ -17217,15 +17555,17 @@ elif page == "管理（入力）":
         st.divider()
         st.markdown("### 編集中の生徒一覧")
         preview = students_edit.copy()
-        preview["状態"] = preview["is_active"].map(
-            lambda x: "在籍" if bool(x) else "退会"
-        )
+        _preview_status = student_status_display(preview, dt.date.today())
+        preview[["状態", "状態確認"]] = _preview_status[["状態", "状態確認"]]
+        if preview["状態確認"].ne("").any():
+            st.warning("在籍日付またはis_activeとの不一致があります。一覧の「状態確認」を確認してください。自動修正は行いません。")
         preview = preview.rename(columns={
             "student_id": "生徒ID",
             "display_name": "表示名",
             "grade": "学年",
             "number_of_times": "月回数",
             "join_date": "入会日",
+            "leave_date": "最終在籍日",
             "weekday": "曜日",
             "slot": "コマ",
             "memo": "メモ",
@@ -17236,7 +17576,9 @@ elif page == "管理（入力）":
             "学年",
             "月回数",
             "状態",
+            "状態確認",
             "入会日",
+            "最終在籍日",
             "曜日",
             "コマ",
             "メモ",
@@ -17319,6 +17661,11 @@ elif page == "管理（入力）":
                         "表示名が空の生徒がいるため保存できません。"
                     )
                 else:
+                    try:
+                        student_enrollment_mask(edited_students, dt.date.today())
+                    except ValueError as exc:
+                        st.error(f"生徒一覧を保存できません: {exc}")
+                        st.stop()
                     write_csv(edited_students, STUDENTS_CSV)
 
                     # d378:
@@ -17844,12 +18191,18 @@ elif page == "管理（入力）":
             ),
         )
 
-        students_k = admin_students_for_pick.copy()
+        students_k = students.copy()
         students_k["label"] = (
             students_k["student_id"].astype(str)
             + " | "
             + students_k["display_name"].astype(str)
         )
+        _known_exam_ids = set(students_k["student_id"].astype(str).str.strip())
+        for _sid in ks["student_id"].astype(str).str.strip().unique():
+            if _sid and _sid not in _known_exam_ids:
+                students_k = pd.concat([students_k, pd.DataFrame([{
+                    "student_id": _sid, "display_name": _sid, "label": f"{_sid} | {_sid}"
+                }])], ignore_index=True)
         student_labels = students_k["label"].tolist()
         name_map_k = dict(
             zip(
@@ -17862,9 +18215,16 @@ elif page == "管理（入力）":
 
         with add_col:
             st.markdown("### 🟢 新しい検定予定を追加")
+            k_date = st.date_input("受験予定日", value=date.today(), key="kentei_exam_new_date")
+            _new_exam_students = kentei_entry_students(students_enrollment_source, k_date)
+            _new_exam_labels = (
+                _new_exam_students["student_id"].astype(str) + " | "
+                + _new_exam_students["display_name"].astype(str)
+            ).tolist()
+            if not _new_exam_labels:
+                st.info("この受験予定日の新規登録候補は0人です。")
             with st.form("kentei_exam_batch_add_form", clear_on_submit=True):
-                k_date = st.date_input("受験予定日", value=date.today())
-                k_student = st.selectbox("生徒", student_labels)
+                k_student = st.selectbox("生徒", _new_exam_labels, key="kentei_exam_new_student")
                 k_name = st.text_input(
                     "検定名",
                     value="プログラミング検定",
@@ -17873,10 +18233,11 @@ elif page == "管理（入力）":
                 k_note = st.text_input("メモ（任意）")
                 add_exam = st.form_submit_button(
                     "🟢 編集一覧へ追加",
+                    disabled=not _new_exam_labels,
                     use_container_width=True,
                 )
 
-            if add_exam:
+            if add_exam and k_student in _new_exam_labels:
                 sid = k_student.split("|")[0].strip()
                 if not sid:
                     st.error("生徒を選択してください。")
@@ -21002,8 +21363,8 @@ elif page == "管理（入力）":
             if "display_name" in students_for_month.columns:
                 student_name_map_month = dict(
                     zip(
-                        students_for_month["student_id"].astype(str).str.strip(),
-                        students_for_month["display_name"].astype(str).str.strip(),
+                        students["student_id"].astype(str).str.strip(),
+                        students["display_name"].astype(str).str.strip(),
                     )
                 )
 
@@ -21043,6 +21404,14 @@ elif page == "管理（入力）":
 
             current_day = month_start
             while current_day <= month_end:
+                try:
+                    day_enrolled_mask = student_enrollment_mask(students_enrollment_source, current_day)
+                except ValueError as e:
+                    st.error(f"月予定を生成できません。生徒の在籍日付を確認してください: {e}")
+                    st.stop()
+                day_enrolled_ids = set(
+                    students_enrollment_source.loc[day_enrolled_mask, "student_id"].astype(str).str.strip()
+                )
                 wd = weekday_names[current_day.weekday()]
                 day_sched = sched_for_month[
                     sched_for_month["weekday"].astype(str).str.strip() == wd
@@ -21063,7 +21432,7 @@ elif page == "管理（入力）":
                         week_pattern,
                     ):
                         continue
-                    if active_student_ids_for_month and sid not in active_student_ids_for_month:
+                    if sid not in day_enrolled_ids:
                         continue
 
                     generated_rows.append({
@@ -21346,6 +21715,10 @@ elif page == "管理（入力）":
                             )
 
                         if override_update:
+                            if (override_date.isoformat() != selected_date_s
+                                    or normalize_slot(override_slot) != normalize_slot(selected_slot)
+                                    or str(override_type).strip() != selected_type):
+                                require_schedule_destination(students_enrollment_source, selected_sid, override_date)
                             new_date_s = override_date.isoformat()
                             new_slot = normalize_slot(override_slot)
                             new_type = str(override_type).strip() or selected_type
@@ -21691,6 +22064,10 @@ elif page == "管理（入力）":
                     )
 
                 if dialog_update:
+                    if (dialog_date.isoformat() != selected_date_s
+                            or normalize_slot(dialog_slot) != normalize_slot(selected_slot)
+                            or str(dialog_type).strip() != selected_type):
+                        require_schedule_destination(students_enrollment_source, selected_sid, dialog_date)
                     effective_reason = str(dialog_reason).strip()
                     dialog_type_norm = str(dialog_type).strip()
                     new_date_s = dialog_date.isoformat()
@@ -22021,10 +22398,11 @@ elif page == "管理（入力）":
                             ),
                         )
 
-                        if monthly_student_options:
+                        _new_calendar_student_ids = students_enrollment_source["student_id"].astype(str).str.strip().tolist()
+                        if _new_calendar_student_ids:
                             add_sid = st.selectbox(
                                 "追加する生徒",
-                                monthly_student_options,
+                                _new_calendar_student_ids,
                                 format_func=lambda sid: (
                                     monthly_student_label_map.get(
                                         sid,
@@ -22064,11 +22442,12 @@ elif page == "管理（入力）":
                             type="primary",
                             use_container_width=True,
                             disabled=not bool(
-                                monthly_student_options
+                                _new_calendar_student_ids
                             ),
                         )
 
                     if add_submit:
+                        require_schedule_destination(students_enrollment_source, add_sid, add_date)
                         if not add_sid:
                             st.error("生徒を選択してください。")
                         else:
@@ -22227,7 +22606,7 @@ elif page == "管理（入力）":
                         monthly_schedule,
                         schedule_overrides,
                         timeslots,
-                        include_inactive=False,
+                        include_inactive=True,
                     )
                     if _plan is None or _plan.empty:
                         continue
@@ -22323,7 +22702,7 @@ elif page == "管理（入力）":
                                 monthly_schedule,
                                 pd.DataFrame(columns=["student_id", "date", "slot", "action", "start", "end", "session_type", "note"]),
                                 timeslots,
-                                include_inactive=False,
+                                include_inactive=True,
                             )
                             _base_match = pd.DataFrame()
                             if _base is not None and not _base.empty:
@@ -22362,6 +22741,16 @@ elif page == "管理（入力）":
                     calendar_month["slot"] = calendar_month["slot"].map(normalize_slot)
                     calendar_month["date_dt"] = pd.to_datetime(calendar_month["date"], errors="coerce")
 
+                # 履歴表示は全件を保持し、人数・有効予定の要約だけを別に判定する。
+                _calendar_count_error = False
+                try:
+                    calendar_effective = calendar_effective_rows(calendar_month, students_enrollment_source)
+                except ValueError as exc:
+                    st.error(f"カレンダーの人数を集計できません（保存済み履歴は表示します）: {exc}")
+                    calendar_effective = calendar_month.iloc[:0].copy()
+                    _calendar_count_error = True
+                calendar_month["__calendar_effective"] = calendar_month.index.isin(calendar_effective.index)
+
                 # =====================================================
                 # d227:
                 # 古い「保存済み月スケジュールの回数チェック」は、
@@ -22392,7 +22781,7 @@ elif page == "管理（入力）":
 
                     # d203: 回数チェックもカレンダーと同じ有効予定を使う。
                     # これにより、古い「追加」例外が通常予定と二重カウントされる事故を防ぐ。
-                    check_month = calendar_month.copy()
+                    check_month = calendar_effective.copy()
                     if not check_month.empty:
                         if "override_status" not in check_month.columns:
                             check_month["override_status"] = ""
@@ -22400,7 +22789,9 @@ elif page == "管理（入力）":
                             check_month["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
                         ].copy()
 
-                    if check_month.empty:
+                    if _calendar_count_error:
+                        st.info("在籍日付のエラーを解消するまで回数集計はできません。")
+                    elif check_month.empty:
                         st.info("この年月の保存済み月スケジュールがないため、回数チェックはまだできません。")
                     else:
                         # 授業だけを数える。ただし、意図的に「今月の契約回数とは別」と分かる区分は外す。
@@ -22812,7 +23203,7 @@ elif page == "管理（入力）":
                 _monthly_highlight_prev_key = f"monthly_calendar_highlight_student_prev_{target_year}_{target_month}"
                 _monthly_highlight_sync_key = f"monthly_calendar_highlight_student_sync_{target_year}_{target_month}"
 
-                _highlight_options = [""] + monthly_student_options
+                _highlight_options = [""] + sorted(set(monthly_student_options) | set(calendar_month["student_id"].astype(str).str.strip()))
                 _current_highlight_sid = str(st.session_state.get(_monthly_highlight_state_key, "") or "").strip()
                 if _current_highlight_sid not in _highlight_options:
                     _current_highlight_sid = ""
@@ -22845,7 +23236,7 @@ elif page == "管理（入力）":
                 selected_highlight_name = monthly_student_label_map.get(selected_highlight_sid, selected_highlight_sid) if selected_highlight_sid else ""
 
                 if selected_highlight_sid:
-                    _highlight_rows = calendar_month.copy() if calendar_month is not None else pd.DataFrame()
+                    _highlight_rows = calendar_effective.copy()
                     if not _highlight_rows.empty:
                         if "override_status" not in _highlight_rows.columns:
                             _highlight_rows["override_status"] = ""
@@ -22854,7 +23245,9 @@ elif page == "管理（入力）":
                             & (_highlight_rows["override_status"].fillna("").astype(str).str.strip() != "キャンセル")
                         ].copy()
 
-                    if _highlight_rows.empty:
+                    if _calendar_count_error:
+                        st.info("在籍日付のエラーを解消するまで有効予定の要約はできません。")
+                    elif _highlight_rows.empty:
                         st.info(f"{selected_highlight_name}さんの有効な予定は、この月のカレンダーにはありません。")
                     else:
                         _highlight_types = _highlight_rows["session_type"].fillna("").astype(str).str.strip()
@@ -23046,7 +23439,7 @@ elif page == "管理（入力）":
                         _dr = rows_by_date.get(_wd, pd.DataFrame())
                         if _dr is None or _dr.empty:
                             continue
-                        _tmp = _dr.copy()
+                        _tmp = _dr.loc[_dr["__calendar_effective"]].copy()
                         if "override_status" in _tmp.columns:
                             _tmp = _tmp[_tmp["override_status"].fillna("").astype(str).str.strip() != "キャンセル"].copy()
                         _types = _tmp["session_type"].fillna("").astype(str).str.strip()
@@ -23063,6 +23456,8 @@ elif page == "管理（入力）":
                                 week_selected_lesson_count += int((_selected_types == "授業").sum())
                                 week_selected_self_count += int((_selected_types == "自習").sum())
 
+                    if _calendar_count_error:
+                        week_lesson_count = week_self_count = "集計不可"
                     week_label = f"第{week_no}週（{week_start_label}〜{week_end_label}）｜授業{week_lesson_count} / 自習{week_self_count}"
                     if week_has_today:
                         week_label = "📍 " + week_label + "｜今日"
@@ -23112,7 +23507,7 @@ elif page == "管理（入力）":
                                 lesson_count = 0
                                 self_count = 0
                                 if day_rows is not None and not day_rows.empty:
-                                    _count_rows = day_rows.copy()
+                                    _count_rows = day_rows.loc[day_rows["__calendar_effective"]].copy()
                                     if "override_status" in _count_rows.columns:
                                         _count_rows = _count_rows[
                                             _count_rows["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
@@ -23121,6 +23516,9 @@ elif page == "管理（入力）":
                                     lesson_count = int((_count_types == "授業").sum())
                                     self_count = int((_count_types == "自習").sum())
 
+                                if _calendar_count_error:
+                                    lesson_count = self_count = "集計不可"
+
                                 selected_day_count = 0
                                 if (
                                     is_target_month
@@ -23128,7 +23526,7 @@ elif page == "管理（入力）":
                                     and day_rows is not None
                                     and not day_rows.empty
                                 ):
-                                    _selected_day_rows = day_rows.copy()
+                                    _selected_day_rows = day_rows.loc[day_rows["__calendar_effective"]].copy()
                                     if "override_status" in _selected_day_rows.columns:
                                         _selected_day_rows = _selected_day_rows[
                                             _selected_day_rows["override_status"].fillna("").astype(str).str.strip() != "キャンセル"
