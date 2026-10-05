@@ -15512,7 +15512,7 @@ elif page == "管理（入力）":
         "🔁 座席予約受付CSV取込",
         "🔄 座席予約現在状態CSV",
         "👥 生徒管理",
-        "📅 固定スケジュール（週次）",
+        "📅 固定予定（生徒別・週指定）",
         "📘 カリキュラム管理",
         "🎯 検定課題管理",
         "🧩 サブ課題管理",
@@ -17724,11 +17724,11 @@ elif page == "管理（入力）":
             st.rerun()
 
     # ---------------------------
-    # 📅 固定スケジュール（週次）
+    # 📅 固定予定（生徒別・週指定）
     # ---------------------------
-    if admin_section == "📅 固定スケジュール（週次）":
-        st.subheader("固定スケジュール（週次）")
-        st.caption("毎週の生徒に加えて、月2回の生徒も「第1・第3」「第2・第4」などの週指定で登録できます。月スケジュール生成時は指定した週だけ反映されます。")
+    if admin_section == "📅 固定予定（生徒別・週指定）":
+        st.subheader("固定予定（生徒別・週指定）")
+        st.caption("普段の固定予定編集はこちら。生徒ごとに、曜日・コマ・種別・毎週／隔週／第1〜第5週を設定します。")
 
         students_w = admin_students_for_pick.copy()
         students_w["label"] = students_w["student_id"].astype(str) + " | " + students_w["display_name"].astype(str)
@@ -23751,7 +23751,7 @@ elif page == "管理（入力）":
                 st.caption("固定スケジュールの曜日・コマ・週指定から、その月の予定を生成します。")
                 st.markdown("### 生成プレビュー")
                 if generated_df.empty:
-                    st.warning("生成できる月予定がありません。固定スケジュール（週次）を確認してください。")
+                    st.warning("生成できる月予定がありません。固定予定（生徒別・週指定）を確認してください。")
                 else:
                     preview_df = generated_df.copy()
                     preview_df["生徒"] = preview_df["student_id"].map(student_name_map_month).fillna(preview_df["student_id"])
@@ -24057,7 +24057,7 @@ elif page == "管理（入力）":
     # ---------------------------
     if admin_section == "🛠 システム設定":
         st.subheader("🛠 システム設定")
-        st.caption("CSVを探して手書きしなくても済むように、基本スケジュールとコマ時間をここで管理できます。保存時は自動バックアップを作成します。")
+        st.caption("CSVを探して手書きしなくても済むように、固定予定（全件保守・メモ編集）とコマ時間をここで管理できます。保存時は自動バックアップを作成します。")
 
         def _backup(path: Path):
             if not path.exists():
@@ -24073,15 +24073,15 @@ elif page == "管理（入力）":
         # システム設定内も、選択していない画面を実行しない。
         system_section = st.radio(
             "設定項目",
-            ["🗓️ 基本スケジュール", "⏱ コマ時間"],
+            ["🗓️ 固定予定（全件保守・メモ編集）", "⏱ コマ時間"],
             horizontal=True,
             key="system_section_selector",
         )
 
         # ===== student_schedule.csv =====
-        if system_section == "🗓️ 基本スケジュール":
-            st.markdown("### 🗓️ 基本スケジュール（student_schedule.csv）")
-            st.caption("曜日×コマの通常予定（毎週のベース）を登録します。欠席/振替など当日の変更は『スケジュール例外』で入力します。")
+        if system_section == "🗓️ 固定予定（全件保守・メモ編集）":
+            st.markdown("### 🗓️ 固定予定（全件保守・メモ編集）（student_schedule.csv）")
+            st.caption("固定予定を全件一覧で確認し、既存行の直接編集やメモ修正を行う保守用画面です。")
 
             sched = safe_read_csv(
                 STUDENT_SCHEDULE_CSV,
@@ -24115,7 +24115,7 @@ elif page == "管理（入力）":
 
             students2["label"] = students2["student_id"].astype(str) + " | " + students2["display_name"].astype(str)
             weekday_opts = ["月", "火", "水", "木", "金", "土", "日"]
-            sess_type_opts = ["lesson", "kentei", "self"]
+            sess_type_opts = ["授業", "自習", "検定"]
 
             colS1, colS2 = st.columns(2)
 
@@ -24149,14 +24149,15 @@ elif page == "管理（入力）":
                 add_note = st.text_input("メモ（任意）", value="", key="ss_add_note")
 
                 if st.button("追加", key="ss_add_btn"):
-                    # 重複（同一 生徒×曜日×コマ）を防ぐ
+                    # 新規は従来どおり毎週。週次画面と同じ週指定単位で重複を判定する。
                     dup = (
                         (sched["student_id"].astype(str).str.strip() == add_student_id)
                         & (sched["weekday"].astype(str).str.strip() == str(add_weekday).strip())
                         & (sched["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(add_slot))
+                        & sched.get("week_pattern", pd.Series("毎週", index=sched.index)).map(normalize_week_pattern).eq("毎週")
                     )
                     if dup.any():
-                        st.error("同じ（生徒×曜日×コマ）の行が既にあります。編集を使ってください。")
+                        st.error("同じ（生徒×曜日×コマ×週指定）の行が既にあります。編集を使ってください。")
                     else:
                         new_row = {
                             "student_id": add_student_id,
@@ -24176,18 +24177,23 @@ elif page == "管理（入力）":
                 if sched.empty:
                     st.info("まだ行がありません。左で追加してください。")
                 else:
-                    sched2 = sched.copy()
-                    # label 作成
-                    sched2["slot_num"] = pd.to_numeric(sched2["slot"], errors="coerce").fillna(-1).astype(int)
-                    sched2["label"] = (
-                        sched2["student_id"].astype(str).str.strip()
-                        + " | " + sched2["weekday"].astype(str).str.strip()
-                        + " | " + sched2["slot_num"].astype(str)
-                        + " | " + sched2["session_type"].astype(str).str.strip()
-                    )
-                    sel = st.selectbox("行を選択", sched2["label"].tolist(), key="ss_edit_sel")
-                    sel_idx = int(sched2.index[sched2["label"] == sel][0])
+                    # 選択値は元index。表示が似た行も別々に更新・削除する。
+                    row_labels = {
+                        idx: f"{r.get('student_id', '')} | {r.get('weekday', '')} | "
+                             f"{normalize_slot(r.get('slot', ''))} | {r.get('session_type', '')} | "
+                             f"{normalize_week_pattern(r.get('week_pattern', ''))} | 行 {idx}"
+                        for idx, r in sched.iterrows()
+                    }
+                    if st.session_state.get("ss_edit_sel") not in row_labels:
+                        st.session_state.pop("ss_edit_sel", None)
+                    sel_idx = st.selectbox("行を選択", list(row_labels), format_func=row_labels.get, key="ss_edit_sel")
                     row = sched.loc[sel_idx]
+                    # 行切替や保存・削除後に、前の行の入力値を持ち越さない。
+                    edit_signature = (sel_idx, tuple((str(c), str(v)) for c, v in row.items()))
+                    if st.session_state.get("ss_edit_row_signature") != edit_signature:
+                        for edit_key in ["ss_edit_weekday", "ss_edit_slot_sel", "ss_edit_slot_free", "ss_edit_sess", "ss_edit_note"]:
+                            st.session_state.pop(edit_key, None)
+                        st.session_state["ss_edit_row_signature"] = edit_signature
 
                     e_weekday = st.selectbox("曜日", weekday_opts, index=weekday_opts.index(str(row.get("weekday","月")).strip()) if str(row.get("weekday","月")).strip() in weekday_opts else 0, key="ss_edit_weekday")
                     # コマ：リスト＋自由入力
@@ -24222,7 +24228,13 @@ elif page == "管理（入力）":
 
                     e_slot = e_slot_free if e_slot_sel == "その他（自由入力）" else normalize_slot(e_slot_sel)       
 
-                    e_sess = st.selectbox("種類（session_type）", sess_type_opts, index=sess_type_opts.index(str(row.get("session_type","lesson")).strip()) if str(row.get("session_type","lesson")).strip() in sess_type_opts else 0, key="ss_edit_sess")
+                    # 未変更は元値をそのまま保持（英語・空欄・未知値も一括変換しない）。
+                    original_session = row.get("session_type", "")
+                    e_sess = st.selectbox(
+                        "種類（session_type）", [None] + sess_type_opts,
+                        format_func=lambda value: f"変更しない（現在: {original_session if pd.notna(original_session) else '空欄'}）" if value is None else value,
+                        key="ss_edit_sess",
+                    )
                     e_note = st.text_input("メモ", value=str(row.get("note","")), key="ss_edit_note")
 
                     c3, c4 = st.columns(2)
@@ -24234,15 +24246,17 @@ elif page == "管理（入力）":
                                 & (sched["student_id"].astype(str).str.strip() == str(row.get("student_id","")).strip())
                                 & (sched["weekday"].astype(str).str.strip() == str(e_weekday).strip())
                                 & (sched["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(e_slot))
+                                & sched.get("week_pattern", pd.Series("毎週", index=sched.index)).map(normalize_week_pattern).eq(normalize_week_pattern(row.get("week_pattern", "")))
 
                             )
                             if dup.any():
-                                st.error("更新後に（生徒×曜日×コマ）が他の行と重複します。")
+                                st.error("更新後に（生徒×曜日×コマ×週指定）が他の行と重複します。")
                             else:
                                 _backup(STUDENT_SCHEDULE_CSV)
                                 sched.loc[sel_idx, "weekday"] = str(e_weekday).strip()
                                 sched.loc[sel_idx, "slot"] = normalize_slot(e_slot)
-                                sched.loc[sel_idx, "session_type"] = str(e_sess).strip()
+                                if e_sess is not None:
+                                    sched.loc[sel_idx, "session_type"] = e_sess
                                 sched.loc[sel_idx, "note"] = str(e_note).strip()
                                 write_csv_atomic(prepare_student_schedule_for_save(sched), STUDENT_SCHEDULE_CSV)
                                 st.success("保存しました。")
