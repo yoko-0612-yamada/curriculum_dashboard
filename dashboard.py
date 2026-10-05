@@ -489,38 +489,6 @@ def status_label(status: str) -> str:
     return s
 
 
-def status_badge_html(status: str) -> str:
-    s = ui_str(status)
-    if s == "完了":
-        bg = "#d4edda"
-        fg = "#155724"
-        label = "🟢 完了"
-    elif s == "未実施":
-        bg = "#f8d7da"
-        fg = "#721c24"
-        label = "🔴 未実施"
-    elif s == "スキップ":
-        bg = "#e2e3e5"
-        fg = "#383d41"
-        label = "⚪ スキップ"
-    else:
-        bg = "#f8f9fa"
-        fg = "#333333"
-        label = s
-
-
-    return f"""
-    <div style="
-        display:inline-block;
-        padding:4px 10px;
-        border-radius:8px;
-        background:{bg};
-        color:{fg};
-        font-weight:700;
-        font-size:0.95rem;
-        margin:4px 0 10px 0;
-    ">{label}</div>
-    """
 
 def unfinished_status_badge_html(status: str) -> str:
     s = ui_str(status)
@@ -632,14 +600,6 @@ def colorize_kentei_hint(text):
 
 
 # [CHECK 2026-04-23] このファイル内では定義のみを確認。参照未検出のため、削除候補として要確認。
-def build_today_status(att_done, prog_done):
-    if att_done and prog_done:
-        return "🟢 完了"
-    elif att_done and not prog_done:
-        return "🟡 進捗待ち"
-    elif not att_done:
-        return "🔴 出欠未"
-    return ""
 
 
 # =========================================================
@@ -718,10 +678,10 @@ st.session_state.setdefault("override_done_lock", False)
 override_passed_lock = st.session_state["override_passed_lock"]
 override_done_lock = st.session_state["override_done_lock"]
 
-page = st.radio(
+page = st.sidebar.radio(
     "画面",
     PAGE_OPTIONS,
-    horizontal=True,
+    horizontal=False,
     index=PAGE_OPTIONS.index(st.session_state.page_state) if st.session_state.page_state in PAGE_OPTIONS else 0,
     key="page_widget",
 )
@@ -729,33 +689,6 @@ page = st.radio(
 # radioの選択を内部状態に反映
 st.session_state.page_state = page
 admin_mode = (page == "管理（入力）")
-
-# =========================================================
-# d295:
-# 左サイドバーの扱い
-# ---------------------------------------------------------
-# Streamlitの initial_sidebar_state は「初回表示時だけ」の指定で、
-# 画面切替ごとに閉じる/開く制御には弱い。
-# d364: 独立した座席ページは廃止。閲覧ではサイドバーを使い、管理では画面上から隠す。
-# =========================================================
-if page != "閲覧":
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] {
-            display: none !important;
-        }
-        div[data-testid="stSidebarCollapsedControl"] {
-            display: none !important;
-        }
-        button[data-testid="collapsedControl"] {
-            display: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 # =========================================================
 # Simple Login (optional)
@@ -3837,7 +3770,7 @@ def _student_enrollment_date(value, field: str):
 
 
 def student_is_enrolled_on(student, target_date) -> bool:
-    """将来適用する生徒専用判定（既存画面にはまだ接続しない）。
+    """対象日の生徒専用在籍判定。新規候補・有効予定に適用し、保存済み履歴とは分離する。
 
     開始日・最終在籍日とも含む。片側空欄はその側の制限なし。
     両方未設定の旧データだけis_activeへフォールバックする。
@@ -3885,6 +3818,24 @@ def require_schedule_destination(students_df, student_id, target_date):
     except ValueError as exc:
         st.error(str(exc))
         st.stop()
+
+
+def exam_schedule_edit_options(schedule_df, today, include_past=False):
+    """候補indexのみを返す。元の編集用DataFrame・行indexは変更しない。"""
+    upcoming, past, invalid = [], [], []
+    for idx, row in schedule_df.iterrows():
+        parsed = pd.to_datetime(row.get("exam_date", ""), errors="coerce")
+        if pd.isna(parsed):
+            invalid.append(idx)
+        elif parsed.date() >= today:
+            upcoming.append((parsed.date(), idx))
+        else:
+            past.append((parsed.date(), idx))
+    # 同日内は元の行順を維持する。
+    options = [idx for _, idx in sorted(upcoming, key=lambda item: item[0])]
+    if include_past:
+        options += [idx for _, idx in sorted(past, key=lambda item: item[0], reverse=True)]
+    return options + invalid, set(invalid)
 
 
 def stage_student_leave_date(students_df, student_id, leave_date):
@@ -5722,7 +5673,7 @@ students = safe_read_csv(STUDENTS_CSV, ["student_id", "display_name"])
 if not {"student_id", "display_name"}.issubset(students.columns):
     st.error("生徒マスタを読み込めないため処理を停止しました。0人として続行しません。")
     st.stop()
-# join_dateのcoerce変換前を保持。第2段階の予定生成だけで厳密に検証する。
+# join_dateのcoerce変換前を保持。対象日在籍判定の各接続先で元の不正日付を検証する。
 students_enrollment_source = students.copy(deep=True)
 students = sanitize_df(students)
 
@@ -8036,32 +7987,10 @@ if page == "閲覧":
         return f"S{max_n+1:03d}"
 
     # 不要なメソッド？
-    def safe_read_csv_local(path: Path, required_cols=None,stop_on_missing=False) -> pd.DataFrame:
-        required_cols = required_cols or []
-        if not path.exists():
-            return pd.DataFrame(columns=required_cols)
-        try:
-            df = pd.read_csv(path, dtype=str).fillna("")
-        except Exception:
-            # fallback (encoding issues etc)
-            df = pd.read_csv(path, dtype=str, encoding="utf-8", errors="ignore").fillna("")
-        # ensure required columns
-        for c in required_cols:
-            if c not in df.columns:
-                df[c] = ""
-        return df
 
 
-    def safe_write_csv(df: pd.DataFrame, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_csv_atomic(df, path)
 
 
-    def ensure_csv_headers(path: Path, headers: list[str]):
-        if path.exists():
-            return
-        df = pd.DataFrame(columns=headers)
-        safe_write_csv(df, path)
 
     def build_current_per_student(df: pd.DataFrame) -> pd.DataFrame:
         if df.empty:
@@ -18112,7 +18041,7 @@ elif page == "管理（入力）":
             st.rerun()
 
     # ---------------------------
-    # 🎫 検定予定登録（kentei_schedule.csv）
+    # 🎫 検定予定登録（kentei_exam_schedule.csv）
     # ---------------------------
     if admin_section == "🎫 検定予定登録":
         st.subheader("検定予定・一覧")
@@ -18265,20 +18194,40 @@ elif page == "管理（入力）":
 
         with edit_col:
             st.markdown("### 🟠 検定予定を編集・削除")
+            show_past_exams = st.checkbox("過去の予定も表示", value=False, key="kentei_exam_show_past")
+            options, invalid_exam_indices = exam_schedule_edit_options(ks, date.today(), show_past_exams)
+            # 候補変更・行削除でindexが別予定に再利用された際にも確認状態を持ち越さない。
+            _exam_candidate_signature = (show_past_exams, tuple(options), tuple(tuple(row) for row in ks.itertuples(index=True, name=None)))
+            if st.session_state.get("kentei_exam_candidate_signature") != _exam_candidate_signature:
+                for _key in list(st.session_state):
+                    if _key.startswith("kentei_exam_delete_confirm_"):
+                        st.session_state.pop(_key, None)
+                if st.session_state.get("kentei_exam_batch_selected") not in options:
+                    st.session_state.pop("kentei_exam_batch_selected", None)
+                st.session_state["kentei_exam_candidate_signature"] = _exam_candidate_signature
             if ks.empty:
                 st.info("検定予定はありません。")
+            elif not options:
+                st.info("今日以降の検定予定はありません。「過去の予定も表示」で保存済み予定を選択できます。")
             else:
-                options = ks.index.tolist()
+                if invalid_exam_indices:
+                    st.warning("日付が空欄または不正な予定は「要確認」として候補に残しています。")
                 selected_idx = st.selectbox(
                     "予定を選択",
                     options,
                     key="kentei_exam_batch_selected",
                     format_func=lambda idx: (
-                        f"{ks.loc[idx, 'exam_date']} | "
+                        ("【要確認】 " if idx in invalid_exam_indices else "")
+                        + f"{ks.loc[idx, 'exam_date']} | "
                         f"{name_map_k.get(ks.loc[idx, 'student_id'], ks.loc[idx, 'student_id'])} | "
                         f"{ks.loc[idx, 'grade']}級"
                     ),
                 )
+                if st.session_state.get("kentei_exam_previous_selection") != selected_idx:
+                    for _key in list(st.session_state):
+                        if _key.startswith("kentei_exam_delete_confirm_"):
+                            st.session_state.pop(_key, None)
+                st.session_state["kentei_exam_previous_selection"] = selected_idx
                 row = ks.loc[selected_idx]
                 current_label = (
                     f"{row.get('student_id','')} | "
@@ -22618,8 +22567,8 @@ elif page == "管理（入力）":
                             _plan[_c] = ""
                         _plan[_c] = _plan[_c].fillna("").astype(str).str.strip()
 
-                    # build_daily_plan_for_date() 側で、既存予定のある生徒への「追加」は
-                    # 時間変更扱いに正規化される。カレンダーも同じ解釈にする。
+                    # 当日例外の由来と理由から、追加／変更の表示用状態を付ける。
+                    # 別コマへの追加と対象コマの変更は、予定生成側で区別される。
                     _reason_s = _plan["reason"].fillna("").astype(str).str.strip()
                     _source_s = _plan["source"].fillna("").astype(str).str.strip()
                     _override_like = _source_s.str.contains("schedule_overrides|当日例外", regex=True, na=False)
@@ -23272,37 +23221,6 @@ elif page == "管理（入力）":
                         st.session_state[_monthly_highlight_prev_key] = ""
                         st.rerun()
 
-                def _monthly_calendar_day_html(day_date: dt.date, rows_df: pd.DataFrame) -> str:
-                    is_target_month = (day_date.month == target_month)
-                    day_bg = "#ffffff" if is_target_month else "#f3f3f3"
-                    day_color = "#222" if is_target_month else "#aaa"
-
-                    parts = [
-                        f'<div style="min-height:120px;background:{day_bg};border:1px solid #ddd;border-radius:8px;padding:6px;overflow:hidden;">',
-                        f'<div style="font-weight:700;color:{day_color};margin-bottom:4px;">{day_date.day}</div>'
-                    ]
-
-                    if is_target_month and rows_df is not None and not rows_df.empty:
-                        _rows = rows_df.copy()
-                        _rows["_slot_num"] = pd.to_numeric(_rows["slot"].astype(str).str.extract(r"(\d+)")[0], errors="coerce")
-                        _rows = _rows.sort_values(["_slot_num", "student_id"], na_position="last")
-
-                        for _, rr in _rows.iterrows():
-                            sid = str(rr.get("student_id", "")).strip()
-                            name = student_name_map_month.get(sid, sid)
-                            slot = normalize_slot(rr.get("slot", ""))
-                            typ = str(rr.get("session_type", "")).strip() or "授業"
-                            reason = str(rr.get("reason", "")).strip() or "通常"
-                            reason_part = f"｜{reason}" if reason and reason != "通常" else ""
-                            badge_bg = "#e8f4ff" if typ == "授業" else "#f4f4f4"
-                            parts.append(
-                                f'<div style="font-size:12px;background:{badge_bg};border-radius:6px;padding:3px 5px;margin:3px 0;white-space:normal;">'
-                                f'{slot}コマ｜{name}｜{typ}{reason_part}'
-                                f'</div>'
-                            )
-
-                    parts.append('</div>')
-                    return "".join(parts)
 
                 cal_obj = cal.Calendar(firstweekday=0)
                 weeks = cal_obj.monthdatescalendar(target_year, target_month)
@@ -23330,60 +23248,7 @@ elif page == "管理（入力）":
                 # 一度ONにしたら次回以降もONで開けるようにする。
                 _ui_pref_path = DATA_DIR / "ui_preferences.csv"
 
-                def _load_ui_pref_bool(_key: str, default: bool = False) -> bool:
-                    try:
-                        if _ui_pref_path.exists():
-                            _df = pd.read_csv(_ui_pref_path, dtype=str).fillna("")
-                        else:
-                            return bool(default)
 
-                        if _df.empty:
-                            return bool(default)
-
-                        for _c in ["key", "value"]:
-                            if _c not in _df.columns:
-                                _df[_c] = ""
-
-                        _df["key"] = _df["key"].fillna("").astype(str).str.strip()
-                        _df["value"] = _df["value"].fillna("").astype(str).str.strip().str.lower()
-
-                        _hit = _df[_df["key"] == str(_key).strip()]
-                        if _hit.empty:
-                            return bool(default)
-
-                        return str(_hit.iloc[-1].get("value", "")).strip().lower() in ["true", "1", "yes", "on"]
-                    except Exception:
-                        return bool(default)
-
-                def _save_ui_pref_bool(_key: str, value: bool) -> None:
-                    try:
-                        if _ui_pref_path.exists():
-                            _df = pd.read_csv(_ui_pref_path, dtype=str).fillna("")
-                        else:
-                            _df = pd.DataFrame(columns=["key", "value", "updated_at"])
-
-                        for _c in ["key", "value", "updated_at"]:
-                            if _c not in _df.columns:
-                                _df[_c] = ""
-
-                        _df["key"] = _df["key"].fillna("").astype(str).str.strip()
-
-                        _row = {
-                            "key": str(_key).strip(),
-                            "value": "true" if bool(value) else "false",
-                            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        }
-
-                        _mask = _df["key"] == str(_key).strip()
-                        if _mask.any():
-                            for _k, _v in _row.items():
-                                _df.loc[_mask, _k] = _v
-                        else:
-                            _df = pd.concat([_df, pd.DataFrame([_row])], ignore_index=True)
-
-                        write_csv_atomic(_df[["key", "value", "updated_at"]].fillna(""), _ui_pref_path)
-                    except Exception:
-                        pass
 
                 # d309:
                 # iPad用コンパクト表示は、現在の統一レイアウトと差がなくなったため廃止。
@@ -23758,7 +23623,7 @@ elif page == "管理（入力）":
                                                 )
 
                                                 # d307:
-                                                # コマ固定レーンは使わず、予定は上から順に詰めて表示する。
+                                                # 週→コマ→曜日の同じセル内に、生徒カードを現在の順番で縦に並べる。
                                                 # 生徒名だけ最大3行分の高さを確保し、できるだけフルネームが見えるようにする。
                                                 item_html = (
                                                     f'<div title="{origin_icon} {slot}コマ｜{name}｜{typ}{reason_part}" '
@@ -23842,61 +23707,7 @@ elif page == "管理（入力）":
                                                             None,
                                                         )
 
-                                                def _uncancel_current_monthly_calendar_item():
-                                                    _att_before = load_attendance_log().copy()
-                                                    ov2, att2, _cleared_absence = (
-                                                        restore_cancelled_plan_and_clear_absence(
-                                                            schedule_overrides,
-                                                            _att_before,
-                                                            student_id=sid,
-                                                            d=day_date,
-                                                            slot=slot,
-                                                        )
-                                                    )
-                                                    write_csv_atomic(
-                                                        ov2,
-                                                        SCHEDULE_OVERRIDES_CSV,
-                                                    )
-                                                    if _cleared_absence:
-                                                        save_attendance_log(att2)
 
-                                                    _msg = (
-                                                        "キャンセルを解除しました。"
-                                                        "元の予定を復活させます。"
-                                                    )
-                                                    if _cleared_absence:
-                                                        _msg += (
-                                                            " 欠席・取消の出欠記録も"
-                                                            "未登録へ戻しました。"
-                                                        )
-                                                    st.success(_msg)
-                                                    st.caption(
-                                                        "※ キャンセル時に座席を空席にしていた場合、"
-                                                        "座席は必要に応じて再登録してください。"
-                                                    )
-                                                    st.rerun()
-
-                                                def _cancel_current_monthly_calendar_item():
-                                                    ov2 = upsert_schedule_override_row(
-                                                        schedule_overrides,
-                                                        student_id=sid,
-                                                        d=day_date,
-                                                        slot=slot,
-                                                        action="キャンセル",
-                                                        note="月カレンダーからキャンセル（出席済み修正）" if attendance_locked else "月カレンダーからキャンセル",
-                                                    )
-                                                    write_csv_atomic(ov2, SCHEDULE_OVERRIDES_CSV)
-                                                    seat2 = remove_seat_assignment_for_plan(
-                                                        seat_assignments,
-                                                        d=day_date,
-                                                        student_id=sid,
-                                                        slot=slot,
-                                                    )
-                                                    write_csv_atomic(seat2, SEAT_ASSIGNMENTS_CSV)
-                                                    st.success("キャンセルしました。今日の予定にも反映します。")
-                                                    if attendance_locked:
-                                                        st.caption("※ 出席ログ自体を直す必要がある場合は、出席記録の取消も確認してください。")
-                                                    st.rerun()
 
                                                 # d273:
                                                 # カレンダー内は「予定を選択するだけ」にする。

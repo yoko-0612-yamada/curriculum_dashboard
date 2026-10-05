@@ -1,3 +1,6 @@
+# 旧実装の参照用。現行の起動本体は dashboard.py。
+# 現行仕様はルートのCSV一覧.md・配置と使い方.mdを参照。
+# このファイルの復元用途・旧仕様の意図は要確認。現行仕様へ一括置換しない。
 import pandas as pd
 import os
 
