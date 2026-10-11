@@ -2194,6 +2194,35 @@ def _plan_hit_active(plan_df: pd.DataFrame, sid: str, slot: str) -> pd.DataFrame
     return _active_plan_rows(_plan_hit(plan_df, sid, slot))
 
 
+def schedule_slot_conflicts(day, sid, slot, students_df, weekly_df, monthly_df, overrides_df, timeslots_df):
+    """保存前検証専用。表示用の重複集約をせず、取消履歴を除いて返す。"""
+    plan = build_daily_plan_for_date(
+        day, students_df, weekly_df, monthly_df, overrides_df, timeslots_df,
+        include_inactive=True, preserve_conflicts=True,
+    )
+    return _plan_hit_active(plan, str(sid).strip(), normalize_slot(slot))
+
+
+def require_unique_schedule_slot(day, sid, slot, students_df, weekly_df, monthly_df,
+                                 overrides_df, timeslots_df, *, editing_same_slot=False):
+    """自分自身の1件だけは許可。移動・新規は有効予定があれば停止する。"""
+    hits = schedule_slot_conflicts(day, sid, slot, students_df, weekly_df, monthly_df, overrides_df, timeslots_df)
+    if len(hits) > (1 if editing_same_slot else 0):
+        kinds = "・".join(dict.fromkeys(hits["session_type"].fillna("").astype(str)))
+        st.error(f"この生徒は{pd.Timestamp(day).strftime('%Y/%m/%d')} {normalize_slot(slot)}コマに、"
+                 f"すでに『{kinds}』の有効予定があります（重複）。種別を変更する場合は既存予定を編集してください。")
+        st.stop()
+
+
+def schedule_duplicate_rows(day, students_df, weekly_df, monthly_df, overrides_df, timeslots_df):
+    """既存データは変更せず、有効な重複を警告用に検出する。"""
+    plan = _active_plan_rows(build_daily_plan_for_date(
+        day, students_df, weekly_df, monthly_df, overrides_df, timeslots_df,
+        include_inactive=True, preserve_conflicts=True,
+    ))
+    return plan[plan.duplicated(["student_id", "date", "slot"], keep=False)].copy()
+
+
 def validate_seat_transfer_import_rows(
     import_df: pd.DataFrame,
     *,
@@ -3236,6 +3265,7 @@ def build_daily_plan_for_date(
     *,
     include_inactive: bool = False,
     apply_enrollment_dates: bool = False,
+    preserve_conflicts: bool = False,
 ) -> pd.DataFrame:
     """
     date × student_id × slot の予定を1か所で作る共通関数。
@@ -3355,7 +3385,8 @@ def build_daily_plan_for_date(
         plan["slot"] = plan["slot"].fillna("").astype(str).str.strip().map(normalize_slot)
         plan = plan[(plan["student_id"] != "") & (plan["slot"] != "")].copy()
         plan = filter_student_ids(plan, active_ids)
-        plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
+        if not preserve_conflicts:
+            plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
 
     # 生徒情報を付ける
     student_cols = ["student_id", "display_name", "grade", "number_of_times", "join_date"]
@@ -3395,6 +3426,12 @@ def build_daily_plan_for_date(
             add_change_df["slot"] = add_change_df["slot"].map(normalize_slot)
             add_change_df = add_change_df[(add_change_df["student_id"] != "") & (add_change_df["slot"] != "")].copy()
             add_change_df = filter_student_ids(add_change_df, active_ids)
+            if preserve_conflicts:
+                # 連携受付の同じキーの過去イベントは独立した有効予定ではない。
+                _linked = add_change_df["note"].str.contains("座席予約連携", regex=False, na=False)
+                _old_linked = add_change_df.loc[_linked].duplicated(["student_id", "slot"], keep="last")
+                add_change_df = add_change_df.drop(index=_old_linked[_old_linked].index)
+
 
             if not add_change_df.empty:
                 # 「追加」は既存予定の有無やメモにかかわらずコマ単位で反映する。
@@ -3571,7 +3608,8 @@ def build_daily_plan_for_date(
 
     if not plan.empty:
         plan["slot"] = plan["slot"].map(normalize_slot)
-        plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
+        if not preserve_conflicts:
+            plan = plan.drop_duplicates(subset=["student_id", "date", "slot"], keep="last")
     # d381: 座席予約連携のキャンセルを「完全に消えたように見せず」、
     # 元予定を取消線表示できる行として日次プランへ戻す。
     try:
@@ -12560,6 +12598,9 @@ if page == "閲覧":
 
                     if save_action in ["追加", "時間変更"]:
                         require_schedule_destination(students_enrollment_source, picked_sid, dstr)
+                        require_unique_schedule_slot(dstr, picked_sid, picked_slot, students, student_schedule,
+                                                     monthly_schedule, ov_df, timeslots,
+                                                     editing_same_slot=(save_action == "時間変更"))
 
                     ov2 = upsert_schedule_override_row(
                         ov_df,
@@ -16456,6 +16497,7 @@ elif page == "管理（入力）":
                                 timeslots,
                                 include_inactive=True,
                             )
+                            _target_plan = _active_plan_rows(_target_plan)
                             if not _target_plan.empty:
                                 _target_plan_exists = bool(
                                     (
@@ -16570,6 +16612,10 @@ elif page == "管理（入力）":
                             ],
                             stop_on_missing=False,
                         )
+
+                        if _rtype != "欠席":
+                            require_unique_schedule_slot(_d, _sid, _slot, students, student_schedule,
+                                                         monthly_schedule, fresh_overrides, timeslots)
 
                         if _rtype == "振替":
                             approved_overrides = (
@@ -21664,6 +21710,11 @@ elif page == "管理（入力）":
                             )
 
                         if override_update:
+                            require_unique_schedule_slot(
+                                override_date, selected_sid, override_slot, students, student_schedule,
+                                monthly_schedule, schedule_overrides, timeslots,
+                                editing_same_slot=(override_date.isoformat() == selected_date_s and normalize_slot(override_slot) == normalize_slot(selected_slot)),
+                            )
                             if (override_date.isoformat() != selected_date_s
                                     or normalize_slot(override_slot) != normalize_slot(selected_slot)
                                     or str(override_type).strip() != selected_type):
@@ -21717,21 +21768,7 @@ elif page == "管理（入力）":
                                     )
                                     st.rerun()
                             else:
-                                dest_plan = build_daily_plan_for_date(
-                                    new_date_s, students, student_schedule, monthly_schedule,
-                                    ov_without_current, timeslots, include_inactive=True,
-                                )
-                                duplicate_dest = False
-                                if dest_plan is not None and not dest_plan.empty:
-                                    _dp = dest_plan.copy()
-                                    for _c in ["student_id", "slot"]:
-                                        if _c not in _dp.columns:
-                                            _dp[_c] = ""
-                                        _dp[_c] = _dp[_c].fillna("").astype(str).str.strip()
-                                    duplicate_dest = bool((
-                                        _dp["student_id"].eq(selected_sid)
-                                        & _dp["slot"].map(normalize_slot).eq(new_slot)
-                                    ).any())
+                                duplicate_dest = False  # 上の共通検証で有効予定の衝突を確認済み。
 
                                 if duplicate_dest:
                                     st.error(
@@ -22013,6 +22050,11 @@ elif page == "管理（入力）":
                     )
 
                 if dialog_update:
+                    require_unique_schedule_slot(
+                        dialog_date, selected_sid, dialog_slot, students, student_schedule,
+                        monthly_schedule, schedule_overrides, timeslots,
+                        editing_same_slot=(dialog_date.isoformat() == selected_date_s and normalize_slot(dialog_slot) == normalize_slot(selected_slot)),
+                    )
                     if (dialog_date.isoformat() != selected_date_s
                             or normalize_slot(dialog_slot) != normalize_slot(selected_slot)
                             or str(dialog_type).strip() != selected_type):
@@ -22071,7 +22113,7 @@ elif page == "管理（入力）":
 
                             duplicate_dest = False
                             if dest_plan is not None and not dest_plan.empty:
-                                _dp = dest_plan.copy()
+                                _dp = _active_plan_rows(dest_plan).copy()
                                 for _c in ["student_id", "slot"]:
                                     if _c not in _dp.columns:
                                         _dp[_c] = ""
@@ -22146,8 +22188,8 @@ elif page == "管理（入力）":
                                 )
                                 st.rerun()
                     else:
-                        # 従来どおり、月予定そのものを新しい日時へ移動する。
-                        updated_df = monthly_schedule.copy()
+                        # 数値で読まれたコマ列にも正規化した文字列を安全に代入する。
+                        updated_df = monthly_schedule.astype({"slot": object}).copy()
                         updated_df.loc[
                             selected_idx,
                             "date",
@@ -22397,6 +22439,7 @@ elif page == "管理（入力）":
 
                     if add_submit:
                         require_schedule_destination(students_enrollment_source, add_sid, add_date)
+                        require_unique_schedule_slot(add_date, add_sid, add_slot, students, student_schedule, monthly_schedule, schedule_overrides, timeslots)
                         if not add_sid:
                             st.error("生徒を選択してください。")
                         else:
@@ -23222,6 +23265,18 @@ elif page == "管理（入力）":
                         st.rerun()
 
 
+                # 表示集約で隠れる既存重複を知らせるだけで、データは修復しない。
+                duplicate_days = []
+                for _check_day in pd.date_range(month_start, month_end):
+                    _duplicates = schedule_duplicate_rows(_check_day.date(), students, pd.DataFrame(), monthly_schedule, schedule_overrides, timeslots)
+                    if not _duplicates.empty:
+                        duplicate_days.extend(
+                            f"{r.date} / {r.student_id} / {r.slot}コマ"
+                            for r in _duplicates[["date", "student_id", "slot"]].drop_duplicates().itertuples(index=False)
+                        )
+                if duplicate_days:
+                    st.warning("重複予定あり：" + "、".join(duplicate_days) + "。表示では1件に見える場合があります。自動削除・統合はしていません。")
+
                 cal_obj = cal.Calendar(firstweekday=0)
                 weeks = cal_obj.monthdatescalendar(target_year, target_month)
                 rows_by_date = {}
@@ -23808,6 +23863,9 @@ elif page == "管理（入力）":
 
                     st.warning("反映すると、同じ年月の monthly_schedule.csv 既存データを置き換えます。")
                     if st.button("📅 固定スケジュールをカレンダーに反映", key=f"save_monthly_schedule_{target_year}_{target_month}"):
+                        if generated_df.duplicated(["student_id", "date", "slot"], keep=False).any():
+                            st.error("生成予定に重複予定があります。同じ生徒・日付・コマの固定予定を確認してください。反映していません。")
+                            st.stop()
                         monthly_existing = monthly_schedule.copy()
                         for c in MONTHLY_SCHEDULE_COLS:
                             if c not in monthly_existing.columns:
