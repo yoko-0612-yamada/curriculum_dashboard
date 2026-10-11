@@ -77,7 +77,7 @@ class DestinationUiTests(unittest.TestCase):
         at.session_state['monthly_view_mode_2026_11']='📅 編集'
         at.run()
         chosen=[(w.label,str(w.value)) for w in at.date_input]
-        next(b for b in at.button if b.label=='🟢 新規予定として追加').click().run()
+        next(b for b in at.button if b.label=='🟢 新規予定を一覧へ追加（未保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
         self.assertTrue(any('2026-10-31 まで在籍' in e.value for e in at.error), (chosen,[e.value for e in at.error],[e.value for e in at.success]))
         self.assertEqual([(p.read_bytes(),p.stat().st_mtime_ns) for p in paths],before)

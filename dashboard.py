@@ -10498,7 +10498,7 @@ if page == "閲覧":
 
             
             with c_p3:
-                if st.button("追加", key="prep_add_btn"):
+                if st.button('追加して保存', key="prep_add_btn"):
                     sid = prep_label.split("｜", 1)[0].strip()
                     txt = str(st.session_state.get("prep_text_input", "")).strip()
                     if txt:
@@ -14242,6 +14242,7 @@ if page == "閲覧":
 
             # d250:
             # このチェックがONなら、次に見る候補・出欠後の動線で検定課題を優先する。
+            st.caption("練習中チェックは変更時に保存されます。検定進捗は「保存（検定課題）」を押して確定します。")
             _training_before = is_kentei_training_active(student_id, training_df=_training_for_view)
             _training_now = st.checkbox(
                 "この子は検定練習中（次に見る候補で検定課題を優先）",
@@ -14264,7 +14265,7 @@ if page == "閲覧":
                 _saved_training_grade = get_kentei_training_grade(student_id, training_df=_training_for_view)
                 if _saved_training_grade and _saved_training_grade != str(grade_sel):
                     st.warning(f"検定練習中の保存級は {_saved_training_grade}級 です。現在表示中は {grade_sel}級 です。")
-                    if st.button("この級を検定練習中に更新", key=f"kentei_training_update_grade_{student_id}_{grade_sel}"):
+                    if st.button('この級を検定練習中として保存', key=f"kentei_training_update_grade_{student_id}_{grade_sel}"):
                         upsert_kentei_training_status(
                             student_id=student_id,
                             is_training=True,
@@ -14747,7 +14748,7 @@ if page == "閲覧":
                                 else:
                                     st.caption(_status_str)
                             with _c5:
-                                if st.button("この予定で入力", key=f"pass_from_exam_{student_for_pass}_{_i}_{_date_str}_{_grade_str}"):
+                                if st.button('この予定を入力欄へセット', key=f"pass_from_exam_{student_for_pass}_{_i}_{_date_str}_{_grade_str}"):
                                     st.session_state["pass_new_grade"] = _grade_str
                                     try:
                                         _date_obj = pd.to_datetime(_date_str, errors="coerce")
@@ -14779,7 +14780,7 @@ if page == "閲覧":
                 pass_memo = st.text_area("メモ（任意）", value="", key="pass_new_memo")
                 colA, colB = st.columns([1, 2])
                 with colA:
-                    if st.button("💾 検定結果を登録", key="pass_add_btn", disabled=not _result_entry_allowed):
+                    if st.button('💾 検定結果を登録して保存', key="pass_add_btn", disabled=not _result_entry_allowed):
                         if result_for_exam == "後で登録":
                             st.info(
                                 "結果は保存していません。"
@@ -14936,7 +14937,7 @@ if page == "閲覧":
 
                     col1, col2, col3 = st.columns([1, 1, 2])
                     with col1:
-                        if st.button("💾 修正を保存", key=f"pass_save_edit_{edit_key_base}"):
+                        if st.button('💾 変更を保存', key=f"pass_save_edit_{edit_key_base}"):
                             sid = str(student_for_pass).strip()
                             old_g = str(row.get("grade", "")).strip()
                             old_d = str(row.get("pass_date", "")).strip()
@@ -15669,7 +15670,7 @@ elif page == "管理（入力）":
         _m3.metric("未発行", _bot_unmapped)
 
         if st.button(
-            "🔐 匿名IDを準備してBot用CSVを生成",
+            '🔐 匿名IDを準備してBot用CSVを生成・保存',
             type="primary",
             disabled=(_bot_days <= 0 or _bot_days > 120),
             key="generate_bot_anonymous_csv",
@@ -15808,7 +15809,7 @@ elif page == "管理（入力）":
         )
 
         if st.button(
-            "🪑 座席予約同期CSVを生成",
+            '🪑 座席予約同期CSVを生成・保存',
             type="primary",
             disabled=not _seat_sync_valid,
             key="generate_seat_reservation_sync_csv",
@@ -16025,7 +16026,7 @@ elif page == "管理（入力）":
                     key="confirm_seat_transfer_apply",
                 )
                 _apply_transfer_btn = st.button(
-                    f"✅ 反映可能な {_ok_count}件を一括反映",
+                    f'✅ 反映可能な {_ok_count}件を一括反映して保存',
                     type="primary",
                     disabled=(_ok_count == 0 or not _confirm_transfer_apply),
                     key="apply_confirmed_seat_transfers",
@@ -16287,7 +16288,7 @@ elif page == "管理（入力）":
                 )
 
                 transfer_add = st.form_submit_button(
-                    "📥 振替インボックスへ登録",
+                    '📥 振替インボックスへ保存（未承認）',
                     type="primary",
                     use_container_width=True,
                 )
@@ -16548,7 +16549,7 @@ elif page == "管理（入力）":
                             (not _source_plan_exists)
                             or _target_plan_exists
                         )
-                        approve_label = "✅ 承認して振替を反映"
+                        approve_label = '✅ 承認して振替を反映して保存'
 
                     elif _rtype in ["振替追加", "自習追加"]:
                         if _target_plan_exists:
@@ -16559,9 +16560,9 @@ elif page == "管理（入力）":
                             )
                         approve_disabled = _target_plan_exists
                         approve_label = (
-                            "✅ 承認して自習を追加"
+                            '✅ 承認して自習を追加して保存'
                             if _rtype == "自習追加"
-                            else "✅ 承認して振替を追加"
+                            else '✅ 承認して振替を追加して保存'
                         )
 
                     else:
@@ -16571,7 +16572,7 @@ elif page == "管理（入力）":
                                 "取消できる予定が見つかりません。"
                             )
                         approve_disabled = not _source_plan_exists
-                        approve_label = "✅ 承認して欠席予定を取消"
+                        approve_label = '✅ 承認して欠席予定を取消して保存'
 
                     approve_clicked = st.button(
                         approve_label,
@@ -17021,7 +17022,7 @@ elif page == "管理（入力）":
             dirty=student_dirty,
             entity_label="生徒一覧",
             save_label="💾 生徒一覧を保存",
-            discard_label="↩ 編集を破棄",
+            discard_label='↩ 生徒一覧の未保存変更を破棄',
             unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "『編集内容を一覧へ反映』は仮反映です。"
@@ -17180,7 +17181,7 @@ elif page == "管理（入力）":
                 )
 
                 add_student_submitted = st.form_submit_button(
-                    "🟢 生徒を編集一覧に追加",
+                    '🟢 生徒を一覧へ追加（未保存）',
                     use_container_width=True,
                 )
 
@@ -17323,8 +17324,8 @@ elif page == "管理（入力）":
                                 st.caption(f"最終在籍日より後の保存済み予定：{_future_count}件（同日・同コマの重複を除く。取消履歴を含み、固定予定の未来展開は含みません）。自動削除しません。")
                             except ValueError as exc:
                                 st.warning(f"保存済み予定の件数を確認できません: {exc}")
-                    _leave_set = st.button("退会予定を一覧へ反映", key=f"stage_leave_{selected_id}", disabled=_leave_input is None or bool(_leave_error))
-                    _leave_clear = st.button("退会予定を取り消す", key=f"clear_leave_{selected_id}", disabled=not bool(_leave_raw))
+                    _leave_set = st.button('退会予定を一覧へ反映（未保存）', key=f"stage_leave_{selected_id}", disabled=_leave_input is None or bool(_leave_error))
+                    _leave_clear = st.button('退会予定の取消を一覧へ反映（未保存）', key=f"clear_leave_{selected_id}", disabled=not bool(_leave_raw))
                     if _leave_set or _leave_clear:
                         try:
                             _leave_edited = stage_student_leave_date(students_edit, selected_id, "" if _leave_clear else _leave_input)
@@ -17483,7 +17484,7 @@ elif page == "管理（入力）":
 
                     update_student_submitted = (
                         st.form_submit_button(
-                            "🟠 編集内容を一覧へ反映",
+                            '🟠 一覧へ反映（未保存）',
                             use_container_width=True,
                             disabled=(
                                 current_active
@@ -17882,8 +17883,8 @@ elif page == "管理（入力）":
             bar_key="fixed_schedule",
             dirty=schedule_dirty,
             entity_label="固定スケジュール",
-            save_label="💾 固定スケジュールを保存",
-            discard_label="↩ 編集を破棄",
+            save_label='💾 固定予定一覧を保存',
+            discard_label='↩ 固定予定一覧の未保存変更を破棄',
             unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "追加・削除した内容は仮反映です。"
@@ -17930,7 +17931,7 @@ elif page == "管理（入力）":
                     )
                 with c5:
                     if st.button(
-                        "この行を削除",
+                        'この行を一覧から削除（未保存）',
                         key=f"weekly_del_{target_id}_{row_index}",
                     ):
                         edited = student_schedule.drop(
@@ -17999,7 +18000,7 @@ elif page == "管理（入力）":
             )
         with colE:
             add_btn = st.button(
-                "追加",
+                '一覧へ反映（未保存）',
                 key=f"weekly_add_btn_{target_id}",
             )
 
@@ -18180,7 +18181,7 @@ elif page == "管理（入力）":
             dirty=exam_dirty,
             entity_label="検定予定一覧",
             save_label="💾 検定予定一覧を保存",
-            discard_label="↩ 編集を破棄",
+            discard_label='↩ 検定予定一覧の未保存変更を破棄',
             unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "『編集内容を一覧へ反映』は仮反映です。"
@@ -18229,7 +18230,7 @@ elif page == "管理（入力）":
                 k_grade = st.text_input("級（例：4 / 3 / 2）")
                 k_note = st.text_input("メモ（任意）")
                 add_exam = st.form_submit_button(
-                    "🟢 編集一覧へ追加",
+                    '🟢 予定を一覧へ追加（未保存）',
                     disabled=not _new_exam_labels,
                     use_container_width=True,
                 )
@@ -18342,7 +18343,7 @@ elif page == "管理（入力）":
                         value=str(row.get("note", "")),
                     )
                     update_exam = st.form_submit_button(
-                        "🟠 編集内容を一覧へ反映",
+                        '🟠 一覧へ反映（未保存）',
                         use_container_width=True,
                     )
 
@@ -18374,7 +18375,7 @@ elif page == "管理（入力）":
                     key=f"kentei_exam_delete_confirm_{selected_idx}",
                 )
                 if st.button(
-                    "🗑 選択中の予定を編集一覧から削除",
+                    '🗑 選択中の予定を一覧から削除（未保存）',
                     disabled=not confirm_delete,
                     key=f"kentei_exam_delete_{selected_idx}",
                 ):
@@ -18652,7 +18653,7 @@ elif page == "管理（入力）":
             )
 
             if st.button(
-                "🟢 検定課題を追加",
+                '🟢 検定課題を追加して保存',
                 key="kt_admin_add_btn",
                 use_container_width=True,
             ):
@@ -18791,7 +18792,7 @@ elif page == "管理（入力）":
                 )
 
                 if st.button(
-                    "🟠 編集内容を保存",
+                    '🟠 変更を保存',
                     key=f"kt_admin_edit_save_{edit_idx}",
                     use_container_width=True,
                 ):
@@ -18996,7 +18997,7 @@ elif page == "管理（入力）":
             new_sub_main_course_id = ""
             st.caption("このサブ課題は、メイン課題と紐づけずに使用します。")
 
-        if st.button("サブ課題を追加", key="sub_master_add_btn"):
+        if st.button('サブ課題を追加して保存', key="sub_master_add_btn"):
             name = str(new_sub_name).strip()
             if not name:
                 st.error("サブ課題名を入力してください。")
@@ -19189,7 +19190,7 @@ elif page == "管理（入力）":
                 key="sub_item_bulk_text",
             )
 
-            if st.button("項目を追加", key="sub_item_add_btn"):
+            if st.button('項目を追加して保存', key="sub_item_add_btn"):
                 item_names = [
                     line.strip()
                     for line in str(bulk_item_text).splitlines()
@@ -20156,6 +20157,7 @@ elif page == "管理（入力）":
 
         # ---------- Courses ----------
         st.markdown("### 1) コース（curriculum_courses.csv）")
+        st.caption("コース一覧の変更は最後に一括保存します。下の課題欄で行う追加・変更・削除は各操作時に保存され、コース一覧の保存・未保存変更の破棄には含まれません。")
 
         # d326:
         # コースの追加・編集・削除は編集用データへ反映し、
@@ -20238,8 +20240,8 @@ elif page == "管理（入力）":
             bar_key="course_manage",
             dirty=course_dirty,
             entity_label="コース管理",
-            save_label="💾 コース管理を保存",
-            discard_label="↩ 編集を破棄",
+            save_label='💾 コース一覧を保存',
+            discard_label='↩ コース一覧の未保存変更を破棄',
             unsaved_message=(
                 "⚠️ まだ保存されていません。"
                 "追加・修正・削除した内容は仮反映です。"
@@ -20326,7 +20328,7 @@ elif page == "管理（入力）":
                 )
 
                 add_course_submitted = st.form_submit_button(
-                    "🟢 コースを編集一覧に追加",
+                    '🟢 コースを一覧へ追加（未保存）',
                     use_container_width=True,
                 )
 
@@ -20456,7 +20458,7 @@ elif page == "管理（入力）":
 
                     update_course_submitted = (
                         st.form_submit_button(
-                            "🟠 編集内容を一覧へ反映",
+                            '🟠 一覧へ反映（未保存）',
                             use_container_width=True,
                         )
                     )
@@ -20509,7 +20511,7 @@ elif page == "管理（入力）":
                 )
 
                 if st.button(
-                    "🗑️ このコースを編集一覧から削除",
+                    '🗑️ このコースを一覧から削除（未保存）',
                     key=f"c_del_btn_batch_{sel_id}",
                     disabled=not confirm_del,
                 ):
@@ -20720,6 +20722,7 @@ elif page == "管理（入力）":
 
         # ---------- Tasks ----------
         st.markdown("### 2) 課題（curriculum_tasks.csv）")
+        st.caption("ここでの追加・変更・削除は操作時に保存されます。コース一覧の未保存変更を破棄しても、保存済みの課題編集は戻りません。")
         tasks = safe_read_csv(
             CURRICULUM_TASKS_CSV,
             ["course_id", "task_id", "task_name", "order", "is_active", "student_id"],
@@ -21208,7 +21211,7 @@ elif page == "管理（入力）":
 
                     colTE1, colTE2 = st.columns(2)
                     with colTE1:
-                        if st.button("保存（更新）", key="t_edit_save"):
+                        if st.button('変更を保存', key="t_edit_save"):
                             if not str(e_task_name).strip():
                                 st.error("課題名（task_name）を入力してください。空欄では保存できません。")
                             else:
@@ -21238,6 +21241,7 @@ elif page == "管理（入力）":
     # ---------------------------
     if admin_section == "🗓️ 月スケジュール":
         st.subheader("🗓️ 月スケジュール")
+        st.caption("通常の追加・編集・生成反映は、最後に「月予定一覧を保存」で確定します。振替・取消・例外予定の編集は操作時に保存され、一覧の未保存変更を破棄しても戻りません。")
         st.caption("保存済みの月スケジュールをカレンダー中心に確認・変更し、必要な時は固定スケジュールから生成できます。")
 
         today_for_month = dt.date.today()
@@ -21336,7 +21340,7 @@ elif page == "管理（入力）":
                 else:
                     st.caption("この月全体の確定状態は未記録です。過去の予定から自動判定はしません。")
                 st.caption("現在の月予定を変えずに、予定のない日も含めて確定できます。個別編集の保存では変更した日だけが確定します。")
-                if st.button("この月を確定対象にする（0件の日も含む）", key=f"confirm_month_{target_month_key}"):
+                if st.button('この月の確定を一覧へ反映（未保存・0件の日も含む）', key=f"confirm_month_{target_month_key}"):
                     pending_months = set(st.session_state.get(monthly_pending_confirmation_key, []))
                     pending_months.add(target_month_key)
                     st.session_state[monthly_pending_confirmation_key] = sorted(pending_months)
@@ -21726,7 +21730,7 @@ elif page == "管理（入力）":
                                 )
 
                             override_update = st.form_submit_button(
-                                "🟠 この予定を更新",
+                                '🟠 この予定の変更を保存',
                                 type="primary",
                                 use_container_width=True,
                             )
@@ -22066,7 +22070,7 @@ elif page == "管理（入力）":
                     )
 
                     dialog_update = st.form_submit_button(
-                        "🟠 この予定を更新",
+                        '🟠 変更を反映（通常は未保存・振替は保存）',
                         type="primary",
                         use_container_width=True,
                     )
@@ -22294,7 +22298,7 @@ elif page == "管理（入力）":
                         key=f"monthly_dialog_delete_confirm_{selected_idx}",
                     )
                     if st.button(
-                        "🧹 誤登録を訂正",
+                        '🧹 誤登録の訂正を一覧へ反映（未保存）',
                         key=f"monthly_dialog_delete_{selected_idx}",
                         disabled=not confirm_dialog_delete,
                         use_container_width=True,
@@ -22451,7 +22455,7 @@ elif page == "管理（入力）":
                         )
 
                         add_submit = st.form_submit_button(
-                            "🟢 新規予定として追加",
+                            '🟢 新規予定を一覧へ追加（未保存）',
                             type="primary",
                             use_container_width=True,
                             disabled=not bool(
@@ -23884,7 +23888,7 @@ elif page == "管理（入力）":
                         st.info("授業予定がありません。")
 
                     st.warning("反映すると、同じ年月の monthly_schedule.csv 既存データを置き換えます。")
-                    if st.button("📅 固定スケジュールをカレンダーに反映", key=f"save_monthly_schedule_{target_year}_{target_month}"):
+                    if st.button('📅 固定予定を月予定一覧へ反映（未保存）', key=f"save_monthly_schedule_{target_year}_{target_month}"):
                         if generated_df.duplicated(["student_id", "date", "slot"], keep=False).any():
                             st.error("生成予定に重複予定があります。同じ生徒・日付・コマの固定予定を確認してください。反映していません。")
                             st.stop()
@@ -23998,14 +24002,14 @@ elif page == "管理（入力）":
                         if monthly_has_unsaved:
                             with fixed_save_col:
                                 save_monthly_batch = st.button(
-                                    "💾 今すぐ保存",
+                                    '💾 月予定一覧を保存',
                                     type="primary",
                                     use_container_width=True,
                                     key="save_monthly_schedule_batch",
                                 )
                             with fixed_discard_col:
                                 discard_monthly_batch = st.button(
-                                    "↩ 破棄",
+                                    '↩ 月予定一覧の未保存変更を破棄',
                                     use_container_width=True,
                                     key="discard_monthly_schedule_batch",
                                 )
@@ -24019,14 +24023,14 @@ elif page == "管理（入力）":
                             )
                         with fixed_save_col:
                             save_monthly_batch = st.button(
-                                "💾 今すぐ保存",
+                                '💾 月予定一覧を保存',
                                 type="primary",
                                 use_container_width=True,
                                 key="save_monthly_schedule_batch",
                             )
                         with fixed_discard_col:
                             discard_monthly_batch = st.button(
-                                "↩ 破棄",
+                                '↩ 月予定一覧の未保存変更を破棄',
                                 use_container_width=True,
                                 key="discard_monthly_schedule_batch",
                             )
@@ -24228,7 +24232,7 @@ elif page == "管理（入力）":
                 add_sess = st.selectbox("種類（session_type）", sess_type_opts, key="ss_add_sess")
                 add_note = st.text_input("メモ（任意）", value="", key="ss_add_note")
 
-                if st.button("追加", key="ss_add_btn"):
+                if st.button('追加して保存', key="ss_add_btn"):
                     # 新規は従来どおり毎週。週次画面と同じ週指定単位で重複を判定する。
                     dup = (
                         (sched["student_id"].astype(str).str.strip() == add_student_id)
@@ -24319,7 +24323,7 @@ elif page == "管理（入力）":
 
                     c3, c4 = st.columns(2)
                     with c3:
-                        if st.button("保存（更新）", key="ss_edit_save"):
+                        if st.button('変更を保存', key="ss_edit_save"):
                             # 重複チェック（自分以外）
                             dup = (
                                 (sched.index != sel_idx)
@@ -24403,7 +24407,7 @@ elif page == "管理（入力）":
                 t_start = st.text_input("開始（例 16:00）", value="", key="ts_add_start")
                 t_end = st.text_input("終了（例 16:50）", value="", key="ts_add_end")
 
-                if st.button("追加", key="ts_add_btn"):
+                if st.button('追加して保存', key="ts_add_btn"):
                     dup = (
                         (slots["weekday"].astype(str).str.strip() == str(t_wd).strip())
                         & (slots["slot"].astype(str).str.strip().map(normalize_slot) == normalize_slot(t_slot))
@@ -24479,7 +24483,7 @@ elif page == "管理（入力）":
 
                     c5, c6 = st.columns(2)
                     with c5:
-                        if st.button("保存（更新）", key="ts_edit_save"):
+                        if st.button('変更を保存', key="ts_edit_save"):
                             dup = (
                                 (slots.index != sel_idx)
                                 & (slots["weekday"].astype(str).str.strip() == str(e_wd).strip())

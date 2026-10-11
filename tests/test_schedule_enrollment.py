@@ -124,7 +124,7 @@ class ScheduleEnrollmentTests(RegressionCase):
             at.run()
             self.assertFalse(at.exception,[e.message for e in at.exception])
             self.assertTrue(any('join_date' in e.value for e in at.error))
-            self.assertFalse([b for b in at.button if b.label=='📅 固定スケジュールをカレンダーに反映'])
+            self.assertFalse([b for b in at.button if b.label=='📅 固定予定を月予定一覧へ反映（未保存）'])
             self.assertEqual(before,(path.read_bytes(),path.stat().st_mtime_ns))
         finally:
             fixture.doCleanups()

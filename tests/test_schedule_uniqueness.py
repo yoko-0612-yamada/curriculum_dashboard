@@ -101,7 +101,7 @@ class CalendarUniquenessUiTests(unittest.TestCase):
         path=f.data/'monthly_schedule.csv';before=(path.read_bytes(),path.stat().st_mtime_ns)
         self.assertTrue(any('重複予定あり' in w.value for w in at.warning))
         next(w for w in at.date_input if w.label=='追加する日付').set_value(dt.date(2026,10,1))
-        next(b for b in at.button if b.label=='🟢 新規予定として追加').click().run()
+        next(b for b in at.button if b.label=='🟢 新規予定を一覧へ追加（未保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
         self.assertTrue(any('重複' in e.value for e in at.error))
         self.assertEqual(len(at.session_state['monthly_schedule_edit_df']),2)
@@ -121,7 +121,7 @@ class CalendarUniquenessUiTests(unittest.TestCase):
         at.session_state['monthly_calendar_selected_source_2026_10']='monthly'
         at.run();self.assertFalse(at.exception,[e.message for e in at.exception])
         next(w for w in at.radio if w.label=='変更後の種別').set_value('授業').run()
-        next(b for b in at.button if b.label=='🟠 この予定を更新').click().run()
+        next(b for b in at.button if b.label=='🟠 変更を反映（通常は未保存・振替は保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
         self.assertEqual(at.session_state['monthly_schedule_edit_df'].iloc[0]['session_type'],'授業')
         edited=at.session_state['monthly_schedule_edit_df'].copy()
@@ -129,7 +129,7 @@ class CalendarUniquenessUiTests(unittest.TestCase):
         at.session_state['monthly_schedule_edit_df']=edited
         at.run()
         next(w for w in at.selectbox if w.label=='コマ').select('2')
-        next(b for b in at.button if b.label=='🟠 この予定を更新').click().run()
+        next(b for b in at.button if b.label=='🟠 変更を反映（通常は未保存・振替は保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
         self.assertTrue(any('重複' in e.value for e in at.error))
         self.assertEqual(at.session_state['monthly_schedule_edit_df'].slot.tolist(),['1','2'])

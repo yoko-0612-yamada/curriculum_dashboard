@@ -20,7 +20,7 @@ class SidebarNavigationTests(unittest.TestCase):
         at.selectbox(key='admin_section_selector').select('👥 生徒管理').run()
         self.assertTrue(any(w.key=='admin_include_inactive' for w in at.sidebar.checkbox))
         [w for w in at.text_input if w.label=='表示名'][-1].set_value('編集済み架空')
-        next(b for b in at.button if b.label=='🟠 編集内容を一覧へ反映').click().run()
+        next(b for b in at.button if b.label=='🟠 一覧へ反映（未保存）').click().run()
         staged=at.session_state['students_batch_edit_df'].copy(deep=True)
         self.assertEqual(staged.display_name.tolist(),['編集済み架空'])
         self.assertTrue(at.session_state['students_batch_edit_dirty'])

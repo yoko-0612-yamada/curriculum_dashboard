@@ -34,7 +34,7 @@ class ExamCandidateUiTests(unittest.TestCase):
         at.checkbox(key='kentei_exam_show_past').check().run()
         at.selectbox(key='kentei_exam_batch_selected').select(0).run()
         next(w for w in at.text_input if w.label=='級').set_value('9')
-        next(b for b in at.button if b.label=='🟠 編集内容を一覧へ反映').click().run()
+        next(b for b in at.button if b.label=='🟠 一覧へ反映（未保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
         edited=at.session_state['kentei_exam_batch_edit_df']
         self.assertEqual(edited.grade.tolist(),['9','2','3'])
