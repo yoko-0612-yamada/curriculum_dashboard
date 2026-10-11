@@ -452,7 +452,7 @@ def render_fixed_save_bar(
             status_col, save_col, discard_col = st.columns([2.4, 1.4, 1.0])
             with status_col:
                 st.markdown(
-                    f"**🟡 {entity_label} に未保存の変更があります**"
+                    f"**🟡 {entity_label}：一覧へ反映済み・未保存**"
                 )
             with save_col:
                 save_clicked = st.button(
@@ -473,7 +473,7 @@ def render_fixed_save_bar(
             unsafe_allow_html=True,
         )
     else:
-        st.success(f"🟢 {entity_label} は保存済みです。")
+        st.success(f"🟢 {entity_label}：一覧の未保存変更はありません（入力中のフォームは含みません）。")
 
     return save_clicked, discard_clicked
 
@@ -677,6 +677,28 @@ st.session_state.setdefault("override_done_lock", False)
 
 override_passed_lock = st.session_state["override_passed_lock"]
 override_done_lock = st.session_state["override_done_lock"]
+
+# 画面切替の2択だけを指で押しやすくする（他のフィルタには適用しない）。
+st.markdown(
+    """
+    <style>
+    .st-key-page_widget [role="radiogroup"] {
+        gap: 8px;
+    }
+    .st-key-page_widget [role="radiogroup"] label {
+        min-height: 44px;
+        box-sizing: border-box;
+        padding: 4px 8px;
+        margin: 0;
+    }
+    .st-key-page_widget [role="radiogroup"] label p {
+        font-size: 18px;
+        line-height: 1.5;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 page = st.sidebar.radio(
     "画面",
@@ -21288,9 +21310,9 @@ elif page == "管理（入力）":
         )
 
         if st.session_state.get(monthly_dirty_key, False):
-            st.warning("🟡 保存していない月スケジュールの変更があります。")
+            st.warning("🟡 月スケジュール：一覧へ反映済み・未保存")
         else:
-            st.success("🟢 月スケジュールは保存済みです。")
+            st.success("🟢 月スケジュール：一覧の未保存変更はありません（入力中のフォームは含みません）。")
 
         monthly_view_mode = st.radio(
             "表示する機能",
@@ -23950,7 +23972,7 @@ elif page == "管理（入力）":
                         with fixed_status_col:
                             if monthly_has_unsaved:
                                 st.markdown(
-                                    "**🟡 月スケジュールに未保存の変更があります**"
+                                    "**🟡 月スケジュール：一覧へ反映済み・未保存**"
                                 )
                             else:
                                 st.markdown(
@@ -23993,7 +24015,7 @@ elif page == "管理（入力）":
                         )
                         with fixed_status_col:
                             st.markdown(
-                                "**🟡 月スケジュールに未保存の変更があります**"
+                                "**🟡 月スケジュール：一覧へ反映済み・未保存**"
                             )
                         with fixed_save_col:
                             save_monthly_batch = st.button(
