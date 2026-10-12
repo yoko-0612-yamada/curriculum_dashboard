@@ -94,15 +94,15 @@ class StudentEnrollmentTests(RegressionCase):
         saved=pd.read_csv(path,dtype=str)
         pd.testing.assert_frame_equal(saved,full.iloc[1:].reset_index(drop=True))
 
-    def test_current_course_list_zero_does_not_restore_everyone(self):
+    def test_course_history_candidates_are_separate_from_active_filters(self):
         tree=ast.parse(APP.read_text())
-        # Locate current list selection by its assignment using the legacy mask.
+        # History browsing must retain inactive master rows; new-entry guards remain below.
         assignment=next(n for n in ast.walk(tree) if isinstance(n,ast.Assign)
-                        and any(isinstance(t,ast.Name) and t.id=='active_students' for t in n.targets)
-                        and 'student_legacy_active_mask' in ast.unparse(n.value))
-        self.ns['students']=pd.DataFrame([dict(student_id='S1',is_active='false')])
+                        and any(isinstance(t,ast.Name) and t.id=='history_students' for t in n.targets)
+                        and ast.unparse(n.value).startswith("students["))
+        self.ns['students']=pd.DataFrame([dict(student_id='S1',display_name='退会済み',is_active='false')])
         exec(compile(ast.Module(body=[assignment],type_ignores=[]),str(APP),'exec'),self.ns)
-        self.assertTrue(self.ns['active_students'].empty)
+        self.assertEqual(self.ns['history_students']['student_id'].tolist(), ['S1'])
         # Guard audited ID checks against restoring truthiness fallbacks.
         for n in ast.walk(tree):
             if isinstance(n,ast.If):
