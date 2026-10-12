@@ -19,7 +19,7 @@ class CourseHistoryCandidateTests(unittest.TestCase):
         ]
         f.write('students.csv', students)
         ids = ['ACTIVE', 'LEFT', 'LEGACY', 'DATED', 'MISSING']
-        f.write('progress_log.csv', [dict(student_id=sid, date=str(today-dt.timedelta(days=2)), curriculum='DEMO_G01', item='テストコース', status='done', note='保持') for sid in ids])
+        f.write('progress_log.csv', [dict(student_id=sid, date=str(today-dt.timedelta(days=2)), curriculum='DEMO_G01', item='テストコース', status='done', note='course_done') for sid in ids])
         f.write('curriculum_progress.csv', [dict(student_id='PROGRESS_ONLY', course_id='DEMO_C01', task_id='DEMO_T01', is_done='false', is_skip='true', done_date=str(today-dt.timedelta(days=3)), note='保持')])
         before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in f.data.glob('*.csv')}
         at = AppTest.from_file(str(f.app), default_timeout=40)
@@ -49,7 +49,7 @@ class CourseHistoryCandidateTests(unittest.TestCase):
         f.setUp()
         self.addCleanup(f.doCleanups)
         f.write('students.csv', [])
-        f.write('progress_log.csv', [dict(student_id='MISSING', date='2026-01-01', curriculum='DEMO_G01', item='テストコース', status='done')])
+        f.write('progress_log.csv', [dict(student_id='MISSING', date='2026-01-01', curriculum='DEMO_G01', item='テストコース', status='done', note='course_done')])
         at = AppTest.from_file(str(f.app), default_timeout=40)
         at.session_state['auth_ok'] = True
         at.session_state['sidebar_view_mode'] = 'コース別（件数）'

@@ -846,8 +846,9 @@ def load_kentei_training_status() -> pd.DataFrame:
             df = pd.read_csv(KENTEI_TRAINING_STATUS_CSV, dtype=str).fillna("")
         else:
             df = pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
-    except Exception:
-        df = pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
+    except Exception as e:
+        st.error(f"検定練習状態ファイルを読み込めないため、保存できません。元ファイルは変更していません: {KENTEI_TRAINING_STATUS_CSV}\n{e}")
+        st.stop()
 
     for c in KENTEI_TRAINING_STATUS_COLS:
         if c not in df.columns:
@@ -855,6 +856,8 @@ def load_kentei_training_status() -> pd.DataFrame:
     return df[KENTEI_TRAINING_STATUS_COLS].fillna("")
 
 def save_kentei_training_status(df: pd.DataFrame) -> None:
+    # 保持済みの編集データから保存する場合も、読込不能な既存ファイルを保護する。
+    load_kentei_training_status()
     df2 = df.copy() if df is not None else pd.DataFrame(columns=KENTEI_TRAINING_STATUS_COLS)
     for c in KENTEI_TRAINING_STATUS_COLS:
         if c not in df2.columns:
@@ -4158,15 +4161,16 @@ SUB_DAILY_CHECK_COLS = [
 
 
 def _load_or_empty_csv(path: Path, columns: list[str]) -> pd.DataFrame:
-    """サブ課題CSVを安全に読み込む。未作成時は空の表を返す。"""
+    """未作成・正常0件は空の表、既存ファイルの読込失敗は表示して停止する。"""
     path = Path(path)
     if not path.exists():
         return pd.DataFrame(columns=columns)
 
     try:
         df = pd.read_csv(path, dtype=str).fillna("")
-    except Exception:
-        return pd.DataFrame(columns=columns)
+    except Exception as e:
+        st.error(f"サブ課題ファイルを読み込めないため、保存・自動同期できません。元ファイルは変更していません: {path}\n{e}")
+        st.stop()
 
     for c in columns:
         if c not in df.columns:
@@ -4176,6 +4180,8 @@ def _load_or_empty_csv(path: Path, columns: list[str]) -> pd.DataFrame:
 
 def _save_sub_csv(df: pd.DataFrame, path: Path, columns: list[str]) -> None:
     path = Path(path)
+    # 直接保存や保持済みの編集データでも、既存ファイルの読込失敗を無視しない。
+    _load_or_empty_csv(path, columns)
     path.parent.mkdir(parents=True, exist_ok=True)
     df2 = df.copy() if df is not None else pd.DataFrame(columns=columns)
     for c in columns:
@@ -15125,19 +15131,12 @@ if page == "閲覧":
 
 
             if sid:
-                student_done = logs_df[
-                    (logs_df["student_id"].astype(str).str.strip() == str(sid).strip()) &
-                    (logs_df["status"].astype(str).str.strip() == "done")
-                ].copy()
-
-
-                student_done["curriculum"] = student_done["curriculum"].astype(str).str.strip()
-                student_done["item"] = student_done["item"].astype(str).str.strip()
-
-
-                done_set = set(zip(student_done["curriculum"], student_done["item"]))
-                done_curriculum_set = set(student_done["curriculum"])
-
+                # log は読込時に共通の旧履歴ID補完済み。完了も他画面と同じ判定を使う。
+                done_course_ids = {
+                    str(cid).strip()
+                    for cid in curr_courses["course_id"].fillna("").unique()
+                    if course_history_mask(logs_df, sid, cid, "done").any()
+                }
 
                 cc = curr_courses.copy()
                 if "course_order" in cc.columns:
@@ -15151,8 +15150,8 @@ if page == "閲覧":
                     genre_id_str = str(genre_id).strip()
 
 
-                    # ジャンル単位で done があれば、タイトルには○をつける
-                    genre_has_done = genre_id_str in done_curriculum_set
+                    # このジャンル内のコースに確定した完了履歴がある場合だけ○をつける。
+                    genre_has_done = gdf["course_id"].fillna("").astype(str).str.strip().isin(done_course_ids).any()
                     genre_mark = "⭕️" if genre_has_done else ""
                     title = (
                         f"{genre_name} ({genre_id}) {genre_mark}"
@@ -15162,23 +15161,10 @@ if page == "閲覧":
 
 
                     with st.expander(title, expanded=False):
-                        single_course_genre = len(gdf) == 1
-
-
                         for _, row in gdf.iterrows():
                             course_name = str(row.get("course_name", "")).strip()
-
-
-                            # 通常は curriculum + item 完全一致で判定
-                            exact_done = (genre_id_str, course_name) in done_set
-
-
-                            # HTML など単一コースのジャンルは、旧名称が混ざっていても
-                            # curriculum が done なら ○ を出す
-                            fallback_done = single_course_genre and (genre_id_str in done_curriculum_set)
-
-
-                            mark = "⭕️" if (exact_done or fallback_done) else ""
+                            course_id = str(row.get("course_id", "")).strip()
+                            mark = "⭕️" if course_id in done_course_ids else ""
                             st.write(f"- {course_name} {mark}")
 
 
