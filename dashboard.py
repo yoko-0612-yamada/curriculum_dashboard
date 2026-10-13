@@ -1219,14 +1219,6 @@ def upsert_attendance(df: pd.DataFrame, student_id: str, d: date, kind: str, mem
     new_rows = pd.DataFrame([{"date": ds, "student_id": sid, "kind": kind, "memo": memo}] * count_n)
     df = pd.concat([df, new_rows], ignore_index=True)
     return df
-# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
-def delete_attendance(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFrame:
-    if df.empty:
-        return df
-    sid = str(student_id).strip()
-    ds = str(d)
-    mask = (df["student_id"].astype(str).str.strip() == sid) & (df["date"].astype(str).str.strip() == ds)
-    return df.loc[~mask].copy()
 
 
 
@@ -1902,28 +1894,6 @@ def _find_latest_linked_override(
     }
 
 
-def _is_cancelled_at(
-    schedule_overrides_df: pd.DataFrame,
-    *,
-    student_id: str,
-    d: str,
-    slot: str,
-) -> bool:
-    if schedule_overrides_df is None or schedule_overrides_df.empty:
-        return False
-
-    ov = schedule_overrides_df.copy()
-    for c in ["student_id", "date", "slot", "action"]:
-        if c not in ov.columns:
-            ov[c] = ""
-        ov[c] = ov[c].fillna("").astype(str).str.strip()
-
-    return bool((
-        ov["student_id"].eq(str(student_id).strip())
-        & ov["date"].eq(str(d).strip())
-        & ov["slot"].map(normalize_slot).eq(normalize_slot(slot))
-        & ov["action"].map(normalize_action_value).eq("キャンセル")
-    ).any())
 
 
 def build_seat_current_state_sync_df(
@@ -3208,35 +3178,6 @@ def parse_date_like(x):
     except Exception:
         return None
 
-# [CHECK 2026-04-23] このファイル内では定義のみを確認。参照未検出のため、削除候補として要確認。
-def get_today_student_ids(schedule_df: pd.DataFrame, overrides_df: pd.DataFrame):
-    """今日予定がある生徒IDの集合（ベース時間割＋例外を反映）"""
-    counts = {}
-    w = today_weekday_jp()
-
-    # base schedule
-    if schedule_df is not None and not schedule_df.empty:
-        if "weekday" in schedule_df.columns and "student_id" in schedule_df.columns:
-            base = schedule_df[schedule_df["weekday"].astype(str).str.strip() == w]
-            for sid in base.get("student_id", pd.Series(dtype=str)).dropna().astype(str):
-                counts[sid] = counts.get(sid, 0) + 1
-
-    # overrides today
-    if overrides_df is not None and not overrides_df.empty:
-        if "date" in overrides_df.columns and "student_id" in overrides_df.columns:
-            today_str = date.today().isoformat()
-            od = overrides_df[overrides_df["date"].astype(str).str.strip() == today_str]
-            for _, r in od.iterrows():
-                sid = str(r.get("student_id", "")).strip()
-                if not sid:
-                    continue
-                action = normalize_action_value(r.get("action", ""))
-                if action in ("追加", "時間変更"):
-                    counts[sid] = counts.get(sid, 0) + 1
-                elif action == "キャンセル":
-                    counts[sid] = counts.get(sid, 0) - 1
-
-    return {sid for sid, c in counts.items() if c > 0}
 
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def latest_course_for_student(student_id: str, progress_df: pd.DataFrame):
@@ -4891,23 +4832,6 @@ def get_student_main_course_status(student_id: str, course_id: str) -> dict:
     return result
 
 
-def get_sub_main_course_id(sub_id: str) -> str:
-    """サブ課題に紐づくメインコースIDを返す。"""
-    sid = str(sub_id).strip()
-    if not sid:
-        return ""
-
-    masters = load_sub_curricula()
-    if masters.empty:
-        return ""
-
-    hit = masters[
-        masters["sub_id"].astype(str).str.strip() == sid
-    ].copy()
-    if hit.empty:
-        return ""
-
-    return str(hit.iloc[-1].get("main_course_id", "")).strip()
 
 
 def upsert_student_sub_progress(
@@ -5724,10 +5648,6 @@ def write_csv(df, path):
     clear_csv_cache()
 
 
-# [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
-def show_saved(message: str = "保存しました。") -> None:
-    """Show a consistent save message after user actions."""
-    st.success(message)
 
 
 # =========================================================
@@ -21429,7 +21349,6 @@ elif page == "管理（入力）":
         # 在籍中の生徒だけ対象にする
         active_student_ids_for_month = set()
         student_name_map_month = {}
-        student_target_count_map = {}
 
         if not students.empty and "student_id" in students.columns:
             students_for_month = students.copy()
@@ -21457,13 +21376,6 @@ elif page == "管理（入力）":
                     )
                 )
 
-            if "number_of_times" in students_for_month.columns:
-                student_target_count_map = dict(
-                    zip(
-                        students_for_month["student_id"].astype(str).str.strip(),
-                        students_for_month["number_of_times"].astype(str).str.strip(),
-                    )
-                )
 
         weekday_names = ["月", "火", "水", "木", "金", "土", "日"]
         generated_rows = []
@@ -21550,7 +21462,6 @@ elif page == "管理（入力）":
         # 画面上では「回数区分（集計に使います）」として扱う。
         # 選択肢の時点で「回数に含める / 回数外」が分かるようにし、
         # 登録する人のさじ加減でカウント扱いがブレないようにする。
-        monthly_count_included_reasons = {"通常", "今月振替", "追加授業", "確認必要"}
         monthly_count_excluded_reasons = {
             "前月振替", "自習", "補習・確認", "特典追加", "その他回数外",
             "回数外", "月回数外"
@@ -23305,11 +23216,6 @@ elif page == "管理（入力）":
                             unsafe_allow_html=True,
                         )
 
-                # d258:
-                # iPad用コンパクト表示のON/OFFをCSVに保存する。
-                # session_stateだけだと再読み込みや別タブ移動で外れるため、
-                # 一度ONにしたら次回以降もONで開けるようにする。
-                _ui_pref_path = DATA_DIR / "ui_preferences.csv"
 
 
 
