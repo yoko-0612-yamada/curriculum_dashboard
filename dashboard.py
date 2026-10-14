@@ -4063,9 +4063,25 @@ def session_mark(v: str) -> str:
 def write_csv_atomic(df: pd.DataFrame, path: Path) -> None:
     # path は str で渡されることもあるので Path に正規化
     path = Path(path)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(tmp, index=False, encoding="utf-8")
-    tmp.replace(path)
+    tmp = None
+    try:
+        # 同じディレクトリに専用の一時ファイルを作り、閉じてから置換する。
+        f = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", dir=path.parent,
+            prefix=path.name + ".", suffix=".tmp", delete=False,
+        )
+        tmp = Path(f.name)
+        with f:
+            df.to_csv(f, index=False, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        # 失敗した保存の一時ファイルだけを除去し、元の例外を維持する。
+        if tmp is not None:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
     clear_csv_cache()
 
 
