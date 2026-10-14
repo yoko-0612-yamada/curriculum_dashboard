@@ -4194,7 +4194,7 @@ def _sub_check_date_str(d) -> str:
     return ts.strftime("%Y-%m-%d")
 
 
-def _active_sub_snapshot(student_id: str) -> dict:
+def _active_sub_snapshot(student_id: str, *, progress_df: pd.DataFrame | None = None) -> dict:
     """進行中サブ課題の現在位置を日別確認用に返す。"""
     sid = str(student_id).strip()
     state = {
@@ -4206,7 +4206,7 @@ def _active_sub_snapshot(student_id: str) -> dict:
     if not sid:
         return state
 
-    progress = load_student_sub_progress()
+    progress = load_student_sub_progress() if progress_df is None else progress_df
     if progress.empty:
         return state
 
@@ -4365,8 +4365,12 @@ def sync_sub_daily_pending_for_date(
     completion_log = load_sub_progress_log()
     changed = False
 
+    # この同期は進行状況を更新しない。最初の対象生徒で読み、呼出し内だけ共有する。
+    progress_for_sync = None
     for sid in attended_ids:
-        snapshot = _active_sub_snapshot(sid)
+        if sid and progress_for_sync is None:
+            progress_for_sync = load_student_sub_progress()
+        snapshot = _active_sub_snapshot(sid, progress_df=progress_for_sync)
         if (
             not snapshot.get("is_active")
             or not str(snapshot.get("sub_id", "")).strip()
@@ -8172,23 +8176,32 @@ if page == "閲覧":
     _summary_sub_df = load_sub_daily_check().copy()
     _summary_typing_df = load_typing_log().copy()
 
+    def _prepare_summary_attendance_kind(attendance_df):
+        if attendance_df is None or attendance_df.empty:
+            return attendance_df
+        _tmp = attendance_df.copy()
+        _tmp["student_id"] = _tmp["student_id"].astype(str).fillna("").str.strip()
+        _tmp["date"] = _tmp["date"].astype(str).fillna("").str.strip()
+        if "kind" in _tmp.columns:
+            _tmp["kind"] = _tmp["kind"].astype(str).fillna("").str.strip().str.lower()
+        return _tmp
+
     def _summary_attendance_kind(student_id: str) -> str:
-        if _summary_att_df is None or _summary_att_df.empty:
+        if _summary_kind_df is None or _summary_kind_df.empty:
             return ""
         sid = str(student_id).strip()
         ds = str(_summary_today)
-        _tmp = _summary_att_df.copy()
-        _tmp["student_id"] = _tmp["student_id"].astype(str).fillna("").str.strip()
-        _tmp["date"] = _tmp["date"].astype(str).fillna("").str.strip()
-        if "kind" not in _tmp.columns:
+        if "kind" not in _summary_kind_df.columns:
             return ""
-        _tmp["kind"] = _tmp["kind"].astype(str).fillna("").str.strip().str.lower()
-        _hit = _tmp[(_tmp["student_id"] == sid) & (_tmp["date"] == ds)]
+        _hit = _summary_kind_df[
+            (_summary_kind_df["student_id"] == sid) & (_summary_kind_df["date"] == ds)
+        ]
         if _hit.empty:
             return ""
         return str(_hit.iloc[-1]["kind"]).strip().lower()
 
     _summary_rows = []
+    _summary_kind_df = None
     if isinstance(_summary_plan, pd.DataFrame) and not _summary_plan.empty:
         for _sid in (
             _summary_plan.get("student_id", pd.Series(dtype=str))
@@ -8197,6 +8210,9 @@ if page == "閲覧":
             if not _sid:
                 continue
             _att_done = is_attendance_done_today(_summary_att_df, _sid, _summary_today)
+            # 出席表はこの要約中に保存しない。判定用の正規化は最初の対象行だけで行う。
+            if _summary_kind_df is None:
+                _summary_kind_df = _prepare_summary_attendance_kind(_summary_att_df)
             _kind = _summary_attendance_kind(_sid)
             if _kind in ["self", "selfstudy", "自習", "absence", "欠席", "cancel", "キャンセル"]:
                 _prog_done = True
@@ -10052,12 +10068,12 @@ if page == "閲覧":
                     except Exception:
                         return set()
 
-                def _recommended_kentei_grade_for_candidate(_sid: str) -> str:
+                def _recommended_kentei_grade_for_candidate(_sid: str, *, passed_grades: set | None = None) -> str:
                     try:
                         _sid = str(_sid).strip()
                         _grade_options = ["1", "2", "3", "4"]
                         _grade_progress_order = ["4", "3", "2", "1"]
-                        _passed = _passed_kentei_grades_for_student(_sid)
+                        _passed = _passed_kentei_grades_for_student(_sid) if passed_grades is None else passed_grades
 
                         _exam = kentei_exam.copy()
                         if not _exam.empty:
@@ -10162,7 +10178,9 @@ if page == "閲覧":
                     # それ以外は通常カリキュラムを表示する。
                     try:
                         _sid = str(_sid).strip()
-                        _grade = _recommended_kentei_grade_for_candidate(_sid)
+                        # 合格級の取得・正規化・生徒抽出は、このヒント生成内だけで共有する。
+                        _passed = _passed_kentei_grades_for_student(_sid)
+                        _grade = _recommended_kentei_grade_for_candidate(_sid, passed_grades=_passed)
 
                         _hint_training = load_kentei_training_status()
                         _is_training = is_kentei_training_active(_sid, training_df=_hint_training)
@@ -10172,7 +10190,6 @@ if page == "閲覧":
 
                         _has_unpassed_exam_schedule = False
                         if _grade:
-                            _passed = _passed_kentei_grades_for_student(_sid)
                             _exam = kentei_exam.copy()
                             if not _exam.empty:
                                 for _c in ["student_id", "grade"]:
