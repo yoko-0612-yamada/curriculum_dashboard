@@ -682,16 +682,19 @@ override_done_lock = st.session_state["override_done_lock"]
 st.markdown(
     """
     <style>
-    .st-key-page_widget [role="radiogroup"] {
+    .st-key-page_widget [role="radiogroup"],
+    .st-key-view_mode_group [role="radiogroup"] {
         gap: 8px;
     }
-    .st-key-page_widget [role="radiogroup"] label {
+    .st-key-page_widget [role="radiogroup"] label,
+    .st-key-view_mode_group [role="radiogroup"] label {
         min-height: 44px;
         box-sizing: border-box;
         padding: 4px 8px;
         margin: 0;
     }
-    .st-key-page_widget [role="radiogroup"] label p {
+    .st-key-page_widget [role="radiogroup"] label p,
+    .st-key-view_mode_group [role="radiogroup"] label p {
         font-size: 18px;
         line-height: 1.5;
     }
@@ -711,6 +714,10 @@ page = st.sidebar.radio(
 # radioの選択を内部状態に反映
 st.session_state.page_state = page
 admin_mode = (page == "管理（入力）")
+
+# 描画位置だけ先に確保し、既存の閲覧モード判定は閲覧画面内で行う。
+if not admin_mode:
+    view_mode_container = st.sidebar.container()
 
 # =========================================================
 # Simple Login (optional)
@@ -12924,12 +12931,12 @@ if page == "閲覧":
     current_view_mode = str(st.session_state.get("view_mode_trial", "カリキュラム課題"))
     default_group = "毎日使う：進捗登録" if current_view_mode in daily_view_options else "たまに見る：確認・一覧"
 
-    st.markdown("### 表示切替")
-    view_group = st.radio(
-        "用途",
+    view_group = view_mode_container.radio(
+        "閲覧モード",
         ["毎日使う：進捗登録", "たまに見る：確認・一覧"],
         index=0 if default_group == "毎日使う：進捗登録" else 1,
-        horizontal=True,
+        horizontal=False,
+        format_func=lambda value: "進捗登録" if value == "毎日使う：進捗登録" else "確認・一覧",
         key="view_mode_group",
     )
 
