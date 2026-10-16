@@ -1335,12 +1335,112 @@ def set_preparation_status(
 TYPING_LOG_COLS = ["date", "student_id", "status", "completed_at", "note"]
 
 
+# 機能全体の停止期間。未作成は従来互換で運用中（読込だけでは作成しない）。
+FEATURE_PAUSE_PERIODS_CSV = DATA_DIR / "feature_pause_periods.csv"
+FEATURE_PAUSE_COLS = ["feature", "pause_start", "resume_date"]
+
+
+def _feature_date(value) -> date:
+    text = str(value).strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        raise ValueError(f"日付はYYYY-MM-DD形式で指定してください: {text}")
+    return date.fromisoformat(text)
+
+
+def validate_feature_pause_periods(df: pd.DataFrame) -> pd.DataFrame:
+    if list(df.columns) != FEATURE_PAUSE_COLS:
+        raise ValueError("停止期間の列は feature,pause_start,resume_date が必要です。")
+    result = df.fillna("").astype(str).apply(lambda col: col.str.strip())
+    periods = {"subtask": [], "typing": []}
+    for _, row in result.iterrows():
+        feature = row["feature"]
+        if feature not in periods:
+            raise ValueError(f"不明な機能です: {feature}")
+        start = _feature_date(row["pause_start"])
+        end = _feature_date(row["resume_date"]) if row["resume_date"] else None
+        if end is not None and start > end:
+            raise ValueError("停止開始日が再開日より後になっています。")
+        periods[feature].append((start, end))
+    for feature, rows in periods.items():
+        if sum(end is None for _, end in rows) > 1:
+            raise ValueError(f"{feature}の停止中の期間が複数あります。")
+        nonempty = sorted((start, end or date.max) for start, end in rows if end != start)
+        if any(left[1] > right[0] for left, right in zip(nonempty, nonempty[1:])):
+            raise ValueError(f"{feature}の停止期間が重複しています。")
+    return result
+
+
+def load_feature_pause_periods() -> pd.DataFrame:
+    try:
+        if not Path(FEATURE_PAUSE_PERIODS_CSV).exists():
+            return pd.DataFrame(columns=FEATURE_PAUSE_COLS)
+        return validate_feature_pause_periods(pd.read_csv(FEATURE_PAUSE_PERIODS_CSV, dtype=str))
+    except Exception as exc:
+        st.error(f"運用設定の停止期間を読み込めないため、関連する新規処理・設定保存を停止します。元ファイルは変更していません: {exc}")
+        st.stop()
+
+
+def is_feature_paused(feature: str, target_date, *, periods_df=None) -> bool:
+    periods = load_feature_pause_periods() if periods_df is None else periods_df
+    try:
+        if feature not in ["subtask", "typing"]:
+            raise ValueError(f"不明な機能です: {feature}")
+        target = _feature_date(target_date)
+        return any(
+            _feature_date(row["pause_start"]) <= target
+            and (not row["resume_date"] or target < _feature_date(row["resume_date"]))
+            for _, row in periods.loc[periods["feature"].eq(feature)].iterrows()
+        )
+    except Exception as exc:
+        st.error(f"運用設定の停止判定ができません: {exc}")
+        st.stop()
+
+
+def require_feature_running(feature: str, target_date) -> None:
+    # 実行時に設定を再読込する。画面表示時の状態だけを信用しない。
+    if is_feature_paused(feature, target_date):
+        label = "サブ課題" if feature == "subtask" else "タイピング"
+        st.error(f"{target_date}は{label}の一時停止期間のため、この操作は保存できません。")
+        st.stop()
+
+
+def feature_running_rows(df: pd.DataFrame, feature: str, date_column: str) -> pd.DataFrame:
+    periods = load_feature_pause_periods()
+    if df.empty or periods.loc[periods["feature"].eq(feature)].empty:
+        return df.copy()
+    mask = df[date_column].map(lambda value: not is_feature_paused(feature, value, periods_df=periods))
+    return df.loc[mask].copy()
+
+
+def set_feature_paused(feature: str, paused: bool, target_date) -> bool:
+    # 設定全件を再読込して、対象機能の停止／再開だけを変更する。
+    periods = load_feature_pause_periods()
+    day = _feature_date(target_date)
+    if feature not in ["subtask", "typing"]:
+        raise ValueError("不明な機能です。")
+    opened = periods.index[periods["feature"].eq(feature) & periods["resume_date"].eq("")]
+    if paused:
+        if is_feature_paused(feature, day, periods_df=periods):
+            return False
+        if len(opened):
+            raise ValueError("未来の停止期間が存在するため、設定を確認してください。")
+        periods = pd.concat([periods, pd.DataFrame([dict(feature=feature, pause_start=str(day), resume_date="")])], ignore_index=True)
+    else:
+        if not len(opened):
+            return False
+        periods.loc[opened[0], "resume_date"] = str(day)
+    periods = validate_feature_pause_periods(periods)
+    write_csv_atomic(periods, FEATURE_PAUSE_PERIODS_CSV)
+    return True
+
+
 def load_typing_log() -> pd.DataFrame:
     if TYPING_LOG_CSV.exists():
         try:
             df = pd.read_csv(TYPING_LOG_CSV, dtype=str).fillna("")
-        except Exception:
-            df = pd.DataFrame(columns=TYPING_LOG_COLS)
+        except Exception as e:
+            st.error(f"タイピング履歴ファイルを読み込めないため、保存できません。元ファイルは変更していません: {TYPING_LOG_CSV}\n{e}")
+            st.stop()
     else:
         df = pd.DataFrame(columns=TYPING_LOG_COLS)
         write_csv_atomic(df, TYPING_LOG_CSV)
@@ -1367,11 +1467,21 @@ def load_typing_log() -> pd.DataFrame:
 
 
 def save_typing_log(df: pd.DataFrame) -> None:
+    # 画面に保持済みのデータから保存する場合も、既存ファイルの読込失敗を保護する。
+    existing = load_typing_log()
     df2 = df.copy() if df is not None else pd.DataFrame(columns=TYPING_LOG_COLS)
     for c in TYPING_LOG_COLS:
         if c not in df2.columns:
             df2[c] = ""
         df2[c] = df2[c].fillna("").astype(str).str.strip()
+    periods = load_feature_pause_periods()
+    # 保存済み停止期間の履歴は維持。追加・更新・削除がある日だけ検証する。
+    for ds in set(existing["date"]) | set(df2["date"]):
+        before = existing.loc[existing["date"].eq(ds), TYPING_LOG_COLS].reset_index(drop=True)
+        after = df2.loc[df2["date"].eq(ds), TYPING_LOG_COLS].reset_index(drop=True)
+        if not before.equals(after) and is_feature_paused("typing", ds, periods_df=periods):
+            st.error(f"{ds}はタイピングの一時停止期間のため、保存できません。")
+            st.stop()
     write_csv_atomic(df2[TYPING_LOG_COLS].fillna(""), TYPING_LOG_CSV)
 
 
@@ -1406,6 +1516,7 @@ def upsert_typing_log(
     status: str,
     note: str = "",
 ) -> pd.DataFrame:
+    require_feature_running("typing", d)
     sid = str(student_id).strip()
     ds = str(d)
     status = str(status).strip().lower()
@@ -1442,6 +1553,7 @@ def delete_typing_log(df: pd.DataFrame, student_id: str, d: date) -> pd.DataFram
     if df is None or df.empty:
         return pd.DataFrame(columns=TYPING_LOG_COLS)
 
+    require_feature_running("typing", d)
     sid = str(student_id).strip()
     ds = str(d)
 
@@ -4253,6 +4365,7 @@ def upsert_sub_daily_check(
     note: str = "",
 ) -> None:
     """サブ課題の日別確認を date×student_id で1件保存する。"""
+    require_feature_running("subtask", d)
     sid = str(student_id).strip()
     dstr = _sub_check_date_str(d)
     status_norm = str(status).strip().lower()
@@ -4335,6 +4448,8 @@ def sync_sub_daily_pending_for_date(
     過去日を一括生成せず、対象日だけを同期するため、導入前の誤警告を防ぐ。
     """
     dstr = _sub_check_date_str(d)
+    if is_feature_paused("subtask", dstr):
+        return 0
     if attendance_df is None or attendance_df.empty:
         return 0
 
@@ -4431,6 +4546,7 @@ def sync_sub_daily_pending_for_date(
         changed = True
 
     if changed:
+        require_feature_running("subtask", dstr)
         save_sub_daily_check(checks)
 
     latest = load_sub_daily_check()
@@ -4449,6 +4565,7 @@ def complete_and_confirm_sub_daily(
     d,
 ) -> tuple[bool, str]:
     """サブ課題を完了して次へ進め、日別確認もdoneにする。"""
+    require_feature_running("subtask", d)
     sid = str(student_id).strip()
     dstr = _sub_check_date_str(d)
     daily_row = get_sub_daily_check_row(sid, dstr)
@@ -4478,7 +4595,7 @@ def complete_and_confirm_sub_daily(
 
     before_sub = current_sub
     before_item = current_item
-    ok, message = complete_and_advance_student_sub_task(sid)
+    ok, message = complete_and_advance_student_sub_task(sid, operation_date=dstr)
     if ok:
         upsert_sub_daily_check(
             sid,
@@ -4493,6 +4610,7 @@ def complete_and_confirm_sub_daily(
 
 def mark_sub_daily_skip(student_id: str, d) -> tuple[bool, str]:
     """対象日はサブ課題を実施しなかったことを確認済みにする。"""
+    require_feature_running("subtask", d)
     sid = str(student_id).strip()
     row = get_sub_daily_check_row(sid, d)
     snapshot = _active_sub_snapshot(sid)
@@ -4880,11 +4998,12 @@ def upsert_student_sub_progress(
 
 
 
-def complete_and_advance_student_sub_task(student_id: str) -> tuple[bool, str]:
+def complete_and_advance_student_sub_task(student_id: str, *, operation_date=None) -> tuple[bool, str]:
     """現在のサブ課題を完了記録し、次の項目へ進める。
 
     最後の項目を完了した場合は、サブ課題進行中をOFFにする。
     """
+    require_feature_running("subtask", date.today() if operation_date is None else operation_date)
     try:
         sid = str(student_id).strip()
         if not sid:
@@ -4974,6 +5093,7 @@ def complete_and_advance_student_sub_task(student_id: str) -> tuple[bool, str]:
                 ).any()
             )
 
+        require_feature_running("subtask", date.today() if operation_date is None else operation_date)
         if not duplicate:
             log_row = {
                 "student_id": sid,
@@ -5162,6 +5282,7 @@ def get_student_sub_ui_state(student_id: str, *, progress_df: pd.DataFrame | Non
 
 def undo_latest_student_sub_completion(student_id: str) -> tuple[bool, str]:
     """直前のサブ課題完了を1件削除し、その項目を現在位置へ戻す。"""
+    require_feature_running("subtask", date.today())
     try:
         sid = str(student_id).strip()
         if not sid:
@@ -5226,6 +5347,11 @@ def undo_latest_student_sub_completion(student_id: str) -> tuple[bool, str]:
                     or item_id
                 )
 
+        require_feature_running("subtask", date.today())
+        _record_date = pd.to_datetime(completed_at, errors="coerce")
+        if pd.notna(_record_date):
+            require_feature_running("subtask", _record_date.date())
+
         # 完了履歴を1件だけ削除
         log_df = log_df.drop(index=latest_index).reset_index(drop=True)
         save_sub_progress_log(log_df)
@@ -5248,6 +5374,8 @@ def undo_latest_student_sub_completion(student_id: str) -> tuple[bool, str]:
 
 def get_student_sub_task_hint(student_id: str, *, progress_df: pd.DataFrame | None = None, masters_df: pd.DataFrame | None = None, items_df: pd.DataFrame | None = None) -> str:
     """進行中のサブ課題があれば「サブ：教材名 / 次の項目」を返す。"""
+    if is_feature_paused("subtask", date.today()):
+        return ""
     try:
         sid = str(student_id).strip()
         if not sid:
@@ -8252,7 +8380,9 @@ if page == "閲覧":
             if _c not in _sub.columns:
                 _sub[_c] = ""
             _sub[_c] = _sub[_c].fillna("").astype(str).str.strip()
-        _summary_sub_pending = _sub[_sub["status"].str.lower().eq("pending")].copy()
+        _summary_sub_pending = feature_running_rows(
+            _sub[_sub["status"].str.lower().eq("pending")], "subtask", "date"
+        )
         _sub_pending = _summary_sub_pending
         if not _sub_pending.empty:
             _summary_sub_today_pending = int(
@@ -8274,6 +8404,8 @@ if page == "閲覧":
         _att["kind_norm"] = _att["kind"].map(normalize_attendance_kind_for_lock)
 
         def _typing_pending_count_for_date(_d) -> int:
+            if is_feature_paused("typing", _d):
+                return 0
             _ds = str(_d)
             _ids = (
                 _att[
@@ -9255,6 +9387,17 @@ if page == "閲覧":
             st.error(_sub_daily_flash)
         else:
             st.success(_sub_daily_flash)
+
+    if is_feature_paused("subtask", today):
+        st.info("サブ課題は一時停止中です。割当・進行位置・履歴は保持されています。")
+    with st.expander("サブ課題の保存済み履歴", expanded=False):
+        st.dataframe(_summary_sub_df, hide_index=True, use_container_width=True)
+        st.dataframe(load_sub_progress_log(), hide_index=True, use_container_width=True)
+
+    if is_feature_paused("typing", today):
+        st.info("タイピングは一時停止中です。保存済みの記録は保持されています。")
+    with st.expander("タイピングの保存済み履歴", expanded=False):
+        st.dataframe(_summary_typing_df, hide_index=True, use_container_width=True)
 
     # 要約と同じ保存済みpendingを表示。新規実施候補の在籍ルールには接続しない。
     pending_sub_daily = _summary_sub_pending.copy()
@@ -10273,192 +10416,193 @@ if page == "閲覧":
 
                     st.session_state["today_task_hint_map"] = dict(_today_task_hint_map)
 
-                # d300:
-                # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
-                # 隣接する表示判定だけで共有し、保存操作・次の生徒へは持ち越さない。
-                _sub_progress_for_row = load_student_sub_progress()
-                _sub_masters_for_row = _sub_items_for_row = _sub_log_for_row = None
-                _sub_hit_for_row = _sub_progress_for_row[
-                    _sub_progress_for_row["student_id"].astype(str).str.strip().eq(str(sid).strip())
-                ]
-                if not _sub_hit_for_row.empty and str(_sub_hit_for_row.iloc[-1].get("sub_id", "")).strip():
-                    _sub_masters_for_row = load_sub_curricula()
-                    _sub_items_for_row = load_sub_curriculum_items()
-                    _sub_log_for_row = load_sub_progress_log()
-                sub_state = get_student_sub_ui_state(
-                    sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
-                    items_df=_sub_items_for_row, log_df=_sub_log_for_row,
-                )
-                sub_task_hint = get_student_sub_task_hint(
-                    sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
-                    items_df=_sub_items_for_row,
-                )
-                sub_daily_state = get_sub_daily_check_row(sid, today)
-                sub_daily_status = str(
-                    sub_daily_state.get("status", "")
-                ).strip().lower()
-
-                _today_sub_text = ""
-                if sub_task_hint:
-                    _today_sub_text = str(sub_task_hint).strip()
-                    if _show_today_candidate:
-                        st.caption(_today_sub_text)
-                elif (
-                    sub_state.get("configured")
-                    and sub_state.get("today_count", 0) > 0
-                ):
-                    # 最後の項目を完了して自動停止した後も、
-                    # 本日の登録と取り消し操作を確認できるように残す。
-                    _finished_sub_name = str(
-                        sub_state.get("sub_name", "")
-                    ).strip()
-                    _today_sub_text = f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
-                    if _show_today_candidate:
-                        st.caption(_today_sub_text)
-
-                if _today_sub_text:
-                    _today_sub_hint_map[str(sid).strip()] = _today_sub_text
-                    st.session_state["today_sub_hint_map"] = dict(_today_sub_hint_map)
-
-                _show_sub_controls = bool(
-                    sub_state.get("configured")
-                    and (
-                        sub_state.get("is_active")
-                        or sub_state.get("today_count", 0) > 0
+                if not is_feature_paused("subtask", today):
+                    # d300:
+                    # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
+                    # 隣接する表示判定だけで共有し、保存操作・次の生徒へは持ち越さない。
+                    _sub_progress_for_row = load_student_sub_progress()
+                    _sub_masters_for_row = _sub_items_for_row = _sub_log_for_row = None
+                    _sub_hit_for_row = _sub_progress_for_row[
+                        _sub_progress_for_row["student_id"].astype(str).str.strip().eq(str(sid).strip())
+                    ]
+                    if not _sub_hit_for_row.empty and str(_sub_hit_for_row.iloc[-1].get("sub_id", "")).strip():
+                        _sub_masters_for_row = load_sub_curricula()
+                        _sub_items_for_row = load_sub_curriculum_items()
+                        _sub_log_for_row = load_sub_progress_log()
+                    sub_state = get_student_sub_ui_state(
+                        sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
+                        items_df=_sub_items_for_row, log_df=_sub_log_for_row,
                     )
-                )
-
-                if (
-                    _show_today_candidate and _show_sub_controls
-                    and sid not in _sub_progress_button_rendered
-                ):
-                    _sub_progress_button_rendered.add(sid)
-
-                    _today_count = int(
-                        sub_state.get("today_count", 0) or 0
+                    sub_task_hint = get_student_sub_task_hint(
+                        sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
+                        items_df=_sub_items_for_row,
                     )
-                    _today_names = list(
-                        sub_state.get("today_item_names", []) or []
+                    sub_daily_state = get_sub_daily_check_row(sid, today)
+                    sub_daily_status = str(
+                        sub_daily_state.get("status", "")
+                    ).strip().lower()
+
+                    _today_sub_text = ""
+                    if sub_task_hint:
+                        _today_sub_text = str(sub_task_hint).strip()
+                        if _show_today_candidate:
+                            st.caption(_today_sub_text)
+                    elif (
+                        sub_state.get("configured")
+                        and sub_state.get("today_count", 0) > 0
+                    ):
+                        # 最後の項目を完了して自動停止した後も、
+                        # 本日の登録と取り消し操作を確認できるように残す。
+                        _finished_sub_name = str(
+                            sub_state.get("sub_name", "")
+                        ).strip()
+                        _today_sub_text = f"サブ：{_finished_sub_name} / 本日の項目を完了（停止中）"
+                        if _show_today_candidate:
+                            st.caption(_today_sub_text)
+
+                    if _today_sub_text:
+                        _today_sub_hint_map[str(sid).strip()] = _today_sub_text
+                        st.session_state["today_sub_hint_map"] = dict(_today_sub_hint_map)
+
+                    _show_sub_controls = bool(
+                        sub_state.get("configured")
+                        and (
+                            sub_state.get("is_active")
+                            or sub_state.get("today_count", 0) > 0
+                        )
                     )
 
-                    if sub_daily_status == "skip":
-                        st.caption("本日：－ サブ課題は実施なしで確認済み")
-                    elif _today_count > 0 or sub_daily_status == "done":
-                        _today_items_text = "、".join(_today_names)
-                        st.caption(
-                            f"本日：✅ {_today_count or 1}項目確認済み"
-                            + (
-                                f"（{_today_items_text}）"
-                                if _today_items_text
+                    if (
+                        _show_today_candidate and _show_sub_controls
+                        and sid not in _sub_progress_button_rendered
+                    ):
+                        _sub_progress_button_rendered.add(sid)
+
+                        _today_count = int(
+                            sub_state.get("today_count", 0) or 0
+                        )
+                        _today_names = list(
+                            sub_state.get("today_item_names", []) or []
+                        )
+
+                        if sub_daily_status == "skip":
+                            st.caption("本日：－ サブ課題は実施なしで確認済み")
+                        elif _today_count > 0 or sub_daily_status == "done":
+                            _today_items_text = "、".join(_today_names)
+                            st.caption(
+                                f"本日：✅ {_today_count or 1}項目確認済み"
+                                + (
+                                    f"（{_today_items_text}）"
+                                    if _today_items_text
+                                    else ""
+                                )
+                            )
+                        elif sub_daily_status == "pending":
+                            st.warning("本日：⚠ サブ課題確認未")
+                        else:
+                            st.caption("本日：出欠登録後に確認対象")
+
+                        _confirm_key = f"sub_undo_confirm_{sid}"
+                        _confirming_undo = bool(
+                            st.session_state.get(_confirm_key, False)
+                        )
+
+                        if not _confirming_undo:
+                            _sub_btn1, _sub_btn2, _sub_btn3 = st.columns(3)
+
+                            with _sub_btn1:
+                                if sub_state.get("is_active"):
+                                    if st.button(
+                                        "✅ サブ課題完了 → 次へ",
+                                        key=f"sub_progress_next_{sid}_{slot}_{i}",
+                                        help="現在表示されているサブ課題を完了として記録し、日別確認も完了にします。",
+                                    ):
+                                        _ok, _message = complete_and_confirm_sub_daily(
+                                            sid, today
+                                        )
+                                        st.session_state["sub_progress_flash"] = _message
+                                        st.session_state["sub_progress_flash_is_error"] = not _ok
+                                        st.rerun()
+
+                            with _sub_btn2:
+                                if (
+                                    sub_state.get("is_active")
+                                    and sub_daily_status == "pending"
+                                ):
+                                    if st.button(
+                                        "今日は実施なし",
+                                        key=f"sub_progress_skip_today_{sid}_{slot}_{i}",
+                                        help="今日はサブ課題を行わなかったことを確認済みにします。",
+                                    ):
+                                        _ok, _message = mark_sub_daily_skip(
+                                            sid, today
+                                        )
+                                        st.session_state["sub_progress_flash"] = _message
+                                        st.session_state["sub_progress_flash_is_error"] = not _ok
+                                        st.rerun()
+
+                            with _sub_btn3:
+                                if sub_state.get("has_latest_completion"):
+                                    if st.button(
+                                        "↩ 直前の完了を取り消す",
+                                        key=f"sub_progress_undo_open_{sid}_{slot}_{i}",
+                                        help="直前に完了したサブ課題を未完了へ戻します。確認後に実行されます。",
+                                    ):
+                                        st.session_state[_confirm_key] = True
+                                        st.rerun()
+
+                        else:
+                            _undo_item_name = str(
+                                sub_state.get("latest_item_name", "")
+                            ).strip()
+                            _undo_completed_at = str(
+                                sub_state.get("latest_completed_at", "")
+                            ).strip()
+                            _undo_when = (
+                                f"（登録：{_undo_completed_at}）"
+                                if _undo_completed_at
                                 else ""
                             )
-                        )
-                    elif sub_daily_status == "pending":
-                        st.warning("本日：⚠ サブ課題確認未")
-                    else:
-                        st.caption("本日：出欠登録後に確認対象")
 
-                    _confirm_key = f"sub_undo_confirm_{sid}"
-                    _confirming_undo = bool(
-                        st.session_state.get(_confirm_key, False)
-                    )
+                            st.warning(
+                                f"「{_undo_item_name}」の完了{_undo_when}を取り消し、"
+                                "この項目へ戻します。"
+                            )
 
-                    if not _confirming_undo:
-                        _sub_btn1, _sub_btn2, _sub_btn3 = st.columns(3)
+                            _undo_confirm_col, _undo_cancel_col = st.columns(2)
 
-                        with _sub_btn1:
-                            if sub_state.get("is_active"):
+                            with _undo_confirm_col:
                                 if st.button(
-                                    "✅ サブ課題完了 → 次へ",
-                                    key=f"sub_progress_next_{sid}_{slot}_{i}",
-                                    help="現在表示されているサブ課題を完了として記録し、日別確認も完了にします。",
+                                    "取り消して戻す",
+                                    key=f"sub_progress_undo_confirm_{sid}_{slot}_{i}",
+                                    type="primary",
                                 ):
-                                    _ok, _message = complete_and_confirm_sub_daily(
-                                        sid, today
-                                    )
-                                    st.session_state["sub_progress_flash"] = _message
-                                    st.session_state["sub_progress_flash_is_error"] = not _ok
-                                    st.rerun()
-
-                        with _sub_btn2:
-                            if (
-                                sub_state.get("is_active")
-                                and sub_daily_status == "pending"
-                            ):
-                                if st.button(
-                                    "今日は実施なし",
-                                    key=f"sub_progress_skip_today_{sid}_{slot}_{i}",
-                                    help="今日はサブ課題を行わなかったことを確認済みにします。",
-                                ):
-                                    _ok, _message = mark_sub_daily_skip(
-                                        sid, today
-                                    )
-                                    st.session_state["sub_progress_flash"] = _message
-                                    st.session_state["sub_progress_flash_is_error"] = not _ok
-                                    st.rerun()
-
-                        with _sub_btn3:
-                            if sub_state.get("has_latest_completion"):
-                                if st.button(
-                                    "↩ 直前の完了を取り消す",
-                                    key=f"sub_progress_undo_open_{sid}_{slot}_{i}",
-                                    help="直前に完了したサブ課題を未完了へ戻します。確認後に実行されます。",
-                                ):
-                                    st.session_state[_confirm_key] = True
-                                    st.rerun()
-
-                    else:
-                        _undo_item_name = str(
-                            sub_state.get("latest_item_name", "")
-                        ).strip()
-                        _undo_completed_at = str(
-                            sub_state.get("latest_completed_at", "")
-                        ).strip()
-                        _undo_when = (
-                            f"（登録：{_undo_completed_at}）"
-                            if _undo_completed_at
-                            else ""
-                        )
-
-                        st.warning(
-                            f"「{_undo_item_name}」の完了{_undo_when}を取り消し、"
-                            "この項目へ戻します。"
-                        )
-
-                        _undo_confirm_col, _undo_cancel_col = st.columns(2)
-
-                        with _undo_confirm_col:
-                            if st.button(
-                                "取り消して戻す",
-                                key=f"sub_progress_undo_confirm_{sid}_{slot}_{i}",
-                                type="primary",
-                            ):
-                                _latest_completed_at_before_undo = str(
-                                    sub_state.get("latest_completed_at", "")
-                                ).strip()
-                                _ok, _message = undo_latest_student_sub_completion(sid)
-                                if _ok and _latest_completed_at_before_undo:
-                                    _undo_date = pd.to_datetime(
-                                        _latest_completed_at_before_undo,
-                                        errors="coerce",
-                                    )
-                                    if pd.notna(_undo_date):
-                                        reconcile_sub_daily_after_undo(
-                                            sid,
-                                            _undo_date.strftime("%Y-%m-%d"),
+                                    _latest_completed_at_before_undo = str(
+                                        sub_state.get("latest_completed_at", "")
+                                    ).strip()
+                                    _ok, _message = undo_latest_student_sub_completion(sid)
+                                    if _ok and _latest_completed_at_before_undo:
+                                        _undo_date = pd.to_datetime(
+                                            _latest_completed_at_before_undo,
+                                            errors="coerce",
                                         )
-                                st.session_state[_confirm_key] = False
-                                st.session_state["sub_progress_flash"] = _message
-                                st.session_state["sub_progress_flash_is_error"] = not _ok
-                                st.rerun()
+                                        if pd.notna(_undo_date):
+                                            reconcile_sub_daily_after_undo(
+                                                sid,
+                                                _undo_date.strftime("%Y-%m-%d"),
+                                            )
+                                    st.session_state[_confirm_key] = False
+                                    st.session_state["sub_progress_flash"] = _message
+                                    st.session_state["sub_progress_flash_is_error"] = not _ok
+                                    st.rerun()
 
-                        with _undo_cancel_col:
-                            if st.button(
-                                "やめる",
-                                key=f"sub_progress_undo_cancel_{sid}_{slot}_{i}",
-                            ):
-                                st.session_state[_confirm_key] = False
-                                st.rerun()
+                            with _undo_cancel_col:
+                                if st.button(
+                                    "やめる",
+                                    key=f"sub_progress_undo_cancel_{sid}_{slot}_{i}",
+                                ):
+                                    st.session_state[_confirm_key] = False
+                                    st.rerun()
 
                 if _show_today_candidate and memo:
                     st.caption(f"📝 {memo}")
@@ -11467,7 +11611,7 @@ if page == "閲覧":
 
                                 if _today_hint_for_att:
                                     st.success(f"🎯 今日やる予定：{_today_hint_for_att}")
-                                if _today_sub_for_att:
+                                if _today_sub_for_att and not is_feature_paused("subtask", today):
                                     st.caption(f"➕ {_today_sub_for_att}")
 
                                 # d395: 授業準備の確認をこのカード内で完結しやすくするため、
@@ -11906,7 +12050,7 @@ if page == "閲覧":
                 )
 
             # 今日出席登録済みの生徒を抽出
-            typing_att_today = typing_att_df.copy()
+            typing_att_today = feature_running_rows(typing_att_df, "typing", "date")
             for _c in ["date", "student_id", "kind", "memo"]:
                 if _c not in typing_att_today.columns:
                     typing_att_today[_c] = ""
@@ -12074,7 +12218,7 @@ if page == "閲覧":
                             _status = str((_rec or {}).get("status", "")).strip().lower()
                             if _status in ["done", "skip"]:
                                 _past_done.append((_sid, _rec))
-                            else:
+                            elif not is_feature_paused("typing", _past_date):
                                 _past_pending.append(_sid)
 
                         if _past_pending:
@@ -23474,7 +23618,18 @@ elif page == "管理（入力）":
                             return (int(match.group()) if match else float("inf"), str(value))
 
                         for week_slot in sorted(week_slots, key=_calendar_slot_sort_key):
-                            st.markdown(f"**{week_slot}コマ**" if week_slot else "**コマ未設定**")
+                            # コマ見出し自身に週情報を添える。固定表示や他要素へのCSSは使わない。
+                            from html import escape
+                            slot_heading = f"{week_slot}コマ" if week_slot else "コマ未設定"
+                            st.markdown(
+                                '<div style="border-top:2px solid rgba(128,128,128,0.45);'
+                                'padding-top:10px;display:flex;flex-wrap:wrap;align-items:baseline;'
+                                'gap:4px 12px;">'
+                                f'<strong>{escape(slot_heading)}</strong>'
+                                '<span style="font-size:0.875rem;opacity:0.7;">'
+                                f'{week_start_label}〜{week_end_label}（第{week_no}週）</span></div>',
+                                unsafe_allow_html=True,
+                            )
                             slot_day_cols = st.columns(7)
                             for i, day_date in enumerate(week):
                                 with slot_day_cols[i]:
@@ -24083,10 +24238,37 @@ elif page == "管理（入力）":
         # システム設定内も、選択していない画面を実行しない。
         system_section = st.radio(
             "設定項目",
-            ["🗓️ 固定予定（全件保守・メモ編集）", "⏱ コマ時間"],
+            ["🗓️ 固定予定（全件保守・メモ編集）", "⏱ コマ時間", "運用設定"],
             horizontal=True,
             key="system_section_selector",
         )
+
+        if system_section == "運用設定":
+            st.markdown("### 運用設定")
+            st.caption("機能全体を一時停止・再開します。生徒別設定ではありません。割当・進行位置・履歴は削除されません。")
+            pause_periods = load_feature_pause_periods()
+            for feature, feature_label in [("subtask", "サブ課題"), ("typing", "タイピング")]:
+                st.markdown(f"**{feature_label}**")
+                paused = is_feature_paused(feature, date.today(), periods_df=pause_periods)
+                feature_periods = pause_periods.loc[pause_periods["feature"].eq(feature)]
+                if paused:
+                    active_periods = feature_periods.loc[
+                        feature_periods["pause_start"].le(str(date.today()))
+                        & (feature_periods["resume_date"].eq("") | feature_periods["resume_date"].gt(str(date.today())))
+                    ]
+                    st.caption(f"状態：一時停止中（{active_periods.iloc[-1]['pause_start']}〜）")
+                else:
+                    st.caption("状態：運用中")
+                if st.button("再開する" if paused else "一時停止する", key=f"feature_pause_{feature}"):
+                    try:
+                        set_feature_paused(feature, not paused, date.today())
+                    except ValueError as exc:
+                        st.error(f"運用設定を保存できません: {exc}")
+                    else:
+                        st.rerun()
+                with st.expander(f"{feature_label}の停止期間履歴", expanded=False):
+                    st.caption("停止開始日を含み、再開日から運用します。同日停止・再開は停止0日です。")
+                    st.dataframe(feature_periods.rename(columns={"pause_start": "停止開始日", "resume_date": "再開日（空欄は停止中）"}), hide_index=True, use_container_width=True)
 
         # ===== student_schedule.csv =====
         if system_section == "🗓️ 固定予定（全件保守・メモ編集）":

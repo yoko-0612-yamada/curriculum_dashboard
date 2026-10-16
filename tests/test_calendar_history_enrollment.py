@@ -47,7 +47,9 @@ class CalendarHistoryUiTests(unittest.TestCase):
         cards=[m.value for m in at.markdown if '<div title=' in m.value and '退会済み架空' in m.value]
         self.assertEqual(len(cards),4)
         self.assertTrue(any('line-through' in c for c in cards))
-        self.assertIn('**1コマ**',html);self.assertIn('**2コマ**',html)
+        self.assertIn('<strong>1コマ</strong>',html);self.assertIn('<strong>2コマ</strong>',html)
+        self.assertIn('10/01〜10/04（第1週）',html)
+        self.assertIn('border-top:2px solid rgba(128,128,128,0.45)',html)
         # The first week's effective totals exclude both cancellation and Oct 4 history.
         self.assertTrue(any('授業1 / 自習1' in w.label for w in at.toggle))
         picks = [b for b in at.button if b.label=='選択']
