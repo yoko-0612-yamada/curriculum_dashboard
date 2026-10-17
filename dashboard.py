@@ -822,6 +822,32 @@ def load_kentei_results() -> pd.DataFrame:
 def save_kentei_results(df: pd.DataFrame) -> None:
     write_csv_atomic(df, KENTEI_RESULTS_CSV)
 
+def kentei_result_status_for_exam(results_df: pd.DataFrame, student_id: str, grade: str, exam_date) -> str:
+    """保存済み結果を生徒・級・受験日で照合する（履歴は変更しない）。"""
+    sid, grade = str(student_id).strip(), str(grade).strip()
+    if not grade:
+        return "級未設定"
+    if results_df.empty:
+        return "未登録"
+    same_grade = results_df[
+        results_df["student_id"].fillna("").astype(str).str.strip().eq(sid)
+        & results_df["grade"].fillna("").astype(str).str.strip().eq(grade)
+    ]
+    if same_grade.empty:
+        return "未登録"
+    target = pd.to_datetime(str(exam_date).strip(), errors="coerce")
+    if pd.notna(target):
+        # 各値を個別に変換し、混在した日付表記も同じ日として比較する。
+        dates = same_grade["pass_date"].map(
+            lambda value: pd.to_datetime(str(value).strip(), errors="coerce")
+        )
+        matched = same_grade[dates.map(lambda value: pd.notna(value) and value.date() == target.date())]
+        if not matched.empty:
+            result = str(matched.iloc[-1].get("result", "合格")).strip() or "合格"
+            return f"登録済み（{result}）"
+    return "同じ級の受験履歴あり"
+
+
 # [KEEP 2026-04-23] このファイル内で参照あり。現時点では使用中として維持。
 def is_kentei_passed(student_id: str, grade: str, *, results_df: pd.DataFrame | None = None) -> bool:
     df = load_kentei_results() if results_df is None else results_df
@@ -4345,11 +4371,11 @@ def _active_sub_snapshot(student_id: str, *, progress_df: pd.DataFrame | None = 
     return state
 
 
-def get_sub_daily_check_row(student_id: str, d) -> dict:
+def get_sub_daily_check_row(student_id: str, d, *, checks_df: pd.DataFrame | None = None) -> dict:
     """date×student_id の日別確認を1件返す。"""
     sid = str(student_id).strip()
     dstr = _sub_check_date_str(d)
-    df = load_sub_daily_check()
+    df = load_sub_daily_check() if checks_df is None else checks_df
     if df.empty:
         return {}
 
@@ -8564,6 +8590,10 @@ if page == "閲覧":
     # =========================================================
 
 
+    # 閲覧画面の表示用スナップショット。保存処理側の再読込は維持する。
+    _view_kentei_results = load_kentei_results()
+    _view_kentei_training = load_kentei_training_status()
+
     kentei_alert_rows = []
     
     name_map = {
@@ -8587,7 +8617,7 @@ if page == "閲覧":
         exam_sched = exam_sched[exam_sched["exam_date"] != ""].copy()
 
         # 結果側
-        kentei_df = load_kentei_results().copy()
+        kentei_df = _view_kentei_results.copy()
         if not kentei_df.empty:
             for c in ["student_id", "grade", "pass_date"]:
                 if c not in kentei_df.columns:
@@ -8608,20 +8638,13 @@ if page == "閲覧":
                 continue
 
 
-            # 今日以前だけ
-            if exam_date > today_str:
+            # 個別画面と同じ受験単位で照合。未来・不正な予定日は対象外。
+            exam_day = pd.to_datetime(exam_date, errors="coerce")
+            if pd.isna(exam_day) or exam_day.date() > date.today():
                 continue
-
-
-            # student_id + grade で結果を確認
-            has_result = False
-            if not kentei_df.empty:
-                chk = kentei_df[
-                    (kentei_df["student_id"].astype(str).str.strip() == sid) &
-                    (kentei_df["grade"].astype(str).str.strip() == grade)
-                ]
-                if not chk.empty:
-                    has_result = True
+            has_result = kentei_result_status_for_exam(
+                kentei_df, sid, grade, exam_date
+            ).startswith("登録済み")
 
 
             if not has_result:
@@ -8722,7 +8745,7 @@ if page == "閲覧":
         
     kentei_hint_map = {}
     try:
-        kentei_df = load_kentei_results()
+        kentei_df = _view_kentei_results
         if not kentei_df.empty:
             score_src = kentei_df.copy()
 
@@ -9979,6 +10002,14 @@ if page == "閲覧":
             except Exception:
                 return "未配置"
 
+        # この画面構築内だけで共有。準備メモの保存・削除後は直ちにrerunする。
+        _today_prep_df = load_prep_memo().copy()
+
+        # 自動同期後のカード表示内だけで共有。操作後は既存どおりrerunする。
+        # 停止中・候補なしの場合は読み込まない。
+        _today_sub_progress_df = None
+        _today_sub_checks_df = None
+
         st.subheader("👀 次に見る候補")
 
 
@@ -10020,7 +10051,7 @@ if page == "閲覧":
                 if not name:
                     name = sid
 
-                prep_df = load_prep_memo().copy()
+                prep_df = _today_prep_df
                 memo_row = prep_df[prep_df["student_id"].astype(str).str.strip() == sid]
 
 
@@ -10202,9 +10233,9 @@ if page == "閲覧":
                     except Exception as _e:
                         return f"通常：次課題確認エラー {_e}"
 
-                def _passed_kentei_grades_for_student(_sid: str) -> set:
+                def _passed_kentei_grades_for_student(_sid: str, *, results_df=None) -> set:
                     try:
-                        _res = load_kentei_results().copy()
+                        _res = (load_kentei_results() if results_df is None else results_df).copy()
                         if _res.empty:
                             return set()
                         for _c in ["student_id", "grade"]:
@@ -10323,16 +10354,16 @@ if page == "閲覧":
                     except Exception as _e:
                         return f"検定：次課題確認エラー {_e}"
 
-                def _today_task_hint(_sid: str) -> str:
+                def _today_task_hint(_sid: str, *, results_df=None, training_df=None) -> str:
                     # 検定練習中フラグON、または未合格の検定予定がある場合は検定を優先。
                     # それ以外は通常カリキュラムを表示する。
                     try:
                         _sid = str(_sid).strip()
                         # 合格級の取得・正規化・生徒抽出は、このヒント生成内だけで共有する。
-                        _passed = _passed_kentei_grades_for_student(_sid)
+                        _passed = _passed_kentei_grades_for_student(_sid, results_df=results_df)
                         _grade = _recommended_kentei_grade_for_candidate(_sid, passed_grades=_passed)
 
-                        _hint_training = load_kentei_training_status()
+                        _hint_training = load_kentei_training_status() if training_df is None else training_df
                         _is_training = is_kentei_training_active(_sid, training_df=_hint_training)
                         _training_grade = get_kentei_training_grade(_sid, training_df=_hint_training)
                         if _is_training and _training_grade:
@@ -10380,7 +10411,9 @@ if page == "閲覧":
                 elif _candidate_is_selfstudy:
                     _today_hint_text = "自習（通常課題の準備対象外）"
                 else:
-                    task_hint = _today_task_hint(sid)
+                    task_hint = _today_task_hint(
+                        sid, results_df=_view_kentei_results, training_df=_view_kentei_training
+                    )
                     if task_hint:
                         _today_hint_text = task_hint
 
@@ -10426,8 +10459,12 @@ if page == "閲覧":
                 if not is_feature_paused("subtask", today):
                     # d300:
                     # サブ課題の現在位置に加え、日別確認の pending / done / skip を表示する。
-                    # 隣接する表示判定だけで共有し、保存操作・次の生徒へは持ち越さない。
-                    _sub_progress_for_row = load_student_sub_progress()
+                    # 保存を挟まないカード間で共有し、保存処理には渡さない。
+                    if _today_sub_progress_df is None:
+                        _today_sub_progress_df = load_student_sub_progress()
+                    if _today_sub_checks_df is None:
+                        _today_sub_checks_df = load_sub_daily_check()
+                    _sub_progress_for_row = _today_sub_progress_df
                     _sub_masters_for_row = _sub_items_for_row = _sub_log_for_row = None
                     _sub_hit_for_row = _sub_progress_for_row[
                         _sub_progress_for_row["student_id"].astype(str).str.strip().eq(str(sid).strip())
@@ -10444,7 +10481,7 @@ if page == "閲覧":
                         sid, progress_df=_sub_progress_for_row, masters_df=_sub_masters_for_row,
                         items_df=_sub_items_for_row,
                     )
-                    sub_daily_state = get_sub_daily_check_row(sid, today)
+                    sub_daily_state = get_sub_daily_check_row(sid, today, checks_df=_today_sub_checks_df)
                     sub_daily_status = str(
                         sub_daily_state.get("status", "")
                     ).strip().lower()
@@ -10621,7 +10658,7 @@ if page == "閲覧":
         # 次の準備メモ（簡易版）
         # =====================================================
         st.subheader("📝 次の準備メモ")
-        prep_df = load_prep_memo().copy()
+        prep_df = _today_prep_df
 
 
         # 今日の生徒候補
@@ -11593,7 +11630,7 @@ if page == "閲覧":
                                 st.caption(badge)
 
                                # 準備メモ表示
-                                prep_df_card = load_prep_memo().copy()
+                                prep_df_card = _today_prep_df
                                 sid_str = str(sid).strip()
 
                                 memo_row = prep_df_card[
@@ -12864,7 +12901,7 @@ if page == "閲覧":
     # =========================================================
     # Scratch最高級（唯一の正: kentei_results.csv）
     # =========================================================
-    kentei_results = load_kentei_results().copy()
+    kentei_results = _view_kentei_results.copy()
 
 
     scratch_best = pd.DataFrame(columns=["student_id", "grade", "display_name", "item"])
@@ -14280,7 +14317,7 @@ if page == "閲覧":
             _passed_grades = set()
             _results_for_grade = None
             try:
-                _results_for_grade = load_kentei_results().copy()
+                _results_for_grade = _view_kentei_results.copy()
                 if not _results_for_grade.empty:
                     for _c in ["student_id", "grade"]:
                         if _c not in _results_for_grade.columns:
@@ -14367,7 +14404,7 @@ if page == "閲覧":
             # d250:
             # 検定練習中フラグがONで級が保存されている場合は、その級を推奨級として扱う。
             # この描画内だけ共有する。以下の保存操作後は既存どおりrerunする。
-            _training_for_view = load_kentei_training_status()
+            _training_for_view = _view_kentei_training
             _training_active_for_student = is_kentei_training_active(student_id, training_df=_training_for_view)
             _training_grade_for_student = get_kentei_training_grade(student_id, training_df=_training_for_view)
             if _training_active_for_student and _training_grade_for_student in grade_options:
@@ -14744,7 +14781,7 @@ if page == "閲覧":
             # =========================================================
             with st.expander("🎓 検定 合格登録（B方式）", expanded=True):
                 # kentei_results.csv を合格判定の唯一の正にする
-                results_df = load_kentei_results().copy()
+                results_df = _view_kentei_results.copy()
 
                 # 対象生徒：左フィルタで選ばれていれば固定、なければ選択
                 if selected_student == "（全員）":
@@ -14807,34 +14844,11 @@ if page == "閲覧":
                         ] = "合格"
 
                         def _kentei_result_status(_r):
-                            _g = str(_r.get("grade", "")).strip()
-                            _d = str(_r.get("_exam_date_str", "")).strip()
-                            if not _g:
-                                return "級未設定"
-                            if _results_chk.empty:
-                                return "未登録"
-                            _same_grade = _results_chk[
-                                (_results_chk["student_id"].astype(str).str.strip() == student_for_pass)
-                                & (_results_chk["grade"].astype(str).str.strip() == _g)
-                            ].copy()
-                            if _same_grade.empty:
-                                return "未登録"
-                            if _d:
-                                _same_date = _same_grade[
-                                    _same_grade["pass_date"]
-                                    .astype(str)
-                                    .str.strip()
-                                    .eq(_d)
-                                ]
-                                if not _same_date.empty:
-                                    _result_value = str(
-                                        _same_date.iloc[-1].get(
-                                            "result",
-                                            "合格",
-                                        )
-                                    ).strip() or "合格"
-                                    return f"登録済み（{_result_value}）"
-                            return "同じ級の受験履歴あり"
+                            return kentei_result_status_for_exam(
+                                _results_chk, student_for_pass,
+                                str(_r.get("grade", "")).strip(),
+                                _r.get("_exam_date_str", ""),
+                            )
 
                         _exam_for_pass["状態"] = _exam_for_pass.apply(_kentei_result_status, axis=1)
 
