@@ -683,18 +683,21 @@ st.markdown(
     """
     <style>
     .st-key-page_widget [role="radiogroup"],
-    .st-key-view_mode_group [role="radiogroup"] {
+    .st-key-view_mode_group [role="radiogroup"],
+    .st-key-daily_input_mode [role="radiogroup"] {
         gap: 8px;
     }
     .st-key-page_widget [role="radiogroup"] label,
-    .st-key-view_mode_group [role="radiogroup"] label {
+    .st-key-view_mode_group [role="radiogroup"] label,
+    .st-key-daily_input_mode [role="radiogroup"] label {
         min-height: 44px;
         box-sizing: border-box;
         padding: 4px 8px;
         margin: 0;
     }
     .st-key-page_widget [role="radiogroup"] label p,
-    .st-key-view_mode_group [role="radiogroup"] label p {
+    .st-key-view_mode_group [role="radiogroup"] label p,
+    .st-key-daily_input_mode [role="radiogroup"] label p {
         font-size: 18px;
         line-height: 1.5;
     }
@@ -7963,6 +7966,48 @@ def render_integrated_seat_view(monthly_schedule):
         st.rerun()
 
 if page == "閲覧":
+    daily_view_options = ["カリキュラム課題", "検定課題"]
+    check_view_options = [
+        "未来予測（試算）",
+        "コース別（件数）",
+        "Scratch検定一覧",
+        "生徒ごと一覧",
+        "生徒別（done）",
+        "詳細（最新状態）",
+    ]
+    all_view_options = daily_view_options + check_view_options
+
+    # 他ボタンから「カリキュラム課題へ寄せる」などが来た場合に反映
+    pending_view_mode = str(st.session_state.pop("sidebar_view_mode", "") or "").strip()
+    if pending_view_mode in all_view_options:
+        st.session_state["view_mode_trial"] = pending_view_mode
+        st.session_state["view_mode_group"] = (
+            "毎日使う：進捗登録" if pending_view_mode in daily_view_options else "たまに見る：確認・一覧"
+        )
+
+    current_view_mode = str(st.session_state.get("view_mode_trial", "カリキュラム課題"))
+    default_group = "毎日使う：進捗登録" if current_view_mode in daily_view_options else "たまに見る：確認・一覧"
+
+    view_group = view_mode_container.radio(
+        "閲覧モード",
+        ["毎日使う：進捗登録", "たまに見る：確認・一覧"],
+        index=0 if default_group == "毎日使う：進捗登録" else 1,
+        horizontal=False,
+        format_func=lambda value: "進捗登録" if value == "毎日使う：進捗登録" else "確認・一覧",
+        key="view_mode_group",
+    )
+
+    # 詳細カードを描画する前に入力モードを確定する。
+    if "pending_input_mode" in st.session_state:
+        st.session_state["daily_input_mode"] = st.session_state.pop("pending_input_mode")
+    if view_group == "毎日使う：進捗登録":
+        daily_input_mode = view_mode_container.radio(
+            "入力モード", ["出席登録", "進捗登録"], key="daily_input_mode",
+        )
+        view_mode_container.caption("切替前に出欠を保存してください。未保存の出欠入力は切替でリセットされます。")
+    else:
+        daily_input_mode = "出席登録"  # 確認・一覧側の既存表示は変更しない。
+
     # Sidebar filters
     # =========================================================
     st.markdown("""
@@ -9267,6 +9312,7 @@ if page == "閲覧":
                     target_name = name if name else sid
                     # サイドバー側は pending_sidebar_student を見ているため、このキーに合わせる。
                     st.session_state["pending_sidebar_student"] = target_name
+                    st.session_state["pending_input_mode"] = "進捗登録"
                     # d251:
                     # 「この生徒」から開く時も、検定練習中/未合格の検定予定があれば検定課題へ寄せる。
                     # それ以外は通常カリキュラム課題へ寄せる。
@@ -9771,7 +9817,12 @@ if page == "閲覧":
         today_display_error = str(e)
         st.error(f"今日の表示を作成できません。在籍日付を確認してください: {e}")
 
+    # 表示用ヒントは今回の候補だけで再構築し、前回値を持ち越さない。
+    _today_task_hint_map = {}
+    _today_sub_hint_map = {}
     if today_view.empty:
+        st.session_state["today_task_hint_map"] = {}
+        st.session_state["today_sub_hint_map"] = {}
         st.info("今日の予定はありません。（月スケジュール / student_schedule.csv / schedule_overrides.csv を確認してね）")
     else:
         preparation_log_df = load_preparation_log().copy()
@@ -10010,6 +10061,52 @@ if page == "閲覧":
         _today_sub_progress_df = None
         _today_sub_checks_df = None
 
+        def _active_course_table():
+            _cc = curr_courses.copy()
+            for _c in ["course_id", "genre_id", "genre_name", "course_name", "course_order", "is_active"]:
+                if _c not in _cc.columns:
+                    _cc[_c] = ""
+                _cc[_c] = _cc[_c].fillna("").astype(str).str.strip()
+
+            _active = _cc["is_active"].astype(str).str.strip().str.lower()
+            _cc = _cc[_active.replace("", "true").isin(["true", "1", "yes"])].copy()
+            _cc["_order_num"] = pd.to_numeric(_cc["course_order"], errors="coerce").fillna(9999)
+
+            # 現場で見やすい順。d236の考え方に合わせる。
+            def _course_priority(_row):
+                _cid = str(_row.get("course_id", "")).strip().lower()
+                _cname = str(_row.get("course_name", "")).strip().lower()
+                _gname = str(_row.get("genre_name", "")).strip().lower()
+                _joined = f"{_cid} {_cname} {_gname}"
+                if _cid == "sc_l" or "sc_l" in _joined or "scratch_l" in _joined:
+                    return 0
+                if _cid == "sc_h" or "sc_h" in _joined or "scratch_h" in _joined:
+                    return 1
+                if "scratch" in _joined or "スクラッチ" in _joined:
+                    return 2
+                if "html" in _joined:
+                    return 10
+                if "javascript" in _joined or "java script" in _joined or _cid in ["js", "javascript"]:
+                    return 11
+                if "python" in _joined:
+                    return 20
+                if "unity" in _joined:
+                    return 21
+                return 99
+
+            _cc["_ui_priority"] = _cc.apply(_course_priority, axis=1)
+            return _cc.sort_values(
+                ["_ui_priority", "_order_num", "genre_name", "course_name"],
+                na_position="last"
+            ).copy()
+
+        # 生徒に依存しないコース表だけを、この画面構築内で共有する。
+        # 作成エラーは従来どおり通常課題ヒント内で表示する。
+        try:
+            _today_active_courses = _active_course_table()
+        except Exception as _course_table_error:
+            _today_active_courses = _course_table_error
+
         st.subheader("👀 次に見る候補")
 
 
@@ -10021,7 +10118,12 @@ if page == "閲覧":
             else:
                 st.success(_sub_progress_flash)
 
-        # 並び順・共有ヒントは従来どおり計算し、画面に出す行だけを制限する。
+        # 候補一覧は全体を維持。進捗モードの詳細ヒントだけ選択生徒へ限定する。
+        _hint_selected_student_id = ""
+        if daily_input_mode == "進捗登録" and selected_student != "（全員）":
+            _hint_student = students[students["display_name"] == selected_student_raw].head(1)
+            if not _hint_student.empty:
+                _hint_selected_student_id = str(_hint_student["student_id"].iloc[0]).strip()
         today_display_candidates = filter_student_ids(next_candidates, today_display_ids)
         if today_display_candidates.empty and not today_display_error:
             st.caption("今日の予定：0人（今日時点の在籍対象なし）")
@@ -10038,8 +10140,6 @@ if page == "閲覧":
 
             # d393: 出席登録カードでも同じ「今日やる予定」を見られるよう、
             # 次に見る候補で算出した表示文を生徒IDごとに共有する。
-            _today_task_hint_map = {}
-            _today_sub_hint_map = {}
 
             _today_display_number = 0
             for i, (_, r) in enumerate(next_candidates.iterrows(), start=1):
@@ -10077,53 +10177,20 @@ if page == "閲覧":
                         f"{_today_exam_mark}{name} / {status}"
                     )
 
+                # 1人限定は予定行の省略ではない。同じ生徒の全コマを従来どおり処理する。
+                if daily_input_mode == "進捗登録" and (not _hint_selected_student_id or sid != _hint_selected_student_id):
+                    if _show_today_candidate and memo:
+                        st.caption(f"📝 {memo}")
+                    continue
+
                 # d245:
                 # まずは「次に見る候補」に、今日やる候補を1行だけ表示して検証する。
                 # 正しさの確認を優先し、細かい優先順位や例外処理は今後の違和感メモで調整する。
-                def _next_curriculum_task_hint(_sid: str) -> str:
+                def _next_curriculum_task_hint(_sid: str, *, active_courses=None) -> str:
                     try:
                         _sid = str(_sid).strip()
                         if not _sid:
                             return ""
-
-                        def _active_course_table():
-                            _cc = curr_courses.copy()
-                            for _c in ["course_id", "genre_id", "genre_name", "course_name", "course_order", "is_active"]:
-                                if _c not in _cc.columns:
-                                    _cc[_c] = ""
-                                _cc[_c] = _cc[_c].fillna("").astype(str).str.strip()
-
-                            _active = _cc["is_active"].astype(str).str.strip().str.lower()
-                            _cc = _cc[_active.replace("", "true").isin(["true", "1", "yes"])].copy()
-                            _cc["_order_num"] = pd.to_numeric(_cc["course_order"], errors="coerce").fillna(9999)
-
-                            # 現場で見やすい順。d236の考え方に合わせる。
-                            def _course_priority(_row):
-                                _cid = str(_row.get("course_id", "")).strip().lower()
-                                _cname = str(_row.get("course_name", "")).strip().lower()
-                                _gname = str(_row.get("genre_name", "")).strip().lower()
-                                _joined = f"{_cid} {_cname} {_gname}"
-                                if _cid == "sc_l" or "sc_l" in _joined or "scratch_l" in _joined:
-                                    return 0
-                                if _cid == "sc_h" or "sc_h" in _joined or "scratch_h" in _joined:
-                                    return 1
-                                if "scratch" in _joined or "スクラッチ" in _joined:
-                                    return 2
-                                if "html" in _joined:
-                                    return 10
-                                if "javascript" in _joined or "java script" in _joined or _cid in ["js", "javascript"]:
-                                    return 11
-                                if "python" in _joined:
-                                    return 20
-                                if "unity" in _joined:
-                                    return 21
-                                return 99
-
-                            _cc["_ui_priority"] = _cc.apply(_course_priority, axis=1)
-                            return _cc.sort_values(
-                                ["_ui_priority", "_order_num", "genre_name", "course_name"],
-                                na_position="last"
-                            ).copy()
 
                         def _course_name_for(_course_id: str) -> str:
                             _course_id = str(_course_id).strip()
@@ -10195,7 +10262,9 @@ if page == "閲覧":
 
                             return None
 
-                        _courses = _active_course_table()
+                        if isinstance(active_courses, Exception):
+                            raise active_courses
+                        _courses = _active_course_table() if active_courses is None else active_courses
                         if _courses.empty:
                             return ""
 
@@ -10354,7 +10423,7 @@ if page == "閲覧":
                     except Exception as _e:
                         return f"検定：次課題確認エラー {_e}"
 
-                def _today_task_hint(_sid: str, *, results_df=None, training_df=None) -> str:
+                def _today_task_hint(_sid: str, *, results_df=None, training_df=None, active_courses=None) -> str:
                     # 検定練習中フラグON、または未合格の検定予定がある場合は検定を優先。
                     # それ以外は通常カリキュラムを表示する。
                     try:
@@ -10388,7 +10457,9 @@ if page == "閲覧":
                         if _is_training or _has_unpassed_exam_schedule:
                             return _next_kentei_task_hint(_sid, _grade)
 
-                        return _next_curriculum_task_hint(_sid)
+                        if active_courses is None:
+                            return _next_curriculum_task_hint(_sid)
+                        return _next_curriculum_task_hint(_sid, active_courses=active_courses)
                     except Exception as _e:
                         return f"今日やる候補確認エラー {_e}"
 
@@ -10412,7 +10483,8 @@ if page == "閲覧":
                     _today_hint_text = "自習（通常課題の準備対象外）"
                 else:
                     task_hint = _today_task_hint(
-                        sid, results_df=_view_kentei_results, training_df=_view_kentei_training
+                        sid, results_df=_view_kentei_results, training_df=_view_kentei_training,
+                        active_courses=_today_active_courses,
                     )
                     if task_hint:
                         _today_hint_text = task_hint
@@ -10454,7 +10526,6 @@ if page == "閲覧":
                     if _should_replace:
                         _today_task_hint_map[_hint_key] = _today_hint_text
 
-                    st.session_state["today_task_hint_map"] = dict(_today_task_hint_map)
 
                 if not is_feature_paused("subtask", today):
                     # d300:
@@ -10506,7 +10577,6 @@ if page == "閲覧":
 
                     if _today_sub_text:
                         _today_sub_hint_map[str(sid).strip()] = _today_sub_text
-                        st.session_state["today_sub_hint_map"] = dict(_today_sub_hint_map)
 
                     _show_sub_controls = bool(
                         sub_state.get("configured")
@@ -10653,6 +10723,14 @@ if page == "閲覧":
 
 
             st.divider()
+
+        # 全候補の優先順位判定が完了してから、空の場合も含めて置き換える。
+        st.session_state["today_task_hint_map"] = {
+            sid: hint for sid, hint in _today_task_hint_map.items() if sid in today_display_ids
+        }
+        st.session_state["today_sub_hint_map"] = {
+            sid: hint for sid, hint in _today_sub_hint_map.items() if sid in today_display_ids
+        }
 
         # =====================================================
         # 次の準備メモ（簡易版）
@@ -11505,507 +11583,510 @@ if page == "閲覧":
                         if st.button(f"⚠ {label} を開く", key=f"jump_missing_{sid}"):
                             if nm:
                                 st.session_state["pending_sidebar_student"] = nm
+                                st.session_state["pending_input_mode"] = "進捗登録"
                                 st.rerun()
                                 
-                # d315:
-                # 確認済みの出欠も同じカードで編集し、「記録/更新」で上書きする。
-                # 修正方法を統一するため、「未登録に戻す」操作は廃止した。
-                show_done = st.checkbox(
-                    "確認済みを表示（修正・上書き可能）",
-                    value=False,
-                    key=f"att_show_done_{today}",
-                    help="ONにすると、記録済みの出欠を表示します。授業・自習・欠席を選び直して「出欠を保存／更新」を押すと上書きできます。",
-                )
+                if daily_input_mode == "出席登録":
+                    # d315:
+                    # 確認済みの出欠も同じカードで編集し、「記録/更新」で上書きする。
+                    # 修正方法を統一するため、「未登録に戻す」操作は廃止した。
+                    show_done = st.checkbox(
+                        "確認済みを表示（修正・上書き可能）",
+                        value=False,
+                        key=f"att_show_done_{today}",
+                        help="ONにすると、記録済みの出欠を表示します。授業・自習・欠席を選び直して「出欠を保存／更新」を押すと上書きできます。",
+                    )
 
-                # d299:
-                # 出欠登録後に自動で生徒画面へ寄せると便利だが、
-                # その分、課題画面の判定・表示切替も走りやすい。
-                # 忙しい日はOFFのまま保存だけにすると体感が軽い。
-                open_after_attendance_save = st.checkbox(
-                    "出欠登録後にこの生徒を自動で開く",
-                    value=False,
-                    key=f"att_open_after_save_{today}",
-                    help="通常OFF推奨。ONにすると、出欠登録後にその生徒の課題画面へ寄せます。",
-                )
+                    # d299:
+                    # 出欠登録後に自動で生徒画面へ寄せると便利だが、
+                    # その分、課題画面の判定・表示切替も走りやすい。
+                    # 忙しい日はOFFのまま保存だけにすると体感が軽い。
+                    open_after_attendance_save = st.checkbox(
+                        "出欠登録後にこの生徒を自動で開く",
+                        value=False,
+                        key=f"att_open_after_save_{today}",
+                        help="通常OFF推奨。ONにすると、出欠登録後にその生徒の課題画面へ寄せます。",
+                    )
 
-                st.markdown(f"**未確認：{len(pending_ids)}件**")
-                target_ids = pending_ids if not show_done else (pending_ids + done_ids)
-
-
-                if not target_ids:
-                    if today_display_error:
-                        st.info("日付エラーのため、新規の出席入力候補は表示していません。")
-                    else:
-                        st.success("未確認の出席記録はありません。")
-                else:
-                    for sid in target_ids:
-                        nm = name_map.get(sid, "")
-                        label = f"{sid}｜{nm}" if nm else sid
+                    st.markdown(f"**未確認：{len(pending_ids)}件**")
+                    target_ids = pending_ids if not show_done else (pending_ids + done_ids)
 
 
-                        rec = rec_map.get(sid)
-                        rec_kind = (rec.get("kind", "") if rec else "").strip()
-                        rec_memo = (rec.get("memo", "") if rec else "").strip()
-
-
-                        # d315: 授業・自習・欠席を同じ選択欄から登録／上書きする。
-                        kind_options = [
-                            ("lesson", "授業"),
-                            ("selfstudy", "自習"),
-                            ("absence", "欠席"),
-                        ]
-
-
-                        # 初期値の優先順
-                        # 1) 授業＋自習予定なら、授業回数カウントを守るため lesson を優先
-                        # 2) 既存の出席記録
-                        # 3) 今日の予定の種別（例外を含む）
-                        # 4) lesson
-                        default_kind = "lesson"
-
-                        planned_label = str(planned_kind_label_map.get(sid, "")).strip()
-                        planned_kind_for_sid = str(planned_kind_map.get(sid, "")).strip()
-
-                        # d256:
-                        # 授業＋自習なのに過去/既存ログが selfstudy になっていると、
-                        # 授業回数に入らず「0回→今日で1回目」のようなズレが出る。
-                        # 予定上「授業＋自習」の日は、既存 rec_kind が selfstudy でも lesson を優先する。
-                        is_lesson_and_selfstudy_plan = (
-                            planned_label == "授業＋自習"
-                            or (planned_kind_for_sid == "lesson" and rec_kind in ["selfstudy", "自習"])
-                        )
-
-                        if rec_kind in ["absence", "欠席", "cancel", "キャンセル"]:
-                            default_kind = "absence"
-                        elif is_lesson_and_selfstudy_plan:
-                            default_kind = "lesson"
-                        elif rec_kind in ["selfstudy", "自習"]:
-                            default_kind = "selfstudy"
-                        elif sid in planned_kind_map:
-                            default_kind = planned_kind_map[sid]
-
-
-
-                        month_lesson_cnt = count_month_lessons(att_df, sid, today)
-
-
-                        would_be = month_lesson_cnt
-                        _today_planned_lesson_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
-                        if rec is None:
-                            would_be = month_lesson_cnt + _today_planned_lesson_count
-
-
-                        badge = f"今月の授業実績回数：{month_lesson_cnt}回"
-                        if rec is None and _today_planned_lesson_count > 0:
-                            if _today_planned_lesson_count == 1:
-                                badge += f"（今日の授業後は {would_be}回）"
-                            else:
-                                badge += f"（今日 {_today_planned_lesson_count}回予定 → 授業後は {would_be}回）"
+                    if not target_ids:
+                        if today_display_error:
+                            st.info("日付エラーのため、新規の出席入力候補は表示していません。")
                         else:
-                            badge += "（本日は記録済み）"
+                            st.success("未確認の出席記録はありません。")
+                    else:
+                        for sid in target_ids:
+                            nm = name_map.get(sid, "")
+                            label = f"{sid}｜{nm}" if nm else sid
 
 
-                        with st.container():
-                            st.markdown("---")
-                            # d371: 準備作業中に見つけやすいよう「準備完了」を最左列へ。
-                            c1, c2, c3, c4, c5, c6 = st.columns([1.6, 3, 2, 3, 3, 2])
+                            rec = rec_map.get(sid)
+                            rec_kind = (rec.get("kind", "") if rec else "").strip()
+                            rec_memo = (rec.get("memo", "") if rec else "").strip()
 
 
-                            with c2:
-                                prefix = "🟡 未確認" if rec is None else "✅ 確認済み"
+                            # d315: 授業・自習・欠席を同じ選択欄から登録／上書きする。
+                            kind_options = [
+                                ("lesson", "授業"),
+                                ("selfstudy", "自習"),
+                                ("absence", "欠席"),
+                            ]
 
-                                if rec_kind in ["selfstudy", "self", "自習"]:
-                                    kind_text = "自習"
-                                elif rec_kind in ["absence", "欠席"]:
-                                    kind_text = "欠席"
-                                elif rec_kind in ["cancel", "キャンセル"]:
-                                    kind_text = "キャンセル"
-                                elif rec_kind in ["lesson", "授業"]:
-                                    kind_text = "授業"
+
+                            # 初期値の優先順
+                            # 1) 授業＋自習予定なら、授業回数カウントを守るため lesson を優先
+                            # 2) 既存の出席記録
+                            # 3) 今日の予定の種別（例外を含む）
+                            # 4) lesson
+                            default_kind = "lesson"
+
+                            planned_label = str(planned_kind_label_map.get(sid, "")).strip()
+                            planned_kind_for_sid = str(planned_kind_map.get(sid, "")).strip()
+
+                            # d256:
+                            # 授業＋自習なのに過去/既存ログが selfstudy になっていると、
+                            # 授業回数に入らず「0回→今日で1回目」のようなズレが出る。
+                            # 予定上「授業＋自習」の日は、既存 rec_kind が selfstudy でも lesson を優先する。
+                            is_lesson_and_selfstudy_plan = (
+                                planned_label == "授業＋自習"
+                                or (planned_kind_for_sid == "lesson" and rec_kind in ["selfstudy", "自習"])
+                            )
+
+                            if rec_kind in ["absence", "欠席", "cancel", "キャンセル"]:
+                                default_kind = "absence"
+                            elif is_lesson_and_selfstudy_plan:
+                                default_kind = "lesson"
+                            elif rec_kind in ["selfstudy", "自習"]:
+                                default_kind = "selfstudy"
+                            elif sid in planned_kind_map:
+                                default_kind = planned_kind_map[sid]
+
+
+
+                            month_lesson_cnt = count_month_lessons(att_df, sid, today)
+
+
+                            would_be = month_lesson_cnt
+                            _today_planned_lesson_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
+                            if rec is None:
+                                would_be = month_lesson_cnt + _today_planned_lesson_count
+
+
+                            badge = f"今月の授業実績回数：{month_lesson_cnt}回"
+                            if rec is None and _today_planned_lesson_count > 0:
+                                if _today_planned_lesson_count == 1:
+                                    badge += f"（今日の授業後は {would_be}回）"
                                 else:
-                                    kind_text = planned_kind_label_map.get(sid, "授業" if default_kind == "lesson" else "自習")
-
-                                kind_badge = f"📘 {kind_text}" if "授業" in kind_text else f"🟡 {kind_text}"
-                                st.markdown(f"**{prefix}｜{kind_badge}｜👤 {label}**")
-                                st.caption(badge)
-
-                               # 準備メモ表示
-                                prep_df_card = _today_prep_df
-                                sid_str = str(sid).strip()
-
-                                memo_row = prep_df_card[
-                                    prep_df_card["student_id"].astype(str).str.strip() == sid_str
-                                ]
-
-                                memo = ""
-                                if not memo_row.empty:
-                                    memo = str(memo_row.iloc[0]["memo"]).strip()
-
-                                if memo:
-                                    st.info(f"📝 次の準備：{memo}")
-
-                                # d393: 「準備完了」のすぐ横で今日やる予定を確認できるようにする。
-                                # 「次に見る候補」と同じ算出結果を使うため、二重管理にならない。
-                                _today_hint_for_att = str(
-                                    st.session_state.get("today_task_hint_map", {}).get(sid_str, "")
-                                ).strip()
-                                _today_sub_for_att = str(
-                                    st.session_state.get("today_sub_hint_map", {}).get(sid_str, "")
-                                ).strip()
-
-                                if _today_hint_for_att:
-                                    st.success(f"🎯 今日やる予定：{_today_hint_for_att}")
-                                if _today_sub_for_att and not is_feature_paused("subtask", today):
-                                    st.caption(f"➕ {_today_sub_for_att}")
-
-                                # d395: 授業準備の確認をこのカード内で完結しやすくするため、
-                                # 今日の予定コマごとの座席番号も表示する。
-                                # 授業＋自習など複数コマがある場合は、各コマをまとめて表示する。
-                                _seat_parts_for_att = []
-                                try:
-                                    _seat_rows_for_att = today_view[
-                                        today_view["student_id"].astype(str).str.strip() == sid_str
-                                    ].copy()
-                                    _seen_seat_slots_for_att = set()
-                                    for _, _seat_r_for_att in _seat_rows_for_att.iterrows():
-                                        _seat_slot_for_att = normalize_slot(_seat_r_for_att.get("slot", ""))
-                                        if not _seat_slot_for_att or _seat_slot_for_att in _seen_seat_slots_for_att:
-                                            continue
-                                        _seen_seat_slots_for_att.add(_seat_slot_for_att)
-                                        _seat_label_for_att = _seat_label_for_today_candidate(
-                                            sid_str, _seat_slot_for_att
-                                        )
-                                        if _seat_label_for_att == "未配置":
-                                            _seat_display_for_att = "未配置"
-                                        elif _seat_label_for_att == "使用予定":
-                                            _seat_display_for_att = "使用予定"
-                                        else:
-                                            _seat_display_for_att = f"席{_seat_label_for_att}"
-                                        _seat_parts_for_att.append(
-                                            f"{_seat_slot_for_att}コマ：{_seat_display_for_att}"
-                                        )
-                                except Exception:
-                                    _seat_parts_for_att = []
-
-                                if _seat_parts_for_att:
-                                    st.caption("🪑 今日の座席：" + " / ".join(_seat_parts_for_att))
-                                else:
-                                    st.caption("🪑 今日の座席：未配置")
-
-                                # d256:
-                                # 既存の出欠ログが selfstudy だが、予定は授業＋自習の場合は警告する。
-                                # 「記録/更新」を押すと、種別が lesson として保存され、授業回数に入る。
-                                if (
-                                    rec_kind in ["selfstudy", "自習"]
-                                    and str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習"
-                                ):
-                                    st.warning("⚠ 授業＋自習予定ですが、出欠ログは自習として保存されています。記録/更新で授業扱いに直せます。")
+                                    badge += f"（今日 {_today_planned_lesson_count}回予定 → 授業後は {would_be}回）"
+                            else:
+                                badge += "（本日は記録済み）"
 
 
-
-                            with c1:
-                                _plan_rows_for_prep = today_view[
-                                    today_view["student_id"].astype(str).str.strip()
-                                    == str(sid).strip()
-                                ]
-                                _prep_slots = [
-                                    normalize_slot(x)
-                                    for x in _plan_rows_for_prep["slot"].tolist()
-                                    if normalize_slot(x)
-                                ]
-                                if not _prep_slots:
-                                    _prep_slots = [""]
-
-                                _prep_current = all(
-                                    is_prepared_for_plan(
-                                        _prep_status_df,
-                                        d=today,
-                                        student_id=sid,
-                                        slot=_slot,
-                                    )
-                                    for _slot in _prep_slots
-                                )
-
-                                _prep_checked = st.checkbox(
-                                    "🧰 準備完了",
-                                    value=bool(_prep_current),
-                                    key=f"prep_done_{today}_{sid}",
-                                    help="準備が終わったらチェック。外すと未準備へ戻ります。",
-                                )
-
-                                if _prep_checked != _prep_current:
-                                    _prep_updated = set_preparation_status(
-                                        _prep_status_df,
-                                        d=today,
-                                        student_id=sid,
-                                        slots=_prep_slots,
-                                        prepared=_prep_checked,
-                                    )
-                                    save_preparation_log(_prep_updated)
-                                    st.session_state["preparation_flash"] = (
-                                        f"{label}を"
-                                        + (
-                                            "準備済みにしました。"
-                                            if _prep_checked
-                                            else "未準備に戻しました。"
-                                        )
-                                    )
-                                    st.rerun()
-
-                            with c3:
-                                opt_labels = [x[1] for x in kind_options]
-                                opt_vals = [x[0] for x in kind_options]
-                                idx = opt_vals.index(default_kind) if default_kind in opt_vals else 0
-                                picked = st.selectbox(
-                                    "記録する種別",
-                                    opt_labels,
-                                    index=idx,
-                                    key=f"att_kind_{today}_{sid}",
-                                    help="出席ログは1日1生徒につき1種類で保存します。授業＋自習が混在する日は、進捗確認が必要なため授業を優先して記録するのがおすすめです。"
-                                )
-                                picked_kind = kind_options[opt_labels.index(picked)][0]
+                            with st.container():
+                                st.markdown("---")
+                                # d371: 準備作業中に見つけやすいよう「準備完了」を最左列へ。
+                                c1, c2, c3, c4, c5, c6 = st.columns([1.6, 3, 2, 3, 3, 2])
 
 
-                            with c4:
-                                # d400: 「回数」は授業実績回数。自習コマは含めない。
-                                # 未登録時は当日の予定授業回数を初期値にし、記録済みなら lesson 行数を表示する。
-                                schedule_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
-                                rec_count = schedule_count
-                                if rec and isinstance(rec, dict):
-                                    try:
-                                        sid2 = str(sid).strip()
-                                        ds2 = str(today)
-                                        _rec_rows_for_count = att_df[
-                                            (att_df["student_id"].astype(str).str.strip() == sid2)
-                                            & (att_df["date"].astype(str).str.strip() == ds2)
-                                        ].copy()
-                                        rec_count = int(
-                                            _rec_rows_for_count["kind"].astype(str).str.strip().isin(["lesson", "授業"]).sum()
-                                        )
-                                    except Exception:
-                                        rec_count = schedule_count
+                                with c2:
+                                    prefix = "🟡 未確認" if rec is None else "✅ 確認済み"
 
-                                # d410: 「授業実績回数」は授業として保存する時だけ編集できる。
-                                # 自習・欠席は attendance_log に状態を1行残すが、授業実績は0回。
-                                # キャンセルの履歴も授業実績には算入しない（キャンセル操作は既存画面）。
-                                _is_lesson_for_count = str(picked_kind).strip().lower() == "lesson"
-                                if _is_lesson_for_count:
-                                    # 通常は予定授業回数。記録済みなら既存の授業実績回数。
-                                    # 非授業から授業に選び直した際は、0のままにならない。
-                                    _count_max = min(10, max(5, schedule_count, rec_count))
-                                    _count_options = list(range(1, _count_max + 1))
-                                    _count_default = rec_count if rec_count in _count_options else (
-                                        schedule_count if schedule_count in _count_options else 1
-                                    )
-                                    count = st.selectbox(
-                                        "授業実績回数",
-                                        _count_options,
-                                        index=_count_options.index(_count_default),
-                                        key=f"att_lesson_count_d410_{today}_{sid}",
-                                        help=(
-                                            f"予定授業回数は {schedule_count} 回です。"
-                                            "実際に受けた授業の回数だけを選んでください。自習は含めません。"
-                                        ),
-                                    )
-                                    st.caption(f"予定授業回数：{schedule_count}回（自習は含めない）")
-                                    count_mismatch = int(count) != int(schedule_count)
-                                    if count_mismatch:
-                                        st.warning(
-                                            f"⚠ 回数不一致：予定授業 {schedule_count}回 / 授業実績 {count}回"
-                                        )
-                                        count_mismatch_confirmed = st.checkbox(
-                                            "この回数で保存することを確認しました",
-                                            value=False,
-                                            key=f"att_count_mismatch_confirm_d410_{today}_{sid}_{count}",
-                                        )
+                                    if rec_kind in ["selfstudy", "self", "自習"]:
+                                        kind_text = "自習"
+                                    elif rec_kind in ["absence", "欠席"]:
+                                        kind_text = "欠席"
+                                    elif rec_kind in ["cancel", "キャンセル"]:
+                                        kind_text = "キャンセル"
+                                    elif rec_kind in ["lesson", "授業"]:
+                                        kind_text = "授業"
                                     else:
-                                        count_mismatch_confirmed = True
-                                else:
-                                    count = 0
-                                    count_mismatch = False
-                                    count_mismatch_confirmed = True
-                                    st.text_input(
-                                        "授業実績回数",
-                                        value="0回（自動）",
-                                        disabled=True,
-                                        key=f"att_nonlesson_count_d410_{today}_{sid}_{picked_kind}",
-                                        help="自習・欠席は授業実績に加算されません。",
-                                    )
-                                    st.caption("授業実績には加算されません（0回）。")
+                                        kind_text = planned_kind_label_map.get(sid, "授業" if default_kind == "lesson" else "自習")
+
+                                    kind_badge = f"📘 {kind_text}" if "授業" in kind_text else f"🟡 {kind_text}"
+                                    st.markdown(f"**{prefix}｜{kind_badge}｜👤 {label}**")
+                                    st.caption(badge)
+
+                                   # 準備メモ表示
+                                    prep_df_card = _today_prep_df
+                                    sid_str = str(sid).strip()
+
+                                    memo_row = prep_df_card[
+                                        prep_df_card["student_id"].astype(str).str.strip() == sid_str
+                                    ]
+
+                                    memo = ""
+                                    if not memo_row.empty:
+                                        memo = str(memo_row.iloc[0]["memo"]).strip()
+
+                                    if memo:
+                                        st.info(f"📝 次の準備：{memo}")
+
+                                    # d393: 「準備完了」のすぐ横で今日やる予定を確認できるようにする。
+                                    # 「次に見る候補」と同じ算出結果を使うため、二重管理にならない。
+                                    _today_hint_for_att = str(
+                                        st.session_state.get("today_task_hint_map", {}).get(sid_str, "")
+                                    ).strip()
+                                    _today_sub_for_att = str(
+                                        st.session_state.get("today_sub_hint_map", {}).get(sid_str, "")
+                                    ).strip()
+
+                                    if _today_hint_for_att:
+                                        st.success(f"🎯 今日やる予定：{_today_hint_for_att}")
+                                    if _today_sub_for_att and not is_feature_paused("subtask", today):
+                                        st.caption(f"➕ {_today_sub_for_att}")
+
+                                    # d395: 授業準備の確認をこのカード内で完結しやすくするため、
+                                    # 今日の予定コマごとの座席番号も表示する。
+                                    # 授業＋自習など複数コマがある場合は、各コマをまとめて表示する。
+                                    _seat_parts_for_att = []
+                                    try:
+                                        _seat_rows_for_att = today_view[
+                                            today_view["student_id"].astype(str).str.strip() == sid_str
+                                        ].copy()
+                                        _seen_seat_slots_for_att = set()
+                                        for _, _seat_r_for_att in _seat_rows_for_att.iterrows():
+                                            _seat_slot_for_att = normalize_slot(_seat_r_for_att.get("slot", ""))
+                                            if not _seat_slot_for_att or _seat_slot_for_att in _seen_seat_slots_for_att:
+                                                continue
+                                            _seen_seat_slots_for_att.add(_seat_slot_for_att)
+                                            _seat_label_for_att = _seat_label_for_today_candidate(
+                                                sid_str, _seat_slot_for_att
+                                            )
+                                            if _seat_label_for_att == "未配置":
+                                                _seat_display_for_att = "未配置"
+                                            elif _seat_label_for_att == "使用予定":
+                                                _seat_display_for_att = "使用予定"
+                                            else:
+                                                _seat_display_for_att = f"席{_seat_label_for_att}"
+                                            _seat_parts_for_att.append(
+                                                f"{_seat_slot_for_att}コマ：{_seat_display_for_att}"
+                                            )
+                                    except Exception:
+                                        _seat_parts_for_att = []
+
+                                    if _seat_parts_for_att:
+                                        st.caption("🪑 今日の座席：" + " / ".join(_seat_parts_for_att))
+                                    else:
+                                        st.caption("🪑 今日の座席：未配置")
+
+                                    # d256:
+                                    # 既存の出欠ログが selfstudy だが、予定は授業＋自習の場合は警告する。
+                                    # 「記録/更新」を押すと、種別が lesson として保存され、授業回数に入る。
                                     if (
-                                        picked_kind == "selfstudy"
+                                        rec_kind in ["selfstudy", "自習"]
                                         and str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習"
                                     ):
-                                        st.info("授業＋自習の予定です。自習として保存すると授業実績は0回です。")
+                                        st.warning("⚠ 授業＋自習予定ですが、出欠ログは自習として保存されています。記録/更新で授業扱いに直せます。")
 
-                                memo = st.text_input(
-                                    "メモ（任意）",
-                                    value=rec_memo,
-                                    key=f"att_memo_{today}_{sid}"
-                                )
 
-                            with c5:
-                                # d253:
-                                # 出欠種別に合わせて「進捗なしで完了」の初期値を変える。
-                                # 自習だけの日は進捗登録不要なのでON。
-                                # 授業・授業＋自習は進捗確認が必要なのでOFF。
-                                # すでに「進捗なしで完了」済みの生徒はONで表示する。
-                                _picked_kind_norm = str(picked_kind).strip().lower()
-                                _no_progress_default = (
-                                    _picked_kind_norm
-                                    in [
-                                        "selfstudy",
-                                        "self",
-                                        "自習",
-                                        "absence",
-                                        "欠席",
-                                        "cancel",
-                                        "キャンセル",
+
+                                with c1:
+                                    _plan_rows_for_prep = today_view[
+                                        today_view["student_id"].astype(str).str.strip()
+                                        == str(sid).strip()
                                     ]
-                                    or str(sid).strip() in prog_skip_today_ids
-                                )
-                                no_progress_done = st.checkbox(
-                                    "進捗なしで完了にする",
-                                    value=bool(_no_progress_default),
-                                    key=f"no_progress_done_{today}_{sid}_{_picked_kind_norm}"
-                                )
+                                    _prep_slots = [
+                                        normalize_slot(x)
+                                        for x in _plan_rows_for_prep["slot"].tolist()
+                                        if normalize_slot(x)
+                                    ]
+                                    if not _prep_slots:
+                                        _prep_slots = [""]
 
-
-                            with c6:
-                                if st.button(
-                                    "💾 出欠を保存／更新",
-                                    key=f"att_save_{today}_{sid}",
-                                    disabled=bool(count_mismatch and not count_mismatch_confirmed),
-                                    help=(
-                                        "予定授業回数と授業実績回数が違うため、回数欄の確認チェックを入れてから保存してください。"
-                                        if count_mismatch and not count_mismatch_confirmed
-                                        else "出欠を保存／更新します。"
-                                    ),
-                                ):
-                                    # d315:
-                                    # 授業・自習・欠席を同じボタンで登録／上書きする。
-                                    # 欠席へ変更した場合は予定取消と座席解除も行う。
-                                    # 欠席から授業・自習へ戻した場合は、欠席時の予定取消を解除する。
-                                    # d410: 利用者が明示的に選んだ種別を保存する。
-                                    # 授業＋自習でも「自習」を選んだ場合に強制的に授業へ戻さない。
-                                    save_kind = picked_kind
-
-                                    # d400: attendance_log は「1行=1実績記録」なので、
-                                    # 自習・欠席は表示上の授業実績が0回でも状態記録用に1行残す。
-                                    # 授業だけは選択した授業実績回数ぶん lesson 行を保存する。
-                                    _attendance_storage_count = int(count) if save_kind == "lesson" else 1
-                                    if save_kind == "lesson" and _attendance_storage_count < 1:
-                                        # 授業として保存する場合に0回は矛盾するため、最低1行。
-                                        _attendance_storage_count = 1
-
-                                    if save_kind == "absence":
-                                        absence_note = (
-                                            memo.strip()
-                                            if str(memo).strip()
-                                            else "出欠登録画面で欠席を保存（予定取消）"
-                                        )
-                                        (
-                                            att_df2,
-                                            ov2,
-                                            seat2,
-                                            cancel_count,
-                                        ) = apply_absence_and_cancel_schedule(
-                                            att_df=att_df,
-                                            overrides_df=schedule_overrides,
-                                            seat_df=seat_assignments,
-                                            plan_df=today_view,
-                                            student_id=sid,
+                                    _prep_current = all(
+                                        is_prepared_for_plan(
+                                            _prep_status_df,
                                             d=today,
-                                            note=absence_note,
+                                            student_id=sid,
+                                            slot=_slot,
                                         )
-                                        # 入力されたメモと回数を出欠ログへ反映する。
-                                        att_df2 = upsert_attendance(
-                                            att_df2,
-                                            sid,
-                                            today,
-                                            "absence",
-                                            memo,
-                                            count=_attendance_storage_count,
+                                        for _slot in _prep_slots
+                                    )
+
+                                    _prep_checked = st.checkbox(
+                                        "🧰 準備完了",
+                                        value=bool(_prep_current),
+                                        key=f"prep_done_{today}_{sid}",
+                                        help="準備が終わったらチェック。外すと未準備へ戻ります。",
+                                    )
+
+                                    if _prep_checked != _prep_current:
+                                        _prep_updated = set_preparation_status(
+                                            _prep_status_df,
+                                            d=today,
+                                            student_id=sid,
+                                            slots=_prep_slots,
+                                            prepared=_prep_checked,
                                         )
-                                        save_attendance_log(att_df2)
-                                        write_csv_atomic(
-                                            ov2,
-                                            SCHEDULE_OVERRIDES_CSV,
+                                        save_preparation_log(_prep_updated)
+                                        st.session_state["preparation_flash"] = (
+                                            f"{label}を"
+                                            + (
+                                                "準備済みにしました。"
+                                                if _prep_checked
+                                                else "未準備に戻しました。"
+                                            )
                                         )
-                                        write_csv_atomic(
-                                            seat2,
-                                            SEAT_ASSIGNMENTS_CSV,
+                                        st.rerun()
+
+                                with c3:
+                                    opt_labels = [x[1] for x in kind_options]
+                                    opt_vals = [x[0] for x in kind_options]
+                                    idx = opt_vals.index(default_kind) if default_kind in opt_vals else 0
+                                    picked = st.selectbox(
+                                        "記録する種別",
+                                        opt_labels,
+                                        index=idx,
+                                        key=f"att_kind_{today}_{sid}",
+                                        help="出席ログは1日1生徒につき1種類で保存します。授業＋自習が混在する日は、進捗確認が必要なため授業を優先して記録するのがおすすめです。"
+                                    )
+                                    picked_kind = kind_options[opt_labels.index(picked)][0]
+
+
+                                with c4:
+                                    # d400: 「回数」は授業実績回数。自習コマは含めない。
+                                    # 未登録時は当日の予定授業回数を初期値にし、記録済みなら lesson 行数を表示する。
+                                    schedule_count = int(planned_count_map.get(str(sid).strip(), 0) or 0)
+                                    rec_count = schedule_count
+                                    if rec and isinstance(rec, dict):
+                                        try:
+                                            sid2 = str(sid).strip()
+                                            ds2 = str(today)
+                                            _rec_rows_for_count = att_df[
+                                                (att_df["student_id"].astype(str).str.strip() == sid2)
+                                                & (att_df["date"].astype(str).str.strip() == ds2)
+                                            ].copy()
+                                            rec_count = int(
+                                                _rec_rows_for_count["kind"].astype(str).str.strip().isin(["lesson", "授業"]).sum()
+                                            )
+                                        except Exception:
+                                            rec_count = schedule_count
+
+                                    # d410: 「授業実績回数」は授業として保存する時だけ編集できる。
+                                    # 自習・欠席は attendance_log に状態を1行残すが、授業実績は0回。
+                                    # キャンセルの履歴も授業実績には算入しない（キャンセル操作は既存画面）。
+                                    _is_lesson_for_count = str(picked_kind).strip().lower() == "lesson"
+                                    if _is_lesson_for_count:
+                                        # 通常は予定授業回数。記録済みなら既存の授業実績回数。
+                                        # 非授業から授業に選び直した際は、0のままにならない。
+                                        _count_max = min(10, max(5, schedule_count, rec_count))
+                                        _count_options = list(range(1, _count_max + 1))
+                                        _count_default = rec_count if rec_count in _count_options else (
+                                            schedule_count if schedule_count in _count_options else 1
                                         )
-                                        st.success(
-                                            f"欠席で保存しました。予定 {cancel_count}件をキャンセルし、座席も外しました。"
+                                        count = st.selectbox(
+                                            "授業実績回数",
+                                            _count_options,
+                                            index=_count_options.index(_count_default),
+                                            key=f"att_lesson_count_d410_{today}_{sid}",
+                                            help=(
+                                                f"予定授業回数は {schedule_count} 回です。"
+                                                "実際に受けた授業の回数だけを選んでください。自習は含めません。"
+                                            ),
                                         )
+                                        st.caption(f"予定授業回数：{schedule_count}回（自習は含めない）")
+                                        count_mismatch = int(count) != int(schedule_count)
+                                        if count_mismatch:
+                                            st.warning(
+                                                f"⚠ 回数不一致：予定授業 {schedule_count}回 / 授業実績 {count}回"
+                                            )
+                                            count_mismatch_confirmed = st.checkbox(
+                                                "この回数で保存することを確認しました",
+                                                value=False,
+                                                key=f"att_count_mismatch_confirm_d410_{today}_{sid}_{count}",
+                                            )
+                                        else:
+                                            count_mismatch_confirmed = True
                                     else:
-                                        # 以前の記録が欠席／キャンセルなら、
-                                        # 同日の対象コマに付いた取消を解除してから通常出欠へ上書きする。
-                                        ov2 = schedule_overrides.copy()
-                                        att_base = att_df.copy()
-                                        if normalize_attendance_kind_for_lock(
-                                            rec_kind
-                                        ) in ["absence", "cancel"]:
-                                            for _slot in collect_plan_slots_for_student(
-                                                today_view,
+                                        count = 0
+                                        count_mismatch = False
+                                        count_mismatch_confirmed = True
+                                        st.text_input(
+                                            "授業実績回数",
+                                            value="0回（自動）",
+                                            disabled=True,
+                                            key=f"att_nonlesson_count_d410_{today}_{sid}_{picked_kind}",
+                                            help="自習・欠席は授業実績に加算されません。",
+                                        )
+                                        st.caption("授業実績には加算されません（0回）。")
+                                        if (
+                                            picked_kind == "selfstudy"
+                                            and str(planned_kind_label_map.get(sid, "")).strip() == "授業＋自習"
+                                        ):
+                                            st.info("授業＋自習の予定です。自習として保存すると授業実績は0回です。")
+
+                                    memo = st.text_input(
+                                        "メモ（任意）",
+                                        value=rec_memo,
+                                        key=f"att_memo_{today}_{sid}"
+                                    )
+
+                                with c5:
+                                    # d253:
+                                    # 出欠種別に合わせて「進捗なしで完了」の初期値を変える。
+                                    # 自習だけの日は進捗登録不要なのでON。
+                                    # 授業・授業＋自習は進捗確認が必要なのでOFF。
+                                    # すでに「進捗なしで完了」済みの生徒はONで表示する。
+                                    _picked_kind_norm = str(picked_kind).strip().lower()
+                                    _no_progress_default = (
+                                        _picked_kind_norm
+                                        in [
+                                            "selfstudy",
+                                            "self",
+                                            "自習",
+                                            "absence",
+                                            "欠席",
+                                            "cancel",
+                                            "キャンセル",
+                                        ]
+                                        or str(sid).strip() in prog_skip_today_ids
+                                    )
+                                    no_progress_done = st.checkbox(
+                                        "進捗なしで完了にする",
+                                        value=bool(_no_progress_default),
+                                        key=f"no_progress_done_{today}_{sid}_{_picked_kind_norm}"
+                                    )
+
+
+                                with c6:
+                                    if st.button(
+                                        "💾 出欠を保存／更新",
+                                        key=f"att_save_{today}_{sid}",
+                                        disabled=bool(count_mismatch and not count_mismatch_confirmed),
+                                        help=(
+                                            "予定授業回数と授業実績回数が違うため、回数欄の確認チェックを入れてから保存してください。"
+                                            if count_mismatch and not count_mismatch_confirmed
+                                            else "出欠を保存／更新します。"
+                                        ),
+                                    ):
+                                        # d315:
+                                        # 授業・自習・欠席を同じボタンで登録／上書きする。
+                                        # 欠席へ変更した場合は予定取消と座席解除も行う。
+                                        # 欠席から授業・自習へ戻した場合は、欠席時の予定取消を解除する。
+                                        # d410: 利用者が明示的に選んだ種別を保存する。
+                                        # 授業＋自習でも「自習」を選んだ場合に強制的に授業へ戻さない。
+                                        save_kind = picked_kind
+
+                                        # d400: attendance_log は「1行=1実績記録」なので、
+                                        # 自習・欠席は表示上の授業実績が0回でも状態記録用に1行残す。
+                                        # 授業だけは選択した授業実績回数ぶん lesson 行を保存する。
+                                        _attendance_storage_count = int(count) if save_kind == "lesson" else 1
+                                        if save_kind == "lesson" and _attendance_storage_count < 1:
+                                            # 授業として保存する場合に0回は矛盾するため、最低1行。
+                                            _attendance_storage_count = 1
+
+                                        if save_kind == "absence":
+                                            absence_note = (
+                                                memo.strip()
+                                                if str(memo).strip()
+                                                else "出欠登録画面で欠席を保存（予定取消）"
+                                            )
+                                            (
+                                                att_df2,
+                                                ov2,
+                                                seat2,
+                                                cancel_count,
+                                            ) = apply_absence_and_cancel_schedule(
+                                                att_df=att_df,
+                                                overrides_df=schedule_overrides,
+                                                seat_df=seat_assignments,
+                                                plan_df=today_view,
+                                                student_id=sid,
+                                                d=today,
+                                                note=absence_note,
+                                            )
+                                            # 入力されたメモと回数を出欠ログへ反映する。
+                                            att_df2 = upsert_attendance(
+                                                att_df2,
                                                 sid,
-                                            ):
-                                                (
-                                                    ov2,
-                                                    att_base,
-                                                    _,
-                                                ) = restore_cancelled_plan_and_clear_absence(
-                                                    ov2,
-                                                    att_base,
-                                                    student_id=sid,
-                                                    d=today,
-                                                    slot=_slot,
-                                                )
+                                                today,
+                                                "absence",
+                                                memo,
+                                                count=_attendance_storage_count,
+                                            )
+                                            save_attendance_log(att_df2)
                                             write_csv_atomic(
                                                 ov2,
                                                 SCHEDULE_OVERRIDES_CSV,
                                             )
+                                            write_csv_atomic(
+                                                seat2,
+                                                SEAT_ASSIGNMENTS_CSV,
+                                            )
+                                            st.success(
+                                                f"欠席で保存しました。予定 {cancel_count}件をキャンセルし、座席も外しました。"
+                                            )
+                                        else:
+                                            # 以前の記録が欠席／キャンセルなら、
+                                            # 同日の対象コマに付いた取消を解除してから通常出欠へ上書きする。
+                                            ov2 = schedule_overrides.copy()
+                                            att_base = att_df.copy()
+                                            if normalize_attendance_kind_for_lock(
+                                                rec_kind
+                                            ) in ["absence", "cancel"]:
+                                                for _slot in collect_plan_slots_for_student(
+                                                    today_view,
+                                                    sid,
+                                                ):
+                                                    (
+                                                        ov2,
+                                                        att_base,
+                                                        _,
+                                                    ) = restore_cancelled_plan_and_clear_absence(
+                                                        ov2,
+                                                        att_base,
+                                                        student_id=sid,
+                                                        d=today,
+                                                        slot=_slot,
+                                                    )
+                                                write_csv_atomic(
+                                                    ov2,
+                                                    SCHEDULE_OVERRIDES_CSV,
+                                                )
 
-                                        att_df2 = upsert_attendance(
-                                            att_base,
-                                            sid,
-                                            today,
-                                            save_kind,
-                                            memo,
-                                            count=_attendance_storage_count,
-                                        )
-                                        save_attendance_log(att_df2)
-                                        st.success("出欠記録を上書き保存しました。")
+                                            att_df2 = upsert_attendance(
+                                                att_base,
+                                                sid,
+                                                today,
+                                                save_kind,
+                                                memo,
+                                                count=_attendance_storage_count,
+                                            )
+                                            save_attendance_log(att_df2)
+                                            st.success("出欠記録を上書き保存しました。")
 
-                                    # 進捗状態を保存
-                                    if no_progress_done:
-                                        prog_skip_df2 = load_progress_skip_ok().copy()
-                                        prog_skip_df2 = upsert_progress_skip_ok(
-                                            prog_skip_df2,
-                                            student_id=sid,
-                                            d=today,
-                                            note="出席記録画面から進捗なしで完了"
-                                        )
-                                        save_progress_skip_ok(prog_skip_df2)
+                                        # 進捗状態を保存
+                                        if no_progress_done:
+                                            prog_skip_df2 = load_progress_skip_ok().copy()
+                                            prog_skip_df2 = upsert_progress_skip_ok(
+                                                prog_skip_df2,
+                                                student_id=sid,
+                                                d=today,
+                                                note="出席記録画面から進捗なしで完了"
+                                            )
+                                            save_progress_skip_ok(prog_skip_df2)
 
-                                    if open_after_attendance_save:
-                                        if nm:
-                                            st.session_state["pending_sidebar_student"] = nm
+                                        if open_after_attendance_save:
+                                            if nm:
+                                                st.session_state["pending_sidebar_student"] = nm
+                                                st.session_state["pending_input_mode"] = "進捗登録"
 
-                                        # d299:
-                                        # 自動ジャンプをONにした時だけ、検定/通常課題の寄せ先判定を行う。
-                                        try:
-                                            _picked_kind_for_view = str(save_kind).strip().lower()
-                                            if _picked_kind_for_view not in ["selfstudy", "self", "自習"]:
-                                                if is_kentei_training_active(sid) or has_unpassed_kentei_exam_schedule(sid, kentei_exam):
-                                                    st.session_state["sidebar_view_mode"] = "検定課題"
-                                                else:
-                                                    st.session_state["sidebar_view_mode"] = "カリキュラム課題"
-                                        except Exception:
-                                            st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+                                            # d299:
+                                            # 自動ジャンプをONにした時だけ、検定/通常課題の寄せ先判定を行う。
+                                            try:
+                                                _picked_kind_for_view = str(save_kind).strip().lower()
+                                                if _picked_kind_for_view not in ["selfstudy", "self", "自習"]:
+                                                    if is_kentei_training_active(sid) or has_unpassed_kentei_exam_schedule(sid, kentei_exam):
+                                                        st.session_state["sidebar_view_mode"] = "検定課題"
+                                                    else:
+                                                        st.session_state["sidebar_view_mode"] = "カリキュラム課題"
+                                            except Exception:
+                                                st.session_state["sidebar_view_mode"] = "カリキュラム課題"
 
-                                    st.rerun()
+                                        st.rerun()
 
 
 
@@ -12143,6 +12224,18 @@ if page == "閲覧":
                 if _sid not in typing_target_ids:
                     typing_target_ids.append(_sid)
 
+            # 集計対象は全体のまま、進捗モードの操作行だけ選択生徒へ限定する。
+            typing_operation_student_id = ""
+            if daily_input_mode == "進捗登録":
+                if selected_student != "（全員）":
+                    _typing_selected = students[students["display_name"] == selected_student_raw].head(1)
+                    if not _typing_selected.empty:
+                        typing_operation_student_id = str(_typing_selected["student_id"].iloc[0]).strip()
+                if not typing_operation_student_id:
+                    st.caption("生徒を選択するとタイピング操作を行えます。")
+                elif typing_operation_student_id not in typing_target_ids:
+                    st.caption("今日のタイピングチェック対象ではありません。停止期間中も新規操作はできません。")
+
             if not typing_target_ids:
                 st.info("出席登録済みの生徒がまだいないため、タイピングチェック対象はありません。")
             else:
@@ -12169,6 +12262,8 @@ if page == "閲覧":
 
                 if typing_pending_ids:
                     for _sid in typing_pending_ids:
+                        if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
+                            continue
                         _name = typing_student_name_map.get(_sid, "")
                         _label = f"{_sid}｜{_name}" if _name else _sid
 
@@ -12268,6 +12363,8 @@ if page == "閲覧":
                         if _past_pending:
                             st.warning(f"未記録：{len(_past_pending)}件")
                             for _sid in _past_pending:
+                                if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
+                                    continue
                                 _name = typing_student_name_map.get(_sid, "")
                                 _label = f"{_sid}｜{_name}" if _name else _sid
                                 pc1, pc2, pc3 = st.columns([4, 1.5, 1.5])
@@ -12301,6 +12398,11 @@ if page == "閲覧":
                         if _past_done:
                             st.caption(f"記録済み：{len(_past_done)}件")
 
+                if daily_input_mode == "進捗登録":
+                    for _sid, _rec in typing_done_rows + typing_skip_rows:
+                        if _sid == typing_operation_student_id:
+                            st.caption(f"選択生徒のタイピング：{typing_status_label(_rec.get('status', ''))}（取消は完了・免除済み一覧から行えます）")
+
                 completed_count = len(typing_done_rows) + len(typing_skip_rows)
                 if completed_count:
                     show_typing_completed = st.checkbox(
@@ -12327,7 +12429,7 @@ if page == "閲覧":
                                         line += f" ／ {_note}"
                                     st.markdown(line)
                                 with tc2:
-                                    if st.button("↩ 未完了へ戻す", key=f"typing_undo_{today}_{_sid}"):
+                                    if (daily_input_mode != "進捗登録" or _sid == typing_operation_student_id) and st.button("↩ 未完了へ戻す", key=f"typing_undo_{today}_{_sid}"):
                                         typing_df2 = delete_typing_log(
                                             typing_df,
                                             _sid,
@@ -12946,37 +13048,6 @@ if page == "閲覧":
     # 毎日使う「進捗登録」と、たまに見る「確認・一覧」を分ける。
     # 機能本体はそのままに、迷いにくい導線へ整理する。
     # =========================================================
-    daily_view_options = ["カリキュラム課題", "検定課題"]
-    check_view_options = [
-        "未来予測（試算）",
-        "コース別（件数）",
-        "Scratch検定一覧",
-        "生徒ごと一覧",
-        "生徒別（done）",
-        "詳細（最新状態）",
-    ]
-    all_view_options = daily_view_options + check_view_options
-
-    # 他ボタンから「カリキュラム課題へ寄せる」などが来た場合に反映
-    pending_view_mode = str(st.session_state.pop("sidebar_view_mode", "") or "").strip()
-    if pending_view_mode in all_view_options:
-        st.session_state["view_mode_trial"] = pending_view_mode
-        st.session_state["view_mode_group"] = (
-            "毎日使う：進捗登録" if pending_view_mode in daily_view_options else "たまに見る：確認・一覧"
-        )
-
-    current_view_mode = str(st.session_state.get("view_mode_trial", "カリキュラム課題"))
-    default_group = "毎日使う：進捗登録" if current_view_mode in daily_view_options else "たまに見る：確認・一覧"
-
-    view_group = view_mode_container.radio(
-        "閲覧モード",
-        ["毎日使う：進捗登録", "たまに見る：確認・一覧"],
-        index=0 if default_group == "毎日使う：進捗登録" else 1,
-        horizontal=False,
-        format_func=lambda value: "進捗登録" if value == "毎日使う：進捗登録" else "確認・一覧",
-        key="view_mode_group",
-    )
-
     if view_group == "毎日使う：進捗登録":
         view_options = daily_view_options
         st.caption("出席後に進捗を登録する時に使う画面です。")
@@ -13667,604 +13738,616 @@ if page == "閲覧":
                     # Course selector with order
                     cc = curr_courses.copy()
                     cc = cc[cc["is_active"].fillna("").astype(str).str.strip().str.lower().replace("", "true").isin(["true", "1", "yes"])].copy()
-                    cc["order_num"] = pd.to_numeric(cc["course_order"], errors="coerce").fillna(9999).astype(int)
+                    if cc.empty:
+                        st.info("現在、入力対象の有効コースはありません。")
+                    else:
+                        cc["order_num"] = pd.to_numeric(cc["course_order"], errors="coerce").fillna(9999).astype(int)
 
-                    # d236:
-                    # カリキュラム課題のコース一覧を現場で見やすい順に整える。
-                    # まずScratch系（sc_l / sc_h）を上に置き、その後HTML、JavaScript系を優先する。
-                    def _curriculum_course_priority(row):
-                        cid = str(row.get("course_id", "")).strip().lower()
-                        cname = str(row.get("course_name", "")).strip().lower()
-                        gname = str(row.get("genre_name", "")).strip().lower()
-                        joined = f"{cid} {cname} {gname}"
+                        # d236:
+                        # カリキュラム課題のコース一覧を現場で見やすい順に整える。
+                        # まずScratch系（sc_l / sc_h）を上に置き、その後HTML、JavaScript系を優先する。
+                        def _curriculum_course_priority(row):
+                            cid = str(row.get("course_id", "")).strip().lower()
+                            cname = str(row.get("course_name", "")).strip().lower()
+                            gname = str(row.get("genre_name", "")).strip().lower()
+                            joined = f"{cid} {cname} {gname}"
 
-                        if cid == "sc_l" or "sc_l" in joined or "scratch_l" in joined:
-                            return 0
-                        if cid == "sc_h" or "sc_h" in joined or "scratch_h" in joined:
-                            return 1
-                        if "scratch" in joined or "スクラッチ" in joined:
-                            return 2
-                        if "html" in joined:
-                            return 10
-                        if "javascript" in joined or "java script" in joined or cid in ["js", "javascript"]:
-                            return 11
-                        if "python" in joined:
-                            return 20
-                        if "unity" in joined:
-                            return 21
-                        return 99
+                            if cid == "sc_l" or "sc_l" in joined or "scratch_l" in joined:
+                                return 0
+                            if cid == "sc_h" or "sc_h" in joined or "scratch_h" in joined:
+                                return 1
+                            if "scratch" in joined or "スクラッチ" in joined:
+                                return 2
+                            if "html" in joined:
+                                return 10
+                            if "javascript" in joined or "java script" in joined or cid in ["js", "javascript"]:
+                                return 11
+                            if "python" in joined:
+                                return 20
+                            if "unity" in joined:
+                                return 21
+                            return 99
 
-                    cc["_ui_priority"] = cc.apply(_curriculum_course_priority, axis=1)
-                    cc = cc.sort_values(by=["_ui_priority", "order_num", "genre_name", "course_name"], na_position="last")
+                        cc["_ui_priority"] = cc.apply(_curriculum_course_priority, axis=1)
+                        cc = cc.sort_values(by=["_ui_priority", "order_num", "genre_name", "course_name"], na_position="last")
 
-                    course_labels = []
-                    course_ids = []
-                    course_label_by_id = {}
-                    for _, r in cc.iterrows():
-                        cid = str(r["course_id"]).strip()
-                        label = f"{r['genre_name']}｜{r['course_name']}  [{cid}]"
-                        course_ids.append(cid)
-                        course_labels.append(label)
-                        course_label_by_id[cid] = label
+                        course_labels = []
+                        course_ids = []
+                        course_label_by_id = {}
+                        for _, r in cc.iterrows():
+                            cid = str(r["course_id"]).strip()
+                            label = f"{r['genre_name']}｜{r['course_name']}  [{cid}]"
+                            course_ids.append(cid)
+                            course_labels.append(label)
+                            course_label_by_id[cid] = label
 
-                    # d247:
-                    # 進捗登録画面のコース選択も「今日やる候補」と同じ考え方へ寄せる。
-                    # 最新コースがコース完了済みなら、次の未完了課題があるコースを推奨する。
-                    def _course_done_by_log_for_progress(_sid: str, _course_id: str) -> bool:
-                        return bool((course_history_mask(log, _sid, _course_id, "done") | course_history_mask(log, _sid, _course_id, "skip")).any())
+                        # d247:
+                        # 進捗登録画面のコース選択も「今日やる候補」と同じ考え方へ寄せる。
+                        # 最新コースがコース完了済みなら、次の未完了課題があるコースを推奨する。
+                        def _course_done_by_log_for_progress(_sid: str, _course_id: str) -> bool:
+                            return bool((course_history_mask(log, _sid, _course_id, "done") | course_history_mask(log, _sid, _course_id, "skip")).any())
 
-                    def _has_unfinished_task_for_progress(_sid: str, _course_id: str) -> bool:
-                        try:
+                        def _has_unfinished_task_for_progress(_sid: str, _course_id: str) -> bool:
+                            try:
+                                _sid = str(_sid).strip()
+                                _course_id = str(_course_id).strip()
+                                if not _sid or not _course_id:
+                                    return False
+
+                                _tasks = curr_tasks.copy()
+                                for _c in ["course_id", "task_id", "task_name", "order", "is_active", "student_id"]:
+                                    if _c not in _tasks.columns:
+                                        _tasks[_c] = ""
+                                    _tasks[_c] = _tasks[_c].fillna("").astype(str).str.strip()
+
+                                _tasks = _tasks[
+                                    (_tasks["course_id"].astype(str).str.strip() == _course_id)
+                                    & (
+                                        (_tasks["student_id"].astype(str).str.strip() == "")
+                                        | (_tasks["student_id"].astype(str).str.strip() == _sid)
+                                    )
+                                ].copy()
+
+                                _tasks = _tasks[active_curriculum_task_mask(_tasks)].copy()
+
+                                if _tasks.empty:
+                                    return False
+
+                                _prog = curr_prog.copy()
+                                for _c in ["student_id", "course_id", "task_id", "is_done", "is_skip"]:
+                                    if _c not in _prog.columns:
+                                        _prog[_c] = ""
+                                    _prog[_c] = _prog[_c].fillna("").astype(str).str.strip()
+
+                                _prog = _prog[
+                                    (_prog["student_id"].astype(str).str.strip() == _sid)
+                                    & (_prog["course_id"].astype(str).str.strip() == _course_id)
+                                ].copy()
+
+                                _done_map = {
+                                    str(_r.get("task_id", "")).strip(): str(_r.get("is_done", "")).strip().lower() == "true"
+                                    for _, _r in _prog.iterrows()
+                                }
+                                _skip_map = {
+                                    str(_r.get("task_id", "")).strip(): str(_r.get("is_skip", "")).strip().lower() == "true"
+                                    for _, _r in _prog.iterrows()
+                                }
+
+                                for _, _t in _tasks.iterrows():
+                                    _tid = str(_t.get("task_id", "")).strip()
+                                    if not _tid:
+                                        continue
+                                    if not _done_map.get(_tid, False) and not _skip_map.get(_tid, False):
+                                        return True
+
+                                return False
+                            except Exception:
+                                return False
+
+                        def _recommend_progress_course_id(_sid: str) -> tuple[str, str]:
                             _sid = str(_sid).strip()
-                            _course_id = str(_course_id).strip()
-                            if not _sid or not _course_id:
-                                return False
+                            if not course_ids:
+                                return "", "表示できるコースがありません。"
 
-                            _tasks = curr_tasks.copy()
-                            for _c in ["course_id", "task_id", "task_name", "order", "is_active", "student_id"]:
-                                if _c not in _tasks.columns:
-                                    _tasks[_c] = ""
-                                _tasks[_c] = _tasks[_c].fillna("").astype(str).str.strip()
+                            _latest_course_id = latest_course_for_student(_sid, curr_prog)
+                            _latest_course_id = str(_latest_course_id).strip() if _latest_course_id else ""
 
-                            _tasks = _tasks[
-                                (_tasks["course_id"].astype(str).str.strip() == _course_id)
-                                & (
-                                    (_tasks["student_id"].astype(str).str.strip() == "")
-                                    | (_tasks["student_id"].astype(str).str.strip() == _sid)
-                                )
-                            ].copy()
+                            _ordered_course_ids = [str(x).strip() for x in course_ids if str(x).strip()]
+                            _candidate_course_ids = []
 
-                            _tasks = _tasks[active_curriculum_task_mask(_tasks)].copy()
-
-                            if _tasks.empty:
-                                return False
-
-                            _prog = curr_prog.copy()
-                            for _c in ["student_id", "course_id", "task_id", "is_done", "is_skip"]:
-                                if _c not in _prog.columns:
-                                    _prog[_c] = ""
-                                _prog[_c] = _prog[_c].fillna("").astype(str).str.strip()
-
-                            _prog = _prog[
-                                (_prog["student_id"].astype(str).str.strip() == _sid)
-                                & (_prog["course_id"].astype(str).str.strip() == _course_id)
-                            ].copy()
-
-                            _done_map = {
-                                str(_r.get("task_id", "")).strip(): str(_r.get("is_done", "")).strip().lower() == "true"
-                                for _, _r in _prog.iterrows()
-                            }
-                            _skip_map = {
-                                str(_r.get("task_id", "")).strip(): str(_r.get("is_skip", "")).strip().lower() == "true"
-                                for _, _r in _prog.iterrows()
-                            }
-
-                            for _, _t in _tasks.iterrows():
-                                _tid = str(_t.get("task_id", "")).strip()
-                                if not _tid:
-                                    continue
-                                if not _done_map.get(_tid, False) and not _skip_map.get(_tid, False):
-                                    return True
-
-                            return False
-                        except Exception:
-                            return False
-
-                    def _recommend_progress_course_id(_sid: str) -> tuple[str, str]:
-                        _sid = str(_sid).strip()
-                        if not course_ids:
-                            return "", "表示できるコースがありません。"
-
-                        _latest_course_id = latest_course_for_student(_sid, curr_prog)
-                        _latest_course_id = str(_latest_course_id).strip() if _latest_course_id else ""
-
-                        _ordered_course_ids = [str(x).strip() for x in course_ids if str(x).strip()]
-                        _candidate_course_ids = []
-
-                        if _latest_course_id and _latest_course_id in _ordered_course_ids:
-                            _idx = _ordered_course_ids.index(_latest_course_id)
-                            _candidate_course_ids.extend(_ordered_course_ids[_idx:])
-                            _candidate_course_ids.extend(_ordered_course_ids[:_idx])
-                        else:
-                            _candidate_course_ids.extend(_ordered_course_ids)
-
-                        _seen = set()
-                        _candidate_course_ids = [
-                            _cid for _cid in _candidate_course_ids
-                            if _cid and not (_cid in _seen or _seen.add(_cid))
-                        ]
-
-                        for _cid in _candidate_course_ids:
-                            if _course_done_by_log_for_progress(_sid, _cid):
-                                continue
-                            if _has_unfinished_task_for_progress(_sid, _cid):
-                                if _cid == _latest_course_id:
-                                    return _cid, "この生徒の最新カリキュラム進捗から選択しています。"
-                                return _cid, "最新コースが完了・スキップ済み、または未完了課題がないため、次の未完了課題があるコースを選択しています。"
-
-                        # 全部完了/未登録の場合でも、完了・スキップ済みコースは
-                        # 「現在のコース」として戻さない。
-                        _open_course_ids = [
-                            _cid for _cid in _ordered_course_ids
-                            if not _course_done_by_log_for_progress(_sid, _cid)
-                        ]
-                        if (
-                            _latest_course_id
-                            and _latest_course_id in _open_course_ids
-                        ):
-                            return _latest_course_id, "未完了課題が見つからないため、未終了の最新コースを表示しています。"
-                        if _open_course_ids:
-                            return _open_course_ids[0], "未完了課題が見つからないため、未終了コースの先頭を表示しています。"
-                        return "", "すべてのコースが完了またはスキップ済みです。"
-
-                    default_course_id, progress_course_reason = _recommend_progress_course_id(student_id)
-                    if default_course_id and default_course_id not in course_ids:
-                        default_course_id = ""
-
-                    recommended_course_label = (
-                        course_label_by_id.get(default_course_id, "")
-                        if default_course_id
-                        else ""
-                    )
-                    progress_course_key = f"progress_course_{student_id}"
-                    progress_course_recommend_key = f"progress_course_recommended_{student_id}"
-
-                    if recommended_course_label:
-                        if st.session_state.get(progress_course_recommend_key) != recommended_course_label:
-                            st.session_state[progress_course_key] = recommended_course_label
-                            st.session_state[progress_course_recommend_key] = recommended_course_label
-                        elif progress_course_key not in st.session_state:
-                            st.session_state[progress_course_key] = recommended_course_label
-
-                    st.caption("生徒やコースを切り替える前に、入力した進捗を保存してください。")
-                    selected_course_label = st.selectbox(
-                        "コース",
-                        course_labels,
-                        key=progress_course_key,
-                        help="完了・スキップ済みコースを避け、次に未完了課題があるコースを推奨表示します。必要なら手動で変更できます。",
-                    )
-                    selected_course_id = selected_course_label.split("[")[-1].rstrip("]")
-
-                    if not recommended_course_label:
-                        st.info(progress_course_reason)
-                    elif selected_course_label == recommended_course_label:
-                        st.caption(f"現在表示中：{selected_course_id}｜判定理由：{progress_course_reason}")
-                    else:
-                        st.warning(f"現在表示中：{selected_course_id}｜推奨は {default_course_id} です。必要なら手動変更のままでOKです。")
-
-                    # d252:
-                    # 「推奨コースに戻す」ボタンは削除。
-                    # selectbox生成後に同じsession_stateを書き換えるとStreamlitでエラーになりやすく、
-                    # プルダウンで手動選択できるため、ボタンは置かない。
-
-                    # Lock done tasks unless override
-                    is_locked_done_tasks = (not override_done_lock)
-
-                    # tasks for course (common + student-specific)
-                    t = curr_tasks.loc[active_curriculum_task_mask(curr_tasks)].copy()
-                    t["student_id"] = t["student_id"].fillna("").astype(str).str.strip()
-                    t = t[
-                        (t["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
-                        & (
-                            (t["student_id"] == "")
-                            | (t["student_id"] == student_id)
-                        )
-                    ].copy()
-
-
-                    if t.empty:
-                        st.info("このコースに表示対象の課題はありません。")
-                    else:
-
-
-                        t["order_num"] = pd.to_numeric(t["order"], errors="coerce")
-                        t = t.sort_values(by=["order_num", "task_name"], na_position="last")
-
-
-                    # --- コース完了(done) 登録 ---
-                    # progress_log.csv に「この生徒はこのコースを完了した」を1行で保存します。
-                    # 課題チェック（どこまで進んだか）は curriculum_progress.csv に保存するので役割を分離。
-                    course_row = curr_courses[curr_courses["course_id"].astype(str).str.strip() == str(selected_course_id).strip()].copy()
-                    genre_id = str(course_row["genre_id"].iloc[0]).strip() if not course_row.empty else ""
-                    course_name = str(course_row["course_name"].iloc[0]).strip() if not course_row.empty else ""
-
-                    st.markdown('---')
-                    st.caption("コース完了（done）は、課題が全て終わっていなくても付けられます")
-                    
-                    # d272:
-                    # コース完了は、progress_log.csv の note=course_done の行だけで判定する。
-                    # 通常の課題完了ログと混ざらないようにする。
-                    for _c in ["student_id", "curriculum", "item", "status", "note"]:
-                        if _c not in log.columns:
-                            log[_c] = ""
-                        log[_c] = log[_c].fillna("").astype(str).str.strip()
-
-                    course_done_mask = course_history_mask(log, student_id, selected_course_id, "done")
-
-
-                    # d355:
-                    # コース単位のスキップは progress_log.csv に
-                    # status=skip / note=course_skip として保存する。
-                    course_skip_mask = course_history_mask(log, student_id, selected_course_id, "skip")
-
-
-                    is_course_done = bool(course_done_mask.any())
-                    is_course_skip = bool(course_skip_mask.any())
-
-                    col_done1, col_done2 = st.columns([1, 2])
-
-                    with col_done1:
-                        if is_course_done:
-                            st.success("✅ 完了済みです")
-                            mark_done = False
-                            mark_course_skip = False
-                        elif is_course_skip:
-                            st.info("⏭️ このカリキュラムはスキップ済みです")
-                            mark_done = False
-                            mark_course_skip = False
-                        else:
-                            mark_done = st.checkbox(
-                                "このカリキュラムを完了にする",
-                                value=False,
-                                key=f"mark_course_done_{student_id}_{selected_course_id}",
-                            )
-                            mark_course_skip = st.checkbox(
-                                "このカリキュラムをスキップする",
-                                value=False,
-                                key=f"mark_course_skip_{student_id}_{selected_course_id}",
-                            )
-
-                    with col_done2:
-                        if is_course_done or is_course_skip:
-                            if override_done_lock:
-                                if is_course_done:
-                                    st.warning("編集ロック解除中：コース完了を取り消せます。")
-                                    confirm_cancel_course_done_here = st.checkbox(
-                                        "本当にこのコース完了だけを取り消す",
-                                        value=False,
-                                        key=f"confirm_cancel_course_done_here_{student_id}_{selected_course_id}",
-                                    )
-                                    if st.button(
-                                        "↩ コース完了を取り消す",
-                                        disabled=not confirm_cancel_course_done_here,
-                                        key=f"cancel_course_done_here_{student_id}_{selected_course_id}",
-                                    ):
-                                        df_log = log.copy()
-                                        for _c in ["student_id", "curriculum", "item", "status", "note"]:
-                                            if _c not in df_log.columns:
-                                                df_log[_c] = ""
-                                            df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
-
-                                        cancel_mask = course_history_mask(df_log, student_id, selected_course_id, "done")
-
-                                        df_log = df_log.loc[~cancel_mask].reset_index(drop=True)
-                                        write_csv_atomic(df_log, PROGRESS_LOG_CSV)
-                                        st.success("コース完了を取り消しました。課題ごとの完了・スキップ記録は残っています。")
-                                        st.rerun()
-
-                                if is_course_skip:
-                                    st.warning("編集ロック解除中：カリキュラムのスキップを取り消せます。")
-                                    confirm_cancel_course_skip_here = st.checkbox(
-                                        "本当にこのカリキュラムのスキップを取り消す",
-                                        value=False,
-                                        key=f"confirm_cancel_course_skip_here_{student_id}_{selected_course_id}",
-                                    )
-                                    if st.button(
-                                        "↩ カリキュラムのスキップを取り消す",
-                                        disabled=not confirm_cancel_course_skip_here,
-                                        key=f"cancel_course_skip_here_{student_id}_{selected_course_id}",
-                                    ):
-                                        df_log = log.copy()
-                                        for _c in ["student_id", "curriculum", "item", "status", "note"]:
-                                            if _c not in df_log.columns:
-                                                df_log[_c] = ""
-                                            df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
-
-                                        cancel_skip_mask = course_history_mask(df_log, student_id, selected_course_id, "skip")
-
-                                        df_log = df_log.loc[~cancel_skip_mask].reset_index(drop=True)
-                                        write_csv_atomic(df_log, PROGRESS_LOG_CSV)
-                                        st.success("カリキュラムのスキップを取り消しました。")
-                                        st.rerun()
+                            if _latest_course_id and _latest_course_id in _ordered_course_ids:
+                                _idx = _ordered_course_ids.index(_latest_course_id)
+                                _candidate_course_ids.extend(_ordered_course_ids[_idx:])
+                                _candidate_course_ids.extend(_ordered_course_ids[:_idx])
                             else:
-                                st.caption(
-                                    "完了／スキップを取り消す場合は、左の"
-                                    "『完了済み課題を編集する』をONにしてください。"
-                                )
+                                _candidate_course_ids.extend(_ordered_course_ids)
 
-                        if not is_course_done and not is_course_skip:
-                            if mark_done and mark_course_skip:
-                                st.warning("完了とスキップはどちらか一方だけ選んでください。")
+                            _seen = set()
+                            _candidate_course_ids = [
+                                _cid for _cid in _candidate_course_ids
+                                if _cid and not (_cid in _seen or _seen.add(_cid))
+                            ]
 
-                            if st.button(
-                                "完了を保存",
-                                disabled=(not curriculum_new_entry_allowed) or (not mark_done) or mark_course_skip,
-                                key=f"save_course_done_{student_id}_{selected_course_id}",
+                            for _cid in _candidate_course_ids:
+                                if _course_done_by_log_for_progress(_sid, _cid):
+                                    continue
+                                if _has_unfinished_task_for_progress(_sid, _cid):
+                                    if _cid == _latest_course_id:
+                                        return _cid, "この生徒の最新カリキュラム進捗から選択しています。"
+                                    return _cid, "最新コースが完了・スキップ済み、または未完了課題がないため、次の未完了課題があるコースを選択しています。"
+
+                            # 全部完了/未登録の場合でも、完了・スキップ済みコースは
+                            # 「現在のコース」として戻さない。
+                            _open_course_ids = [
+                                _cid for _cid in _ordered_course_ids
+                                if not _course_done_by_log_for_progress(_sid, _cid)
+                            ]
+                            if (
+                                _latest_course_id
+                                and _latest_course_id in _open_course_ids
                             ):
-                                # 保存処理
+                                return _latest_course_id, "未完了課題が見つからないため、未終了の最新コースを表示しています。"
+                            if _open_course_ids:
+                                return _open_course_ids[0], "未完了課題が見つからないため、未終了コースの先頭を表示しています。"
+                            return "", "すべてのコースが完了またはスキップ済みです。"
 
-                                today_str = datetime.now().strftime('%Y-%m-%d')
-                                new_row = {
-                                    'date': today_str,
-                                    'student_id': str(student_id).strip(),
-                                    'course_id': str(selected_course_id).strip(),
-                                    'curriculum': str(genre_id).strip(),
-                                    'item': str(course_name).strip(),
-                                    'status': 'done',
-                                    'note': 'course_done',
-                                }
+                        default_course_id, progress_course_reason = _recommend_progress_course_id(student_id)
+                        if default_course_id and default_course_id not in course_ids:
+                            default_course_id = ""
 
-                                df_log = log.copy()
-                                if df_log.empty:
-                                    df_log = pd.DataFrame([new_row])
-                                else:
-                                    mask = course_history_mask(df_log, student_id, selected_course_id, "done")
-                                    if mask.any():
-                                        df_log.loc[mask, 'date'] = today_str
-                                        df_log.loc[mask, 'status'] = 'done'
-                                        df_log.loc[mask, 'note'] = 'course_done'
-                                    else:
-                                        df_log = pd.concat([df_log, pd.DataFrame([new_row])], ignore_index=True)
-
-                                write_csv_atomic(df_log, PROGRESS_LOG_CSV)
-                                st.success("保存しました（コース完了）")
-                                st.rerun()
-
-                            if st.button(
-                                "⏭️ スキップを保存",
-                                disabled=(not curriculum_new_entry_allowed) or (not mark_course_skip) or mark_done,
-                                key=f"save_course_skip_{student_id}_{selected_course_id}",
-                            ):
-                                today_str = datetime.now().strftime('%Y-%m-%d')
-                                new_row = {
-                                    'date': today_str,
-                                    'student_id': str(student_id).strip(),
-                                    'course_id': str(selected_course_id).strip(),
-                                    'curriculum': str(genre_id).strip(),
-                                    'item': str(course_name).strip(),
-                                    'status': 'skip',
-                                    'note': 'course_skip',
-                                }
-
-                                df_log = log.copy()
-                                if df_log.empty:
-                                    df_log = pd.DataFrame([new_row])
-                                else:
-                                    # 同一コースの course_done / course_skip は
-                                    # どちらか1件だけになるように置き換える。
-                                    for _c in ["student_id", "curriculum", "item", "status", "note"]:
-                                        if _c not in df_log.columns:
-                                            df_log[_c] = ""
-                                        df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
-
-                                    course_state_mask = (
-                                        course_history_mask(df_log, student_id, selected_course_id, "done")
-                                        | course_history_mask(df_log, student_id, selected_course_id, "skip")
-                                    )
-                                    df_log = df_log.loc[~course_state_mask].copy()
-                                    df_log = pd.concat(
-                                        [df_log, pd.DataFrame([new_row])],
-                                        ignore_index=True,
-                                    )
-
-                                write_csv_atomic(df_log, PROGRESS_LOG_CSV)
-                                st.success("保存しました（カリキュラムをスキップ）")
-                                st.rerun()
-
-                    p = curr_prog.copy()
-                    p = p[
-                        (p["student_id"].astype(str).str.strip() == student_id)
-                        & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
-                    ].copy()
-
-
-                    done_map = {
-                        str(r["task_id"]).strip(): (str(r.get("is_done", "")).strip().lower() == "true")
-                        for _, r in p.iterrows()
-                    }
-                    skip_map = {
-                        str(r["task_id"]).strip(): (str(r.get("is_skip", "")).strip().lower() == "true")
-                        for _, r in p.iterrows()
-                    }
-                    done_date_map = {
-                        str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
-                        for _, r in p.iterrows()
-                        if str(r["student_id"]).strip() == str(student_id).strip()
-                        and str(r["course_id"]).strip() == str(selected_course_id).strip()
-                    }
-                    recorded_at_map = {
-                        str(r["task_id"]).strip(): str(r.get("recorded_at", "")).strip()
-                        for _, r in p.iterrows()
-                        if str(r["student_id"]).strip() == str(student_id).strip()
-                        and str(r["course_id"]).strip() == str(selected_course_id).strip()
-                    }
-
-
-                    st.markdown("### 課題一覧")
-                    if override_done_lock:
-                        st.warning("⚠ 完了済み課題の編集ロックを解除中です。完了済みのプルダウンも変更できます。")
-                    updated_rows = []
-
-                    state_options = ["未実施", "完了", "スキップ"]
-
-                    for _, row in t.iterrows():
-                        task_id = str(row["task_id"]).strip()
-                        task_name = str(row["task_name"]).strip()
-                        task_display_name = task_name if task_name else f"{task_id}｜（課題名未設定）"
-                        was_done = bool(done_map.get(task_id, False))
-                        was_skip = bool(skip_map.get(task_id, False))
-                        prev_done_date = str(done_date_map.get(task_id, "")).strip()
-                        prev_recorded_at = str(recorded_at_map.get(task_id, "")).strip()
-                        task_label = (
-                            f"{task_display_name}　（完了日：{prev_done_date}）"
-                            if was_done and prev_done_date
-                            else task_display_name
+                        recommended_course_label = (
+                            course_label_by_id.get(default_course_id, "")
+                            if default_course_id
+                            else ""
                         )
+                        progress_course_key = f"progress_course_{student_id}"
+                        progress_course_recommend_key = f"progress_course_recommended_{student_id}"
 
+                        if recommended_course_label:
+                            if st.session_state.get(progress_course_recommend_key) != recommended_course_label:
+                                st.session_state[progress_course_key] = recommended_course_label
+                                st.session_state[progress_course_recommend_key] = recommended_course_label
+                            elif progress_course_key not in st.session_state:
+                                st.session_state[progress_course_key] = recommended_course_label
 
-                        if was_done:
-                            default_state = "完了"
-                        elif was_skip:
-                            default_state = "スキップ"
+                        # 再有効化時も、残っている空値・候補外値を選択欄へ渡さない。
+                        if st.session_state.get(progress_course_key) not in course_labels:
+                            fallback_label = course_label_by_id.get(default_course_id, "")
+                            st.session_state[progress_course_key] = (
+                                recommended_course_label if recommended_course_label in course_labels
+                                else fallback_label if fallback_label in course_labels
+                                else course_labels[0]
+                            )
+
+                        st.caption("生徒やコースを切り替える前に、入力した進捗を保存してください。")
+                        selected_course_label = st.selectbox(
+                            "コース",
+                            course_labels,
+                            key=progress_course_key,
+                            help="完了・スキップ済みコースを避け、次に未完了課題があるコースを推奨表示します。必要なら手動で変更できます。",
+                        )
+                        selected_course_id = selected_course_label.split("[")[-1].rstrip("]")
+
+                        if not recommended_course_label:
+                            st.info(progress_course_reason)
+                        elif selected_course_label == recommended_course_label:
+                            st.caption(f"現在表示中：{selected_course_id}｜判定理由：{progress_course_reason}")
                         else:
-                            default_state = "未実施"
+                            st.warning(f"現在表示中：{selected_course_id}｜推奨は {default_course_id} です。必要なら手動変更のままでOKです。")
 
+                        # d252:
+                        # 「推奨コースに戻す」ボタンは削除。
+                        # selectbox生成後に同じsession_stateを書き換えるとStreamlitでエラーになりやすく、
+                        # プルダウンで手動選択できるため、ボタンは置かない。
 
-                        if not curriculum_new_entry_allowed and not (was_done or was_skip):
-                            # 未実施の保存済み行は閲覧だけ残し、新規完了入力にはしない。
-                            if task_id in done_map:
-                                st.caption(f"{task_display_name}：未実施（保存済み記録）")
-                            continue
+                        # Lock done tasks unless override
+                        is_locked_done_tasks = (not override_done_lock)
 
-                        disabled = (was_done and is_locked_done_tasks)
-
-                        # d272:
-                        # Streamlitは同じkeyのselectbox状態を保持するため、
-                        # CSV上は完了になっていても、画面だけ古い「未実施」のまま残ることがある。
-                        # 元データ由来のdefault_stateが変わった時だけ、widget状態を同期する。
-                        state_key = f"curr_state_{student_id}_{selected_course_id}_{task_id}"
-                        source_key = f"{state_key}__source_default"
-                        if st.session_state.get(source_key) != default_state:
-                            st.session_state[state_key] = default_state
-                            st.session_state[source_key] = default_state
-
-
-                        selected_state = st.selectbox(
-                            task_label,
-                            state_options,
-                            index=state_options.index(default_state),
-                            key=state_key,
-                            disabled=disabled,
-                            format_func=status_label
-                        )
-
-                        # d396: 普段は日付選択を増やさず、完了済み課題の編集ロックを解除した時だけ
-                        # 「実際の完了日」を修正できる。入力日時(recorded_at)は変更しない。
-                        if was_done and override_done_lock and prev_done_date:
-                            with st.expander(f"🗓 完了日を修正｜{task_display_name}", expanded=False):
-                                try:
-                                    _default_done_date = dt.datetime.strptime(prev_done_date, "%Y-%m-%d").date()
-                                except Exception:
-                                    _default_done_date = dt.date.today()
-                                _corrected_done_date = st.date_input(
-                                    "実際の完了日",
-                                    value=_default_done_date,
-                                    key=f"correct_done_date_{student_id}_{selected_course_id}_{task_id}",
-                                )
-                                _correction_reason = st.text_input(
-                                    "修正理由（任意）",
-                                    placeholder="例：前日に完了していたが登録を忘れた",
-                                    key=f"correct_done_date_reason_{student_id}_{selected_course_id}_{task_id}",
-                                )
-                                if prev_recorded_at:
-                                    st.caption(f"入力日時：{prev_recorded_at}（完了日を直してもこの日時は残ります）")
-                                else:
-                                    st.caption("旧データのため入力日時の記録はありません。")
-                                if st.button(
-                                    "完了日だけ修正する",
-                                    key=f"save_correct_done_date_{student_id}_{selected_course_id}_{task_id}",
-                                ):
-                                    _new_done_date = _corrected_done_date.isoformat()
-                                    if _new_done_date == prev_done_date:
-                                        st.info("完了日は変更されていません。")
-                                    else:
-                                        _prog_fix = curr_prog.copy()
-                                        for _c in ["student_id", "course_id", "task_id", "done_date", "recorded_at"]:
-                                            if _c not in _prog_fix.columns:
-                                                _prog_fix[_c] = ""
-                                        _mask_fix = (
-                                            (_prog_fix["student_id"].astype(str).str.strip() == str(student_id).strip())
-                                            & (_prog_fix["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
-                                            & (_prog_fix["task_id"].astype(str).str.strip() == task_id)
-                                        )
-                                        _prog_fix.loc[_mask_fix, "done_date"] = _new_done_date
-                                        write_csv_atomic(_prog_fix, CURRICULUM_PROGRESS_CSV)
-                                        append_progress_date_correction_log(
-                                            student_id, selected_course_id, task_id,
-                                            prev_done_date, _new_done_date, _correction_reason,
-                                        )
-                                        st.success(f"完了日を {prev_done_date} → {_new_done_date} に修正しました。")
-                                        st.rerun()
-
-                        _newly_completed = selected_state == "完了" and default_state != "完了"
-                        updated_rows.append({
-                            "student_id": student_id,
-                            "course_id": str(selected_course_id).strip(),
-                            "task_id": task_id,
-                            "is_done": "true" if selected_state == "完了" else "false",
-                            "is_skip": "true" if selected_state == "スキップ" else "false",
-                            "done_date": (
-                                dt.date.today().isoformat()
-                                if _newly_completed
-                                else prev_done_date
-                            ) if selected_state == "完了" else "",
-                            "recorded_at": (
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                if _newly_completed
-                                else prev_recorded_at
-                            ) if selected_state == "完了" else "",
-                            "note": ""
-                        })
-
-
-
-
-                    if st.button("💾 保存（カリキュラム課題）", disabled=not updated_rows):
-                        new_df = pd.DataFrame(updated_rows)
-
-
-                        # 非表示課題の履歴は残し、今回入力した課題だけ置き換える。
-                        updated_task_ids = new_df["task_id"].astype(str).str.strip()
-                        others = curr_prog[
-                            ~(
-                                (curr_prog["student_id"].astype(str).str.strip() == student_id)
-                                & (curr_prog["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
-                                & curr_prog["task_id"].astype(str).str.strip().isin(updated_task_ids)
+                        # tasks for course (common + student-specific)
+                        t = curr_tasks.loc[active_curriculum_task_mask(curr_tasks)].copy()
+                        t["student_id"] = t["student_id"].fillna("").astype(str).str.strip()
+                        t = t[
+                            (t["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                            & (
+                                (t["student_id"] == "")
+                                | (t["student_id"] == student_id)
                             )
                         ].copy()
 
 
-                        if "is_skip" not in others.columns:
-                            others["is_skip"] = "false"
-                        if "recorded_at" not in others.columns:
-                            others["recorded_at"] = ""
+                        if t.empty:
+                            st.info("このコースに表示対象の課題はありません。")
+                        else:
 
 
-                        save_df = pd.concat([others, new_df], ignore_index=True)
-                        write_csv_atomic(save_df, CURRICULUM_PROGRESS_CSV)
+                            t["order_num"] = pd.to_numeric(t["order"], errors="coerce")
+                            t = t.sort_values(by=["order_num", "task_name"], na_position="last")
 
+
+                        # --- コース完了(done) 登録 ---
+                        # progress_log.csv に「この生徒はこのコースを完了した」を1行で保存します。
+                        # 課題チェック（どこまで進んだか）は curriculum_progress.csv に保存するので役割を分離。
+                        course_row = curr_courses[curr_courses["course_id"].astype(str).str.strip() == str(selected_course_id).strip()].copy()
+                        genre_id = str(course_row["genre_id"].iloc[0]).strip() if not course_row.empty else ""
+                        course_name = str(course_row["course_name"].iloc[0]).strip() if not course_row.empty else ""
+
+                        st.markdown('---')
+                        st.caption("コース完了（done）は、課題が全て終わっていなくても付けられます")
+                    
                         # d272:
-                        # 保存後は、次回表示時にCSV側の状態を正としてプルダウンを再同期する。
-                        for _r in updated_rows:
-                            _tid = str(_r.get("task_id", "")).strip()
-                            _k = f"curr_state_{student_id}_{selected_course_id}_{_tid}"
-                            st.session_state.pop(f"{_k}__source_default", None)
+                        # コース完了は、progress_log.csv の note=course_done の行だけで判定する。
+                        # 通常の課題完了ログと混ざらないようにする。
+                        for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                            if _c not in log.columns:
+                                log[_c] = ""
+                            log[_c] = log[_c].fillna("").astype(str).str.strip()
 
-                        st.success("保存しました。")
-                        st.rerun()
+                        course_done_mask = course_history_mask(log, student_id, selected_course_id, "done")
 
-                    if is_locked_done_tasks:
-                        st.caption("※ 完了済みの課題は誤操作防止のためロックしています（右の⚠で解除できます）。")
+
+                        # d355:
+                        # コース単位のスキップは progress_log.csv に
+                        # status=skip / note=course_skip として保存する。
+                        course_skip_mask = course_history_mask(log, student_id, selected_course_id, "skip")
+
+
+                        is_course_done = bool(course_done_mask.any())
+                        is_course_skip = bool(course_skip_mask.any())
+
+                        col_done1, col_done2 = st.columns([1, 2])
+
+                        with col_done1:
+                            if is_course_done:
+                                st.success("✅ 完了済みです")
+                                mark_done = False
+                                mark_course_skip = False
+                            elif is_course_skip:
+                                st.info("⏭️ このカリキュラムはスキップ済みです")
+                                mark_done = False
+                                mark_course_skip = False
+                            else:
+                                mark_done = st.checkbox(
+                                    "このカリキュラムを完了にする",
+                                    value=False,
+                                    key=f"mark_course_done_{student_id}_{selected_course_id}",
+                                )
+                                mark_course_skip = st.checkbox(
+                                    "このカリキュラムをスキップする",
+                                    value=False,
+                                    key=f"mark_course_skip_{student_id}_{selected_course_id}",
+                                )
+
+                        with col_done2:
+                            if is_course_done or is_course_skip:
+                                if override_done_lock:
+                                    if is_course_done:
+                                        st.warning("編集ロック解除中：コース完了を取り消せます。")
+                                        confirm_cancel_course_done_here = st.checkbox(
+                                            "本当にこのコース完了だけを取り消す",
+                                            value=False,
+                                            key=f"confirm_cancel_course_done_here_{student_id}_{selected_course_id}",
+                                        )
+                                        if st.button(
+                                            "↩ コース完了を取り消す",
+                                            disabled=not confirm_cancel_course_done_here,
+                                            key=f"cancel_course_done_here_{student_id}_{selected_course_id}",
+                                        ):
+                                            df_log = log.copy()
+                                            for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                                                if _c not in df_log.columns:
+                                                    df_log[_c] = ""
+                                                df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
+
+                                            cancel_mask = course_history_mask(df_log, student_id, selected_course_id, "done")
+
+                                            df_log = df_log.loc[~cancel_mask].reset_index(drop=True)
+                                            write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                            st.success("コース完了を取り消しました。課題ごとの完了・スキップ記録は残っています。")
+                                            st.rerun()
+
+                                    if is_course_skip:
+                                        st.warning("編集ロック解除中：カリキュラムのスキップを取り消せます。")
+                                        confirm_cancel_course_skip_here = st.checkbox(
+                                            "本当にこのカリキュラムのスキップを取り消す",
+                                            value=False,
+                                            key=f"confirm_cancel_course_skip_here_{student_id}_{selected_course_id}",
+                                        )
+                                        if st.button(
+                                            "↩ カリキュラムのスキップを取り消す",
+                                            disabled=not confirm_cancel_course_skip_here,
+                                            key=f"cancel_course_skip_here_{student_id}_{selected_course_id}",
+                                        ):
+                                            df_log = log.copy()
+                                            for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                                                if _c not in df_log.columns:
+                                                    df_log[_c] = ""
+                                                df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
+
+                                            cancel_skip_mask = course_history_mask(df_log, student_id, selected_course_id, "skip")
+
+                                            df_log = df_log.loc[~cancel_skip_mask].reset_index(drop=True)
+                                            write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                            st.success("カリキュラムのスキップを取り消しました。")
+                                            st.rerun()
+                                else:
+                                    st.caption(
+                                        "完了／スキップを取り消す場合は、左の"
+                                        "『完了済み課題を編集する』をONにしてください。"
+                                    )
+
+                            if not is_course_done and not is_course_skip:
+                                if mark_done and mark_course_skip:
+                                    st.warning("完了とスキップはどちらか一方だけ選んでください。")
+
+                                if st.button(
+                                    "完了を保存",
+                                    disabled=(not curriculum_new_entry_allowed) or (not mark_done) or mark_course_skip,
+                                    key=f"save_course_done_{student_id}_{selected_course_id}",
+                                ):
+                                    # 保存処理
+
+                                    today_str = datetime.now().strftime('%Y-%m-%d')
+                                    new_row = {
+                                        'date': today_str,
+                                        'student_id': str(student_id).strip(),
+                                        'course_id': str(selected_course_id).strip(),
+                                        'curriculum': str(genre_id).strip(),
+                                        'item': str(course_name).strip(),
+                                        'status': 'done',
+                                        'note': 'course_done',
+                                    }
+
+                                    df_log = log.copy()
+                                    if df_log.empty:
+                                        df_log = pd.DataFrame([new_row])
+                                    else:
+                                        mask = course_history_mask(df_log, student_id, selected_course_id, "done")
+                                        if mask.any():
+                                            df_log.loc[mask, 'date'] = today_str
+                                            df_log.loc[mask, 'status'] = 'done'
+                                            df_log.loc[mask, 'note'] = 'course_done'
+                                        else:
+                                            df_log = pd.concat([df_log, pd.DataFrame([new_row])], ignore_index=True)
+
+                                    write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                    st.success("保存しました（コース完了）")
+                                    st.rerun()
+
+                                if st.button(
+                                    "⏭️ スキップを保存",
+                                    disabled=(not curriculum_new_entry_allowed) or (not mark_course_skip) or mark_done,
+                                    key=f"save_course_skip_{student_id}_{selected_course_id}",
+                                ):
+                                    today_str = datetime.now().strftime('%Y-%m-%d')
+                                    new_row = {
+                                        'date': today_str,
+                                        'student_id': str(student_id).strip(),
+                                        'course_id': str(selected_course_id).strip(),
+                                        'curriculum': str(genre_id).strip(),
+                                        'item': str(course_name).strip(),
+                                        'status': 'skip',
+                                        'note': 'course_skip',
+                                    }
+
+                                    df_log = log.copy()
+                                    if df_log.empty:
+                                        df_log = pd.DataFrame([new_row])
+                                    else:
+                                        # 同一コースの course_done / course_skip は
+                                        # どちらか1件だけになるように置き換える。
+                                        for _c in ["student_id", "curriculum", "item", "status", "note"]:
+                                            if _c not in df_log.columns:
+                                                df_log[_c] = ""
+                                            df_log[_c] = df_log[_c].fillna("").astype(str).str.strip()
+
+                                        course_state_mask = (
+                                            course_history_mask(df_log, student_id, selected_course_id, "done")
+                                            | course_history_mask(df_log, student_id, selected_course_id, "skip")
+                                        )
+                                        df_log = df_log.loc[~course_state_mask].copy()
+                                        df_log = pd.concat(
+                                            [df_log, pd.DataFrame([new_row])],
+                                            ignore_index=True,
+                                        )
+
+                                    write_csv_atomic(df_log, PROGRESS_LOG_CSV)
+                                    st.success("保存しました（カリキュラムをスキップ）")
+                                    st.rerun()
+
+                        p = curr_prog.copy()
+                        p = p[
+                            (p["student_id"].astype(str).str.strip() == student_id)
+                            & (p["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                        ].copy()
+
+
+                        done_map = {
+                            str(r["task_id"]).strip(): (str(r.get("is_done", "")).strip().lower() == "true")
+                            for _, r in p.iterrows()
+                        }
+                        skip_map = {
+                            str(r["task_id"]).strip(): (str(r.get("is_skip", "")).strip().lower() == "true")
+                            for _, r in p.iterrows()
+                        }
+                        done_date_map = {
+                            str(r["task_id"]).strip(): str(r.get("done_date", "")).strip()
+                            for _, r in p.iterrows()
+                            if str(r["student_id"]).strip() == str(student_id).strip()
+                            and str(r["course_id"]).strip() == str(selected_course_id).strip()
+                        }
+                        recorded_at_map = {
+                            str(r["task_id"]).strip(): str(r.get("recorded_at", "")).strip()
+                            for _, r in p.iterrows()
+                            if str(r["student_id"]).strip() == str(student_id).strip()
+                            and str(r["course_id"]).strip() == str(selected_course_id).strip()
+                        }
+
+
+                        st.markdown("### 課題一覧")
+                        if override_done_lock:
+                            st.warning("⚠ 完了済み課題の編集ロックを解除中です。完了済みのプルダウンも変更できます。")
+                        updated_rows = []
+
+                        state_options = ["未実施", "完了", "スキップ"]
+
+                        for _, row in t.iterrows():
+                            task_id = str(row["task_id"]).strip()
+                            task_name = str(row["task_name"]).strip()
+                            task_display_name = task_name if task_name else f"{task_id}｜（課題名未設定）"
+                            was_done = bool(done_map.get(task_id, False))
+                            was_skip = bool(skip_map.get(task_id, False))
+                            prev_done_date = str(done_date_map.get(task_id, "")).strip()
+                            prev_recorded_at = str(recorded_at_map.get(task_id, "")).strip()
+                            task_label = (
+                                f"{task_display_name}　（完了日：{prev_done_date}）"
+                                if was_done and prev_done_date
+                                else task_display_name
+                            )
+
+
+                            if was_done:
+                                default_state = "完了"
+                            elif was_skip:
+                                default_state = "スキップ"
+                            else:
+                                default_state = "未実施"
+
+
+                            if not curriculum_new_entry_allowed and not (was_done or was_skip):
+                                # 未実施の保存済み行は閲覧だけ残し、新規完了入力にはしない。
+                                if task_id in done_map:
+                                    st.caption(f"{task_display_name}：未実施（保存済み記録）")
+                                continue
+
+                            disabled = (was_done and is_locked_done_tasks)
+
+                            # d272:
+                            # Streamlitは同じkeyのselectbox状態を保持するため、
+                            # CSV上は完了になっていても、画面だけ古い「未実施」のまま残ることがある。
+                            # 元データ由来のdefault_stateが変わった時だけ、widget状態を同期する。
+                            state_key = f"curr_state_{student_id}_{selected_course_id}_{task_id}"
+                            source_key = f"{state_key}__source_default"
+                            if st.session_state.get(source_key) != default_state:
+                                st.session_state[state_key] = default_state
+                                st.session_state[source_key] = default_state
+
+
+                            selected_state = st.selectbox(
+                                task_label,
+                                state_options,
+                                index=state_options.index(default_state),
+                                key=state_key,
+                                disabled=disabled,
+                                format_func=status_label
+                            )
+
+                            # d396: 普段は日付選択を増やさず、完了済み課題の編集ロックを解除した時だけ
+                            # 「実際の完了日」を修正できる。入力日時(recorded_at)は変更しない。
+                            if was_done and override_done_lock and prev_done_date:
+                                with st.expander(f"🗓 完了日を修正｜{task_display_name}", expanded=False):
+                                    try:
+                                        _default_done_date = dt.datetime.strptime(prev_done_date, "%Y-%m-%d").date()
+                                    except Exception:
+                                        _default_done_date = dt.date.today()
+                                    _corrected_done_date = st.date_input(
+                                        "実際の完了日",
+                                        value=_default_done_date,
+                                        key=f"correct_done_date_{student_id}_{selected_course_id}_{task_id}",
+                                    )
+                                    _correction_reason = st.text_input(
+                                        "修正理由（任意）",
+                                        placeholder="例：前日に完了していたが登録を忘れた",
+                                        key=f"correct_done_date_reason_{student_id}_{selected_course_id}_{task_id}",
+                                    )
+                                    if prev_recorded_at:
+                                        st.caption(f"入力日時：{prev_recorded_at}（完了日を直してもこの日時は残ります）")
+                                    else:
+                                        st.caption("旧データのため入力日時の記録はありません。")
+                                    if st.button(
+                                        "完了日だけ修正する",
+                                        key=f"save_correct_done_date_{student_id}_{selected_course_id}_{task_id}",
+                                    ):
+                                        _new_done_date = _corrected_done_date.isoformat()
+                                        if _new_done_date == prev_done_date:
+                                            st.info("完了日は変更されていません。")
+                                        else:
+                                            _prog_fix = curr_prog.copy()
+                                            for _c in ["student_id", "course_id", "task_id", "done_date", "recorded_at"]:
+                                                if _c not in _prog_fix.columns:
+                                                    _prog_fix[_c] = ""
+                                            _mask_fix = (
+                                                (_prog_fix["student_id"].astype(str).str.strip() == str(student_id).strip())
+                                                & (_prog_fix["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                                                & (_prog_fix["task_id"].astype(str).str.strip() == task_id)
+                                            )
+                                            _prog_fix.loc[_mask_fix, "done_date"] = _new_done_date
+                                            write_csv_atomic(_prog_fix, CURRICULUM_PROGRESS_CSV)
+                                            append_progress_date_correction_log(
+                                                student_id, selected_course_id, task_id,
+                                                prev_done_date, _new_done_date, _correction_reason,
+                                            )
+                                            st.success(f"完了日を {prev_done_date} → {_new_done_date} に修正しました。")
+                                            st.rerun()
+
+                            _newly_completed = selected_state == "完了" and default_state != "完了"
+                            updated_rows.append({
+                                "student_id": student_id,
+                                "course_id": str(selected_course_id).strip(),
+                                "task_id": task_id,
+                                "is_done": "true" if selected_state == "完了" else "false",
+                                "is_skip": "true" if selected_state == "スキップ" else "false",
+                                "done_date": (
+                                    dt.date.today().isoformat()
+                                    if _newly_completed
+                                    else prev_done_date
+                                ) if selected_state == "完了" else "",
+                                "recorded_at": (
+                                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    if _newly_completed
+                                    else prev_recorded_at
+                                ) if selected_state == "完了" else "",
+                                "note": ""
+                            })
+
+
+
+
+                        if st.button("💾 保存（カリキュラム課題）", disabled=not updated_rows):
+                            new_df = pd.DataFrame(updated_rows)
+
+
+                            # 非表示課題の履歴は残し、今回入力した課題だけ置き換える。
+                            updated_task_ids = new_df["task_id"].astype(str).str.strip()
+                            others = curr_prog[
+                                ~(
+                                    (curr_prog["student_id"].astype(str).str.strip() == student_id)
+                                    & (curr_prog["course_id"].astype(str).str.strip() == str(selected_course_id).strip())
+                                    & curr_prog["task_id"].astype(str).str.strip().isin(updated_task_ids)
+                                )
+                            ].copy()
+
+
+                            if "is_skip" not in others.columns:
+                                others["is_skip"] = "false"
+                            if "recorded_at" not in others.columns:
+                                others["recorded_at"] = ""
+
+
+                            save_df = pd.concat([others, new_df], ignore_index=True)
+                            write_csv_atomic(save_df, CURRICULUM_PROGRESS_CSV)
+
+                            # d272:
+                            # 保存後は、次回表示時にCSV側の状態を正としてプルダウンを再同期する。
+                            for _r in updated_rows:
+                                _tid = str(_r.get("task_id", "")).strip()
+                                _k = f"curr_state_{student_id}_{selected_course_id}_{_tid}"
+                                st.session_state.pop(f"{_k}__source_default", None)
+
+                            st.success("保存しました。")
+                            st.rerun()
+
+                        if is_locked_done_tasks:
+                            st.caption("※ 完了済みの課題は誤操作防止のためロックしています（右の⚠で解除できます）。")
     
     
     if sidebar_view_mode == "検定課題":

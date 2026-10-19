@@ -32,8 +32,8 @@ class TodayEnrollmentUiTests(unittest.TestCase):
         expected = {1,2,4} if mode=='mixed_flags' else ({1,2,4,5} if mode=='normal' else set())
         for i in range(6):
             self.assertEqual(f'att_kind_{today}_S{i}' in keys, i in expected)
-        # Shared attendance hints are calculated even for hidden display rows.
-        self.assertEqual(set(at.session_state['today_task_hint_map']),{f'S{i}' for i in range(6)})
+        # Display hints retain only current targets; hidden rows must not keep stale text.
+        self.assertEqual(set(at.session_state['today_task_hint_map']),{f'S{i}' for i in expected})
         return at,visible
 
     def test_today_boundaries_leave_blank_legacy_attendance_and_history(self):
