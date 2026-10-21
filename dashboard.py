@@ -9461,22 +9461,66 @@ if page == "閲覧":
         _skip_student = students[students["display_name"] == selected_student_raw].head(1)
         if not _skip_student.empty:
             _skip_sid = str(_skip_student.iloc[0]["student_id"]).strip()
-            if is_attendance_done_today(att_df_check, _skip_sid, today):
-                _skip_already_done = is_progress_skip_ok_today(prog_skip_df, _skip_sid, today)
-                if st.button(
+            _skip_attended = is_attendance_done_today(att_df_check, _skip_sid, today)
+            _skip_already_done = is_progress_skip_ok_today(prog_skip_df, _skip_sid, today)
+            _skip_curr_done = is_progress_done_today(_summary_curr_done, _skip_sid, today)
+            _skip_kentei_done = is_progress_done_today(_summary_kentei_done, _skip_sid, today)
+            if not _skip_attended:
+                st.info("今日は出席登録されていません。")
+            if _skip_curr_done or _skip_kentei_done:
+                st.success("✅ 今日の進捗は登録済みです")
+            if _skip_already_done:
+                st.success("✅ 進捗なしで完了済み")
+                if st.button("取り消す", key=f"today_no_progress_cancel_{today}_{_skip_sid}"):
+                    try:
+                        # このCSVは状態表。同一生徒・日付だけ除き、他の記録は保持する。
+                        _skip_latest = load_progress_skip_ok().copy()
+                        _skip_mask = (
+                            _skip_latest["student_id"].astype(str).str.strip().eq(_skip_sid)
+                            & _skip_latest["date"].astype(str).str.strip().eq(str(today))
+                        )
+                        save_progress_skip_ok(_skip_latest.loc[~_skip_mask].copy())
+                    except Exception as exc:
+                        st.error(f"進捗なしの取消を保存できませんでした：{exc}")
+                    else:
+                        st.rerun()
+            elif _skip_attended and not (_skip_curr_done or _skip_kentei_done):
+                if not (curr_prog_available and kentei_prog_available):
+                    st.error("進捗記録を読み込めないため、進捗なしを登録できません。")
+                elif st.button(
                     "進捗なしで完了",
                     key=f"today_no_progress_{today}_{_skip_sid}",
-                    disabled=_skip_already_done,
                     help="選択中の生徒について、今日の進捗入力が不要であることを保存します。",
                 ):
-                    _skip_latest = load_progress_skip_ok().copy()
-                    _skip_latest = upsert_progress_skip_ok(
-                        _skip_latest, student_id=_skip_sid, d=today,
-                        note="進捗登録画面から進捗なしで完了",
-                    )
-                    save_progress_skip_ok(_skip_latest)
-                    st.success("進捗なしで完了にしました。")
-                    st.rerun()
+                    try:
+                        # 表示後の更新も確認し、読込失敗時は保存へ進まない。
+                        _skip_latest = load_progress_skip_ok().copy()
+                        _skip_att_latest = load_attendance_log()
+                        _skip_progress_exists = False
+                        for _skip_path in (CURRICULUM_PROGRESS_CSV, KENTEI_PROGRESS_CSV):
+                            _skip_progress = pd.read_csv(_skip_path, dtype=str).fillna("")
+                            if not {"student_id", "is_done", "done_date"}.issubset(_skip_progress.columns):
+                                raise ValueError("進捗記録の必須列がありません")
+                            _skip_progress["done_date"] = pd.to_datetime(
+                                _skip_progress["done_date"], errors="coerce"
+                            ).dt.strftime("%Y-%m-%d").fillna("")
+                            _skip_completed = _skip_progress[
+                                _skip_progress.apply(is_progress_task_completed, axis=1)
+                            ]
+                            _skip_progress_exists |= is_progress_done_today(_skip_completed, _skip_sid, today)
+                        if not is_attendance_done_today(_skip_att_latest, _skip_sid, today):
+                            st.info("今日は出席登録されていません。")
+                        elif _skip_progress_exists:
+                            st.info("今日の進捗は登録済みです。進捗なしは追加していません。")
+                        else:
+                            _skip_latest = upsert_progress_skip_ok(
+                                _skip_latest, student_id=_skip_sid, d=today,
+                                note="進捗登録画面から進捗なしで完了",
+                            )
+                            save_progress_skip_ok(_skip_latest)
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"進捗なしを保存できませんでした：{exc}")
 
     st.divider()
 
