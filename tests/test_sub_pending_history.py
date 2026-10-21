@@ -26,6 +26,7 @@ class SubPendingHistoryTests(unittest.TestCase):
         before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in f.data.glob('*.csv')}
         at = AppTest.from_file(str(f.app), default_timeout=40)
         at.session_state['auth_ok'] = True
+        at.session_state['daily_input_mode'] = '進捗登録'
         at.run()
         self.assertFalse(at.exception)
         summary = next(m.value for m in at.markdown if '最終確認｜今日の入力状況' in m.value)

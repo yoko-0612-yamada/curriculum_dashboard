@@ -68,7 +68,7 @@ class SubDisplayUiTests(unittest.TestCase):
             self.assertFalse(at.exception)
             # Daily: summary before sync + cards after sync. No reuse across sync.
             self.assertEqual(counts, dict(zip(names, [1, 2])))
-            self.assertEqual(sum(str(b.key).startswith('sub_daily_done_') for b in at.button), 1 if status == 'pending' else 0)
+            self.assertEqual(sum(str(b.key).startswith('sub_daily_done_') for b in at.button), 0)  # 出席は確認情報のみ
         pd.DataFrame([dict(feature='subtask', pause_start=day, resume_date='')]).to_csv(f.data/'feature_pause_periods.csv', index=False)
         counts = dict.fromkeys(names, 0)
         with patch.object(pd, 'read_csv', read): at.run()

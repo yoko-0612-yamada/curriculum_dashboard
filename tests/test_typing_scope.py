@@ -39,7 +39,7 @@ class TypingScopeTests(unittest.TestCase):
         self.select('C'); self.assertFalse(self.buttons())
         self.assertTrue(any('今日のタイピングチェック対象ではありません' in c.value for c in self.at.caption))
         self.at.radio(key='daily_input_mode').set_value('出席登録').run()
-        self.assertEqual(len(self.buttons()),8)
+        self.assertEqual(len(self.buttons()),0)
         self.assertEqual(self.summary(),baseline)
 
     def test_saved_states_undo_past_and_history(self):

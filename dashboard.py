@@ -7985,6 +7985,9 @@ if page == "閲覧":
             "毎日使う：進捗登録" if pending_view_mode in daily_view_options else "たまに見る：確認・一覧"
         )
 
+    if pending_view_mode in daily_view_options:
+        st.session_state["pending_input_mode"] = "進捗登録"
+
     current_view_mode = str(st.session_state.get("view_mode_trial", "カリキュラム課題"))
     default_group = "毎日使う：進捗登録" if current_view_mode in daily_view_options else "たまに見る：確認・一覧"
 
@@ -7993,9 +7996,11 @@ if page == "閲覧":
         ["毎日使う：進捗登録", "たまに見る：確認・一覧"],
         index=0 if default_group == "毎日使う：進捗登録" else 1,
         horizontal=False,
-        format_func=lambda value: "進捗登録" if value == "毎日使う：進捗登録" else "確認・一覧",
+        format_func=lambda value: "日常入力" if value == "毎日使う：進捗登録" else "確認・一覧",
         key="view_mode_group",
     )
+
+    is_daily_input = view_group == "毎日使う：進捗登録"
 
     # 詳細カードを描画する前に入力モードを確定する。
     if "pending_input_mode" in st.session_state:
@@ -8006,7 +8011,25 @@ if page == "閲覧":
         )
         view_mode_container.caption("切替前に出欠を保存してください。未保存の出欠入力は切替でリセットされます。")
     else:
-        daily_input_mode = "出席登録"  # 確認・一覧側の既存表示は変更しない。
+        daily_input_mode = st.session_state.get("daily_input_mode", "出席登録")
+        # 非表示widgetの掃除で既存の入力モードを失わない。
+        st.session_state["daily_input_mode"] = daily_input_mode
+
+    is_attendance_input = is_daily_input and daily_input_mode == "出席登録"
+    is_progress_input = is_daily_input and daily_input_mode == "進捗登録"
+
+    # 出席画面では進捗widgetを作らない。既存キーの値だけを保持し、
+    # 非表示widgetの掃除によって未保存の進捗や選択が失われるのを防ぐ。
+    if is_attendance_input:
+        for _progress_key in list(st.session_state):
+            if str(_progress_key).startswith((
+                "curr_state_", "kentei_state_", "progress_course_", "kentei_grade_",
+                "mark_course_done_", "mark_course_skip_", "correct_done_date_",
+                "kentei_order_edit_", "pass_new_", "pass_edit_",
+            )) or _progress_key == "view_mode_trial":
+                st.session_state[_progress_key] = st.session_state[_progress_key]
+
+    st.subheader(f"日常入力 ＞ {daily_input_mode}" if is_daily_input else "確認・一覧")
 
     # Sidebar filters
     # =========================================================
@@ -8208,21 +8231,24 @@ if page == "閲覧":
     # =========================
     # 編集ロック解除
     # =========================
-    st.sidebar.markdown("### 編集ロック解除")
+    if is_attendance_input:
+        # 入力解除の選択も保持するが、出席画面には課題編集用widgetを作らない。
+        for _lock_key in ("override_passed_lock", "override_done_lock"):
+            st.session_state[_lock_key] = st.session_state.get(_lock_key, False)
+    else:
+        st.sidebar.markdown("### 編集ロック解除")
+        override_passed_lock = st.sidebar.checkbox(
+            "⚠ 合格済み検定課題を編集する（通常はOFF）",
+            key="override_passed_lock"
+        )
 
 
-    override_passed_lock = st.sidebar.checkbox(
-        "⚠ 合格済み検定課題を編集する（通常はOFF）",
-        key="override_passed_lock"
-    )
+        override_done_lock = st.sidebar.checkbox(
+            "⚠ 完了済み課題を編集する（通常はOFF）",
+            key="override_done_lock"
+        )
 
-
-    override_done_lock = st.sidebar.checkbox(
-        "⚠ 完了済み課題を編集する（通常はOFF）",
-        key="override_done_lock"
-    )
-
-    st.sidebar.caption("※ 合格済み/完了済みの編集を一時的に許可したい時だけONにしてください")
+        st.sidebar.caption("※ 合格済み/完了済みの編集を一時的に許可したい時だけONにしてください")
     # =========================================================
     # Apply filters (logs)
     # =========================================================
@@ -9122,6 +9148,10 @@ if page == "閲覧":
         ).reset_index(drop=True)
 
 
+        if not is_daily_input:
+            st.dataframe(show_df.drop(columns=["priority"], errors="ignore"), hide_index=True, use_container_width=True)
+            return
+
         st.caption("未完了タスクから出欠登録できます。進捗を登録する場合は「この生徒」で対象生徒へ移動できます。")
 
 
@@ -9155,7 +9185,7 @@ if page == "閲覧":
                 )
 
             with c2:
-                if st.button(
+                if is_attendance_input and st.button(
                     "授業で記録",
                     key=f"{key_prefix}_lesson_{d_str}_{sid}_{slot}_{i}",
                     disabled=attendance_done
@@ -9181,7 +9211,7 @@ if page == "閲覧":
 
 
             with c3:
-                if st.button(
+                if is_attendance_input and st.button(
                     "自習で記録",
                     key=f"{key_prefix}_self_{d_str}_{sid}_{slot}_{i}",
                     disabled=attendance_done
@@ -9207,7 +9237,7 @@ if page == "閲覧":
 
 
             with c4:
-                if st.button(
+                if is_attendance_input and st.button(
                     "欠席で登録（予定取消）",
                     key=f"{key_prefix}_absence_{d_str}_{sid}_{slot}_{i}",
                     disabled=attendance_done,
@@ -9239,7 +9269,7 @@ if page == "閲覧":
 
 
             with c5:
-                if st.button(
+                if is_attendance_input and st.button(
                     "キャンセル登録",
                     key=f"{key_prefix}_cancel_{d_str}_{sid}_{slot}_{i}",
                     disabled=attendance_done
@@ -9284,7 +9314,7 @@ if page == "閲覧":
 
 
             with c6:
-                if st.button(
+                if is_progress_input and st.button(
                     "進捗なしで完了",
                     key=f"{key_prefix}_no_progress_{d_str}_{sid}_{slot}_{i}",
                     disabled=progress_done
@@ -9426,6 +9456,28 @@ if page == "閲覧":
         st.success("✅ 今日の未完了タスクはありません")
 
 
+    # 出席カードに混在していた今日の「進捗なし」操作は、選択生徒の進捗画面へ。
+    if is_progress_input and selected_student != "（全員）":
+        _skip_student = students[students["display_name"] == selected_student_raw].head(1)
+        if not _skip_student.empty:
+            _skip_sid = str(_skip_student.iloc[0]["student_id"]).strip()
+            if is_attendance_done_today(att_df_check, _skip_sid, today):
+                _skip_already_done = is_progress_skip_ok_today(prog_skip_df, _skip_sid, today)
+                if st.button(
+                    "進捗なしで完了",
+                    key=f"today_no_progress_{today}_{_skip_sid}",
+                    disabled=_skip_already_done,
+                    help="選択中の生徒について、今日の進捗入力が不要であることを保存します。",
+                ):
+                    _skip_latest = load_progress_skip_ok().copy()
+                    _skip_latest = upsert_progress_skip_ok(
+                        _skip_latest, student_id=_skip_sid, d=today,
+                        note="進捗登録画面から進捗なしで完了",
+                    )
+                    save_progress_skip_ok(_skip_latest)
+                    st.success("進捗なしで完了にしました。")
+                    st.rerun()
+
     st.divider()
 
 
@@ -9533,8 +9585,8 @@ if page == "閲覧":
             expanded=bool(_past_sub_pending_count),
         ):
             st.caption(
-                "実際に終わっている場合は「完了登録」、"
-                "その日は取り組まなかった場合は「実施なし」で確認してください。"
+                "実際に終わっている場合は「完了登録」、その日は取り組まなかった場合は「実施なし」で確認してください。"
+                if is_progress_input else "入力・更新は日常入力の進捗登録で行えます。"
             )
 
             for _idx, _row in pending_sub_daily.reset_index(drop=True).iterrows():
@@ -9552,6 +9604,8 @@ if page == "閲覧":
                         f"**{_d}｜{_student_label}**  \n"
                         f"{_sub_label} / {_item_label}"
                     )
+                if not is_progress_input:
+                    continue
                 with _sc2:
                     if st.button(
                         "✅ 完了登録",
@@ -9585,9 +9639,11 @@ if page == "閲覧":
     st.divider()
 
     st.subheader(f"🗓 今日（{today.strftime('%Y-%m-%d')}・{today_wd}）の予定")
-    st.caption("※ 記録後でも「取消」で元に戻せます")
+    if is_daily_input:
+        st.caption("※ 記録後でも「取消」で元に戻せます")
     #st.info("⚠ 授業が終わったら『進捗登録』または『進捗なしで完了』を必ず押してください")
-    st.warning("授業が終わったら、出欠を記録してください。進捗がある場合は下のカリキュラム課題 / 検定課題で登録してください。進捗が無い場合だけ「進捗なしで完了」を押してください。")
+    if is_daily_input:
+        st.warning("授業が終わったら出欠を保存し、入力モードを進捗登録へ切り替えて課題を登録してください。進捗が無い場合だけ「進捗なしで完了」を使用してください。")
 
     # =====================================================
 # 🧹整理候補
@@ -9690,7 +9746,7 @@ if page == "閲覧":
                     st.write(_restore_text)
 
                 with _rc2:
-                    if st.button(
+                    if not is_progress_input and st.button(
                         "復活",
                         key=(
                             f"today_cancel_restore_"
@@ -9820,6 +9876,9 @@ if page == "閲覧":
     # 表示用ヒントは今回の候補だけで再構築し、前回値を持ち越さない。
     _today_task_hint_map = {}
     _today_sub_hint_map = {}
+    if not is_daily_input:
+        st.session_state["today_task_hint_map"] = {}
+        st.session_state["today_sub_hint_map"] = {}
     if today_view.empty:
         st.session_state["today_task_hint_map"] = {}
         st.session_state["today_sub_hint_map"] = {}
@@ -10054,7 +10113,7 @@ if page == "閲覧":
                 return "未配置"
 
         # この画面構築内だけで共有。準備メモの保存・削除後は直ちにrerunする。
-        _today_prep_df = load_prep_memo().copy()
+        _today_prep_df = load_prep_memo().copy() if is_daily_input else None
 
         # 自動同期後のカード表示内だけで共有。操作後は既存どおりrerunする。
         # 停止中・候補なしの場合は読み込まない。
@@ -10103,11 +10162,12 @@ if page == "閲覧":
         # 生徒に依存しないコース表だけを、この画面構築内で共有する。
         # 作成エラーは従来どおり通常課題ヒント内で表示する。
         try:
-            _today_active_courses = _active_course_table()
+            _today_active_courses = _active_course_table() if is_daily_input else None
         except Exception as _course_table_error:
             _today_active_courses = _course_table_error
 
-        st.subheader("👀 次に見る候補")
+        if is_daily_input:
+            st.subheader("👀 次に見る候補")
 
 
         _sub_progress_flash = st.session_state.pop("sub_progress_flash", "")
@@ -10125,14 +10185,14 @@ if page == "閲覧":
             if not _hint_student.empty:
                 _hint_selected_student_id = str(_hint_student["student_id"].iloc[0]).strip()
         today_display_candidates = filter_student_ids(next_candidates, today_display_ids)
-        if today_display_candidates.empty and not today_display_error:
+        if is_daily_input and today_display_candidates.empty and not today_display_error:
             st.caption("今日の予定：0人（今日時点の在籍対象なし）")
-        if next_candidates.empty:
+        if is_daily_input and next_candidates.empty:
             st.caption("候補なし")
         else:
             # d284:
             # 今日の予定にいる生徒を、自習・完了済みも含めて全員表示する。
-            if not today_display_candidates.empty:
+            if is_daily_input and not today_display_candidates.empty:
                 st.caption(f"今日の予定：{len(today_display_candidates)}人（自習・完了済みを含めて表示）")
 
             # 同じ生徒が複数コマにいる場合も、サブ課題の状態・操作は1回だけ表示する。
@@ -10142,7 +10202,7 @@ if page == "閲覧":
             # 次に見る候補で算出した表示文を生徒IDごとに共有する。
 
             _today_display_number = 0
-            for i, (_, r) in enumerate(next_candidates.iterrows(), start=1):
+            for i, (_, r) in enumerate((next_candidates if is_daily_input else next_candidates.iloc[0:0]).iterrows(), start=1):
                 name = str(r.get("display_name", "")).strip()
                 sid = str(r.get("student_id", "")).strip()
                 status = str(r.get("状態", "")).strip()
@@ -10587,7 +10647,7 @@ if page == "閲覧":
                     )
 
                     if (
-                        _show_today_candidate and _show_sub_controls
+                        is_progress_input and _show_today_candidate and _show_sub_controls
                         and sid not in _sub_progress_button_rendered
                     ):
                         _sub_progress_button_rendered.add(sid)
@@ -10735,99 +10795,100 @@ if page == "閲覧":
         # =====================================================
         # 次の準備メモ（簡易版）
         # =====================================================
-        st.subheader("📝 次の準備メモ")
-        prep_df = _today_prep_df
+        if is_attendance_input:
+            st.subheader("📝 次の準備メモ")
+            prep_df = _today_prep_df
 
 
-        # 今日の生徒候補
-        prep_candidates = base_students.copy()
-        if "display_name" not in prep_candidates.columns:
-            prep_candidates["display_name"] = prep_candidates["student_id"].astype(str)
+            # 今日の生徒候補
+            prep_candidates = base_students.copy()
+            if "display_name" not in prep_candidates.columns:
+                prep_candidates["display_name"] = prep_candidates["student_id"].astype(str)
 
 
-        prep_candidates["student_id"] = prep_candidates["student_id"].astype(str).str.strip()
-        prep_candidates["display_name"] = prep_candidates["display_name"].astype(str).str.strip()
-        prep_candidates["label"] = prep_candidates["student_id"] + "｜" + prep_candidates["display_name"]
+            prep_candidates["student_id"] = prep_candidates["student_id"].astype(str).str.strip()
+            prep_candidates["display_name"] = prep_candidates["display_name"].astype(str).str.strip()
+            prep_candidates["label"] = prep_candidates["student_id"] + "｜" + prep_candidates["display_name"]
 
 
-        prep_labels = prep_candidates["label"].dropna().tolist()
+            prep_labels = prep_candidates["label"].dropna().tolist()
 
 
-        if prep_labels:
-            c_p1, c_p2 = st.columns([3, 2])
+            if prep_labels:
+                c_p1, c_p2 = st.columns([3, 2])
 
 
-            with c_p1:
-                prep_label = st.selectbox(
-                    "対象生徒",
-                    prep_labels,
-                    key="prep_target_student"
-                )
+                with c_p1:
+                    prep_label = st.selectbox(
+                        "対象生徒",
+                        prep_labels,
+                        key="prep_target_student"
+                    )
 
-            with c_p2:
-                prep_text = st.text_input(
-                    "内容",
-                    placeholder="例）次はHTML課題3を準備",
-                    key="prep_text_input"
-                )
+                with c_p2:
+                    prep_text = st.text_input(
+                        "内容",
+                        placeholder="例）次はHTML課題3を準備",
+                        key="prep_text_input"
+                    )
 
 
-            c_p3, c_p4 = st.columns([1, 5])
+                c_p3, c_p4 = st.columns([1, 5])
 
 
             
-            with c_p3:
-                if st.button('追加して保存', key="prep_add_btn"):
-                    sid = prep_label.split("｜", 1)[0].strip()
-                    txt = str(st.session_state.get("prep_text_input", "")).strip()
-                    if txt:
-                        prep_df2 = upsert_prep_memo(prep_df, sid, txt)
-                        save_prep_memo(prep_df2)
-                        st.rerun()
+                with c_p3:
+                    if st.button('追加して保存', key="prep_add_btn"):
+                        sid = prep_label.split("｜", 1)[0].strip()
+                        txt = str(st.session_state.get("prep_text_input", "")).strip()
+                        if txt:
+                            prep_df2 = upsert_prep_memo(prep_df, sid, txt)
+                            save_prep_memo(prep_df2)
+                            st.rerun()
 
 
-            with c_p4:
-                st.caption("授業中に『あとで準備』と思ったことを一時メモできます")
+                with c_p4:
+                    st.caption("授業中に『あとで準備』と思ったことを一時メモできます")
 
 
-            prep_map = dict(
-                    zip(
-                        prep_df["student_id"].astype(str).str.strip(),
-                        prep_df["memo"].astype(str).str.strip()
+                prep_map = dict(
+                        zip(
+                            prep_df["student_id"].astype(str).str.strip(),
+                            prep_df["memo"].astype(str).str.strip()
+                        )
                     )
-                )
 
 
 
-            if prep_map:
-                st.markdown("**現在のメモ**")
-                for _, r in prep_candidates.iterrows():
-                    sid = str(r.get("student_id", "")).strip()
-                    name = str(r.get("display_name", "")).strip() or sid
-                    memo = prep_map.get(sid, "").strip()
-                    if memo:
-                        c_m1, c_m2 = st.columns([6, 1])
-                        with c_m1:
-                            st.write(f"- {sid}｜{name}：{memo}")
-                        with c_m2:
-                            if st.button("削除", key=f"prep_del_{sid}"):
-                                prep_df2 = upsert_prep_memo(prep_df, sid, "")
-                                save_prep_memo(prep_df2)
-                                st.rerun()
+                if prep_map:
+                    st.markdown("**現在のメモ**")
+                    for _, r in prep_candidates.iterrows():
+                        sid = str(r.get("student_id", "")).strip()
+                        name = str(r.get("display_name", "")).strip() or sid
+                        memo = prep_map.get(sid, "").strip()
+                        if memo:
+                            c_m1, c_m2 = st.columns([6, 1])
+                            with c_m1:
+                                st.write(f"- {sid}｜{name}：{memo}")
+                            with c_m2:
+                                if st.button("削除", key=f"prep_del_{sid}"):
+                                    prep_df2 = upsert_prep_memo(prep_df, sid, "")
+                                    save_prep_memo(prep_df2)
+                                    st.rerun()
 
+                else:
+                    st.caption("メモなし")
             else:
-                st.caption("メモなし")
-        else:
-            st.caption("今日の生徒がいないため、準備メモは表示されません。")
+                st.caption("今日の生徒がいないため、準備メモは表示されません。")
 
 
-        st.divider()
+            st.divider()
 
 
-        # =====================================================
-        # 今日の予定に「今月の回数」を表示
-        # 例: 3/4 山田花子
-        # =====================================================
+            # =====================================================
+            # 今日の予定に「今月の回数」を表示
+            # 例: 3/4 山田花子
+            # =====================================================
         att_df_for_count = load_attendance_log().copy()
 
 
@@ -11307,8 +11368,9 @@ if page == "閲覧":
         # ✅ 出席ログ（授業/自習）: 予定ではなく実績を記録
         #    → 作業完了管理寄り（未確認を先に表示）
         # =====================================================
-        with st.expander("✅ 出席記録（授業/自習）", expanded=True):
-            st.caption("授業・自習・欠席を選び、「出欠を保存／更新」で保存します。確認済みの記録も同じ方法で上書きできます。")
+        with st.expander("✅ 出席記録（授業/自習）" if is_daily_input else "✅ 今日の出席状況", expanded=True):
+            if is_attendance_input:
+                st.caption("授業・自習・欠席を選び、「出欠を保存／更新」で保存します。確認済みの記録も同じ方法で上書きできます。")
 
             _prep_flash = st.session_state.pop("preparation_flash", "")
             if _prep_flash:
@@ -11580,13 +11642,15 @@ if page == "閲覧":
                         nm = name_map.get(sid, "")
                         label = f"{sid}｜{nm}" if nm else sid
 
-                        if st.button(f"⚠ {label} を開く", key=f"jump_missing_{sid}"):
+                        if not is_daily_input:
+                            st.write(f"・{label}")
+                        if is_daily_input and st.button(f"⚠ {label} を開く", key=f"jump_missing_{sid}"):
                             if nm:
                                 st.session_state["pending_sidebar_student"] = nm
                                 st.session_state["pending_input_mode"] = "進捗登録"
                                 st.rerun()
                                 
-                if daily_input_mode == "出席登録":
+                if is_daily_input and daily_input_mode == "出席登録":
                     # d315:
                     # 確認済みの出欠も同じカードで編集し、「記録/更新」で上書きする。
                     # 修正方法を統一するため、「未登録に戻す」操作は廃止した。
@@ -11688,7 +11752,7 @@ if page == "閲覧":
                             with st.container():
                                 st.markdown("---")
                                 # d371: 準備作業中に見つけやすいよう「準備完了」を最左列へ。
-                                c1, c2, c3, c4, c5, c6 = st.columns([1.6, 3, 2, 3, 3, 2])
+                                c1, c2, c3, c4, c6 = st.columns([1.6, 3, 2, 3, 2])
 
 
                                 with c2:
@@ -11924,33 +11988,6 @@ if page == "閲覧":
                                         key=f"att_memo_{today}_{sid}"
                                     )
 
-                                with c5:
-                                    # d253:
-                                    # 出欠種別に合わせて「進捗なしで完了」の初期値を変える。
-                                    # 自習だけの日は進捗登録不要なのでON。
-                                    # 授業・授業＋自習は進捗確認が必要なのでOFF。
-                                    # すでに「進捗なしで完了」済みの生徒はONで表示する。
-                                    _picked_kind_norm = str(picked_kind).strip().lower()
-                                    _no_progress_default = (
-                                        _picked_kind_norm
-                                        in [
-                                            "selfstudy",
-                                            "self",
-                                            "自習",
-                                            "absence",
-                                            "欠席",
-                                            "cancel",
-                                            "キャンセル",
-                                        ]
-                                        or str(sid).strip() in prog_skip_today_ids
-                                    )
-                                    no_progress_done = st.checkbox(
-                                        "進捗なしで完了にする",
-                                        value=bool(_no_progress_default),
-                                        key=f"no_progress_done_{today}_{sid}_{_picked_kind_norm}"
-                                    )
-
-
                                 with c6:
                                     if st.button(
                                         "💾 出欠を保存／更新",
@@ -12058,17 +12095,6 @@ if page == "閲覧":
                                             save_attendance_log(att_df2)
                                             st.success("出欠記録を上書き保存しました。")
 
-                                        # 進捗状態を保存
-                                        if no_progress_done:
-                                            prog_skip_df2 = load_progress_skip_ok().copy()
-                                            prog_skip_df2 = upsert_progress_skip_ok(
-                                                prog_skip_df2,
-                                                student_id=sid,
-                                                d=today,
-                                                note="出席記録画面から進捗なしで完了"
-                                            )
-                                            save_progress_skip_ok(prog_skip_df2)
-
                                         if open_after_attendance_save:
                                             if nm:
                                                 st.session_state["pending_sidebar_student"] = nm
@@ -12143,310 +12169,311 @@ if page == "閲覧":
         # 出席登録済みの子だけを対象にする。
         # まだ来ていない子は未完了に出さず、来た子だけ残るようにする。
         # =====================================================
-        with st.expander("⌨️ タイピング5分チェック", expanded=True):
-            st.caption(
-                "出席登録済みの生徒だけを対象にします。"
-                "終わったら「完了」、今日は不要なら「免除」を押します。"
-            )
-
-            typing_df = load_typing_log()
-            typing_att_df = load_attendance_log()
-
-            typing_student_name_map = {}
-            if not students.empty and {"student_id", "display_name"}.issubset(students.columns):
-                _typing_students = students.copy()
-                _typing_students["student_id"] = (
-                    _typing_students["student_id"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
+        if is_progress_input:
+            with st.expander("⌨️ タイピング5分チェック", expanded=True):
+                st.caption(
+                    "出席登録済みの生徒だけを対象にします。"
+                    "終わったら「完了」、今日は不要なら「免除」を押します。"
                 )
-                _typing_students["display_name"] = (
-                    _typing_students["display_name"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
-                typing_student_name_map = dict(
-                    zip(
-                        _typing_students["student_id"],
-                        _typing_students["display_name"],
+
+                typing_df = load_typing_log()
+                typing_att_df = load_attendance_log()
+
+                typing_student_name_map = {}
+                if not students.empty and {"student_id", "display_name"}.issubset(students.columns):
+                    _typing_students = students.copy()
+                    _typing_students["student_id"] = (
+                        _typing_students["student_id"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
                     )
-                )
-
-            # 今日出席登録済みの生徒を抽出
-            typing_att_today = feature_running_rows(typing_att_df, "typing", "date")
-            for _c in ["date", "student_id", "kind", "memo"]:
-                if _c not in typing_att_today.columns:
-                    typing_att_today[_c] = ""
-                typing_att_today[_c] = (
-                    typing_att_today[_c]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
-
-            if not typing_att_today.empty:
-                typing_att_today["kind_norm"] = typing_att_today["kind"].map(
-                    normalize_attendance_kind_for_lock
-                )
-                typing_att_today = typing_att_today[
-                    typing_att_today["date"].astype(str).str.strip().eq(str(today))
-                    & typing_att_today["kind_norm"].isin(["lesson", "selfstudy"])
-                ].copy()
-
-            attended_ids_raw = []
-            if not typing_att_today.empty:
-                for _sid in typing_att_today["student_id"].astype(str).tolist():
-                    _sid = str(_sid).strip()
-                    if _sid and _sid not in attended_ids_raw:
-                        attended_ids_raw.append(_sid)
-
-            # 表示順は、今日の予定表の順番を優先する。
-            planned_order_ids = []
-            if "student_id" in today_view.columns and not today_view.empty:
-                _typing_today_order = today_view.copy()
-                if "slot_num" in _typing_today_order.columns:
-                    _typing_today_order = _typing_today_order.sort_values(
-                        ["slot_num", "display_name"],
-                        na_position="last",
+                    _typing_students["display_name"] = (
+                        _typing_students["display_name"]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
                     )
-                for _sid in _typing_today_order["student_id"].astype(str).tolist():
-                    _sid = str(_sid).strip()
-                    if _sid and _sid not in planned_order_ids:
-                        planned_order_ids.append(_sid)
-
-            attended_set = set(attended_ids_raw)
-            typing_target_ids = [
-                _sid for _sid in planned_order_ids if _sid in attended_set
-            ]
-            for _sid in attended_ids_raw:
-                if _sid not in typing_target_ids:
-                    typing_target_ids.append(_sid)
-
-            # 集計対象は全体のまま、進捗モードの操作行だけ選択生徒へ限定する。
-            typing_operation_student_id = ""
-            if daily_input_mode == "進捗登録":
-                if selected_student != "（全員）":
-                    _typing_selected = students[students["display_name"] == selected_student_raw].head(1)
-                    if not _typing_selected.empty:
-                        typing_operation_student_id = str(_typing_selected["student_id"].iloc[0]).strip()
-                if not typing_operation_student_id:
-                    st.caption("生徒を選択するとタイピング操作を行えます。")
-                elif typing_operation_student_id not in typing_target_ids:
-                    st.caption("今日のタイピングチェック対象ではありません。停止期間中も新規操作はできません。")
-
-            if not typing_target_ids:
-                st.info("出席登録済みの生徒がまだいないため、タイピングチェック対象はありません。")
-            else:
-                typing_pending_ids = []
-                typing_done_rows = []
-                typing_skip_rows = []
-
-                for _sid in typing_target_ids:
-                    _rec = get_typing_today(typing_df, _sid, today)
-                    _status = str((_rec or {}).get("status", "")).strip().lower()
-                    if _status == "done":
-                        typing_done_rows.append((_sid, _rec))
-                    elif _status == "skip":
-                        typing_skip_rows.append((_sid, _rec))
-                    else:
-                        typing_pending_ids.append(_sid)
-
-                if typing_pending_ids:
-                    st.error(f"タイピング未完了：{len(typing_pending_ids)}件")
-                else:
-                    st.success("出席登録済みの生徒は、全員タイピング完了または免除済みです。")
-
-                st.markdown(f"**未完了：{len(typing_pending_ids)}件**")
-
-                if typing_pending_ids:
-                    for _sid in typing_pending_ids:
-                        if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
-                            continue
-                        _name = typing_student_name_map.get(_sid, "")
-                        _label = f"{_sid}｜{_name}" if _name else _sid
-
-                        _att_rec = None
-                        if not typing_att_today.empty:
-                            _hit = typing_att_today[
-                                typing_att_today["student_id"]
-                                .astype(str)
-                                .str.strip()
-                                .eq(_sid)
-                            ].copy()
-                            if not _hit.empty:
-                                _att_rec = _hit.iloc[-1].to_dict()
-
-                        _kind_norm = str((_att_rec or {}).get("kind_norm", "")).strip()
-                        _kind_label = "自習" if _kind_norm == "selfstudy" else "授業"
-
-                        tc1, tc2, tc3 = st.columns([4, 1.5, 1.5])
-                        with tc1:
-                            st.write(f"・**{_label}** ／ {_kind_label}")
-                        with tc2:
-                            if st.button("✅ 完了", key=f"typing_done_{today}_{_sid}"):
-                                typing_df2 = upsert_typing_log(
-                                    typing_df,
-                                    _sid,
-                                    today,
-                                    "done",
-                                    "",
-                                )
-                                save_typing_log(typing_df2)
-                                st.success(f"{_label} のタイピングを完了にしました。")
-                                st.rerun()
-                        with tc3:
-                            if st.button("今日は免除", key=f"typing_skip_{today}_{_sid}"):
-                                typing_df2 = upsert_typing_log(
-                                    typing_df,
-                                    _sid,
-                                    today,
-                                    "skip",
-                                    "今日は免除",
-                                )
-                                save_typing_log(typing_df2)
-                                st.success(f"{_label} を今日は免除にしました。")
-                                st.rerun()
-                else:
-                    st.caption("未完了の生徒はいません。")
-
-                # d409: 過去日のタイピング記録を必要な時だけ修正できる。
-                # 通常運用は今日のチェックのまま。記録漏れに後から気づいた時だけ使う。
-                with st.expander("🕘 過去日のタイピング記録を修正", expanded=False):
-                    _past_default = today - dt.timedelta(days=1)
-                    _past_date = st.date_input(
-                        "対象日",
-                        value=_past_default,
-                        max_value=_past_default,
-                        key=f"typing_past_date_{today}",
-                        help="昨日以前で、タイピングの完了・免除を記録し忘れた日を選びます。",
-                    )
-
-                    _past_att = typing_att_df.copy()
-                    for _c in ["date", "student_id", "kind", "memo"]:
-                        if _c not in _past_att.columns:
-                            _past_att[_c] = ""
-                        _past_att[_c] = (
-                            _past_att[_c].fillna("").astype(str).str.strip()
+                    typing_student_name_map = dict(
+                        zip(
+                            _typing_students["student_id"],
+                            _typing_students["display_name"],
                         )
+                    )
 
-                    if not _past_att.empty:
-                        _past_att["kind_norm"] = _past_att["kind"].map(
-                            normalize_attendance_kind_for_lock
+                # 今日出席登録済みの生徒を抽出
+                typing_att_today = feature_running_rows(typing_att_df, "typing", "date")
+                for _c in ["date", "student_id", "kind", "memo"]:
+                    if _c not in typing_att_today.columns:
+                        typing_att_today[_c] = ""
+                    typing_att_today[_c] = (
+                        typing_att_today[_c]
+                        .fillna("")
+                        .astype(str)
+                        .str.strip()
+                    )
+
+                if not typing_att_today.empty:
+                    typing_att_today["kind_norm"] = typing_att_today["kind"].map(
+                        normalize_attendance_kind_for_lock
+                    )
+                    typing_att_today = typing_att_today[
+                        typing_att_today["date"].astype(str).str.strip().eq(str(today))
+                        & typing_att_today["kind_norm"].isin(["lesson", "selfstudy"])
+                    ].copy()
+
+                attended_ids_raw = []
+                if not typing_att_today.empty:
+                    for _sid in typing_att_today["student_id"].astype(str).tolist():
+                        _sid = str(_sid).strip()
+                        if _sid and _sid not in attended_ids_raw:
+                            attended_ids_raw.append(_sid)
+
+                # 表示順は、今日の予定表の順番を優先する。
+                planned_order_ids = []
+                if "student_id" in today_view.columns and not today_view.empty:
+                    _typing_today_order = today_view.copy()
+                    if "slot_num" in _typing_today_order.columns:
+                        _typing_today_order = _typing_today_order.sort_values(
+                            ["slot_num", "display_name"],
+                            na_position="last",
                         )
-                        _past_att = _past_att[
-                            _past_att["date"].eq(str(_past_date))
-                            & _past_att["kind_norm"].isin(["lesson", "selfstudy"])
-                        ].copy()
+                    for _sid in _typing_today_order["student_id"].astype(str).tolist():
+                        _sid = str(_sid).strip()
+                        if _sid and _sid not in planned_order_ids:
+                            planned_order_ids.append(_sid)
 
-                    _past_ids = []
-                    if not _past_att.empty:
-                        for _sid in _past_att["student_id"].astype(str).tolist():
-                            _sid = str(_sid).strip()
-                            if _sid and _sid not in _past_ids:
-                                _past_ids.append(_sid)
+                attended_set = set(attended_ids_raw)
+                typing_target_ids = [
+                    _sid for _sid in planned_order_ids if _sid in attended_set
+                ]
+                for _sid in attended_ids_raw:
+                    if _sid not in typing_target_ids:
+                        typing_target_ids.append(_sid)
 
-                    if not _past_ids:
-                        st.info("この日の授業・自習の出席記録はありません。")
-                    else:
-                        _past_pending = []
-                        _past_done = []
-                        for _sid in _past_ids:
-                            _rec = get_typing_today(typing_df, _sid, _past_date)
-                            _status = str((_rec or {}).get("status", "")).strip().lower()
-                            if _status in ["done", "skip"]:
-                                _past_done.append((_sid, _rec))
-                            elif not is_feature_paused("typing", _past_date):
-                                _past_pending.append(_sid)
-
-                        if _past_pending:
-                            st.warning(f"未記録：{len(_past_pending)}件")
-                            for _sid in _past_pending:
-                                if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
-                                    continue
-                                _name = typing_student_name_map.get(_sid, "")
-                                _label = f"{_sid}｜{_name}" if _name else _sid
-                                pc1, pc2, pc3 = st.columns([4, 1.5, 1.5])
-                                with pc1:
-                                    st.write(f"・**{_label}**")
-                                with pc2:
-                                    if st.button(
-                                        "✅ 完了",
-                                        key=f"typing_past_done_{_past_date}_{_sid}",
-                                    ):
-                                        typing_df2 = upsert_typing_log(
-                                            typing_df, _sid, _past_date, "done", "過去日を後から記録"
-                                        )
-                                        save_typing_log(typing_df2)
-                                        st.success(f"{_label} の {_past_date} を完了にしました。")
-                                        st.rerun()
-                                with pc3:
-                                    if st.button(
-                                        "免除",
-                                        key=f"typing_past_skip_{_past_date}_{_sid}",
-                                    ):
-                                        typing_df2 = upsert_typing_log(
-                                            typing_df, _sid, _past_date, "skip", "過去日を後から免除"
-                                        )
-                                        save_typing_log(typing_df2)
-                                        st.success(f"{_label} の {_past_date} を免除にしました。")
-                                        st.rerun()
-                        else:
-                            st.success("この日のタイピング記録漏れはありません。")
-
-                        if _past_done:
-                            st.caption(f"記録済み：{len(_past_done)}件")
-
+                # 集計対象は全体のまま、進捗モードの操作行だけ選択生徒へ限定する。
+                typing_operation_student_id = ""
                 if daily_input_mode == "進捗登録":
-                    for _sid, _rec in typing_done_rows + typing_skip_rows:
-                        if _sid == typing_operation_student_id:
-                            st.caption(f"選択生徒のタイピング：{typing_status_label(_rec.get('status', ''))}（取消は完了・免除済み一覧から行えます）")
+                    if selected_student != "（全員）":
+                        _typing_selected = students[students["display_name"] == selected_student_raw].head(1)
+                        if not _typing_selected.empty:
+                            typing_operation_student_id = str(_typing_selected["student_id"].iloc[0]).strip()
+                    if not typing_operation_student_id:
+                        st.caption("生徒を選択するとタイピング操作を行えます。")
+                    elif typing_operation_student_id not in typing_target_ids:
+                        st.caption("今日のタイピングチェック対象ではありません。停止期間中も新規操作はできません。")
 
-                completed_count = len(typing_done_rows) + len(typing_skip_rows)
-                if completed_count:
-                    show_typing_completed = st.checkbox(
-                        f"完了・免除済み（{completed_count}件）を表示",
-                        value=False,
-                        key=f"typing_show_completed_{today}",
-                        help="完了済み一覧を見たい時だけONにします。通常OFFの方が軽くなります。",
-                    )
-                    if show_typing_completed:
-                        with st.expander(f"完了・免除済み（{completed_count}件）", expanded=True):
-                            for _sid, _rec in typing_done_rows + typing_skip_rows:
-                                _name = typing_student_name_map.get(_sid, "")
-                                _label = f"{_sid}｜{_name}" if _name else _sid
-                                _status = typing_status_label((_rec or {}).get("status", ""))
-                                _completed_at = str((_rec or {}).get("completed_at", "")).strip()
-                                _note = str((_rec or {}).get("note", "")).strip()
+                if not typing_target_ids:
+                    st.info("出席登録済みの生徒がまだいないため、タイピングチェック対象はありません。")
+                else:
+                    typing_pending_ids = []
+                    typing_done_rows = []
+                    typing_skip_rows = []
 
-                                tc1, tc2 = st.columns([5, 1.5])
-                                with tc1:
-                                    line = f"・**{_label}** ／ {_status}"
-                                    if _completed_at:
-                                        line += f" ／ {_completed_at[11:16] if len(_completed_at) >= 16 else _completed_at}"
-                                    if _note:
-                                        line += f" ／ {_note}"
-                                    st.markdown(line)
-                                with tc2:
-                                    if (daily_input_mode != "進捗登録" or _sid == typing_operation_student_id) and st.button("↩ 未完了へ戻す", key=f"typing_undo_{today}_{_sid}"):
-                                        typing_df2 = delete_typing_log(
-                                            typing_df,
-                                            _sid,
-                                            today,
-                                        )
-                                        save_typing_log(typing_df2)
-                                        st.success(f"{_label} を未完了に戻しました。")
-                                        st.rerun()
+                    for _sid in typing_target_ids:
+                        _rec = get_typing_today(typing_df, _sid, today)
+                        _status = str((_rec or {}).get("status", "")).strip().lower()
+                        if _status == "done":
+                            typing_done_rows.append((_sid, _rec))
+                        elif _status == "skip":
+                            typing_skip_rows.append((_sid, _rec))
+                        else:
+                            typing_pending_ids.append(_sid)
+
+                    if typing_pending_ids:
+                        st.error(f"タイピング未完了：{len(typing_pending_ids)}件")
+                    else:
+                        st.success("出席登録済みの生徒は、全員タイピング完了または免除済みです。")
+
+                    st.markdown(f"**未完了：{len(typing_pending_ids)}件**")
+
+                    if typing_pending_ids:
+                        for _sid in typing_pending_ids:
+                            if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
+                                continue
+                            _name = typing_student_name_map.get(_sid, "")
+                            _label = f"{_sid}｜{_name}" if _name else _sid
+
+                            _att_rec = None
+                            if not typing_att_today.empty:
+                                _hit = typing_att_today[
+                                    typing_att_today["student_id"]
+                                    .astype(str)
+                                    .str.strip()
+                                    .eq(_sid)
+                                ].copy()
+                                if not _hit.empty:
+                                    _att_rec = _hit.iloc[-1].to_dict()
+
+                            _kind_norm = str((_att_rec or {}).get("kind_norm", "")).strip()
+                            _kind_label = "自習" if _kind_norm == "selfstudy" else "授業"
+
+                            tc1, tc2, tc3 = st.columns([4, 1.5, 1.5])
+                            with tc1:
+                                st.write(f"・**{_label}** ／ {_kind_label}")
+                            with tc2:
+                                if st.button("✅ 完了", key=f"typing_done_{today}_{_sid}"):
+                                    typing_df2 = upsert_typing_log(
+                                        typing_df,
+                                        _sid,
+                                        today,
+                                        "done",
+                                        "",
+                                    )
+                                    save_typing_log(typing_df2)
+                                    st.success(f"{_label} のタイピングを完了にしました。")
+                                    st.rerun()
+                            with tc3:
+                                if st.button("今日は免除", key=f"typing_skip_{today}_{_sid}"):
+                                    typing_df2 = upsert_typing_log(
+                                        typing_df,
+                                        _sid,
+                                        today,
+                                        "skip",
+                                        "今日は免除",
+                                    )
+                                    save_typing_log(typing_df2)
+                                    st.success(f"{_label} を今日は免除にしました。")
+                                    st.rerun()
+                    else:
+                        st.caption("未完了の生徒はいません。")
+
+                    # d409: 過去日のタイピング記録を必要な時だけ修正できる。
+                    # 通常運用は今日のチェックのまま。記録漏れに後から気づいた時だけ使う。
+                    with st.expander("🕘 過去日のタイピング記録を修正", expanded=False):
+                        _past_default = today - dt.timedelta(days=1)
+                        _past_date = st.date_input(
+                            "対象日",
+                            value=_past_default,
+                            max_value=_past_default,
+                            key=f"typing_past_date_{today}",
+                            help="昨日以前で、タイピングの完了・免除を記録し忘れた日を選びます。",
+                        )
+
+                        _past_att = typing_att_df.copy()
+                        for _c in ["date", "student_id", "kind", "memo"]:
+                            if _c not in _past_att.columns:
+                                _past_att[_c] = ""
+                            _past_att[_c] = (
+                                _past_att[_c].fillna("").astype(str).str.strip()
+                            )
+
+                        if not _past_att.empty:
+                            _past_att["kind_norm"] = _past_att["kind"].map(
+                                normalize_attendance_kind_for_lock
+                            )
+                            _past_att = _past_att[
+                                _past_att["date"].eq(str(_past_date))
+                                & _past_att["kind_norm"].isin(["lesson", "selfstudy"])
+                            ].copy()
+
+                        _past_ids = []
+                        if not _past_att.empty:
+                            for _sid in _past_att["student_id"].astype(str).tolist():
+                                _sid = str(_sid).strip()
+                                if _sid and _sid not in _past_ids:
+                                    _past_ids.append(_sid)
+
+                        if not _past_ids:
+                            st.info("この日の授業・自習の出席記録はありません。")
+                        else:
+                            _past_pending = []
+                            _past_done = []
+                            for _sid in _past_ids:
+                                _rec = get_typing_today(typing_df, _sid, _past_date)
+                                _status = str((_rec or {}).get("status", "")).strip().lower()
+                                if _status in ["done", "skip"]:
+                                    _past_done.append((_sid, _rec))
+                                elif not is_feature_paused("typing", _past_date):
+                                    _past_pending.append(_sid)
+
+                            if _past_pending:
+                                st.warning(f"未記録：{len(_past_pending)}件")
+                                for _sid in _past_pending:
+                                    if daily_input_mode == "進捗登録" and _sid != typing_operation_student_id:
+                                        continue
+                                    _name = typing_student_name_map.get(_sid, "")
+                                    _label = f"{_sid}｜{_name}" if _name else _sid
+                                    pc1, pc2, pc3 = st.columns([4, 1.5, 1.5])
+                                    with pc1:
+                                        st.write(f"・**{_label}**")
+                                    with pc2:
+                                        if st.button(
+                                            "✅ 完了",
+                                            key=f"typing_past_done_{_past_date}_{_sid}",
+                                        ):
+                                            typing_df2 = upsert_typing_log(
+                                                typing_df, _sid, _past_date, "done", "過去日を後から記録"
+                                            )
+                                            save_typing_log(typing_df2)
+                                            st.success(f"{_label} の {_past_date} を完了にしました。")
+                                            st.rerun()
+                                    with pc3:
+                                        if st.button(
+                                            "免除",
+                                            key=f"typing_past_skip_{_past_date}_{_sid}",
+                                        ):
+                                            typing_df2 = upsert_typing_log(
+                                                typing_df, _sid, _past_date, "skip", "過去日を後から免除"
+                                            )
+                                            save_typing_log(typing_df2)
+                                            st.success(f"{_label} の {_past_date} を免除にしました。")
+                                            st.rerun()
+                            else:
+                                st.success("この日のタイピング記録漏れはありません。")
+
+                            if _past_done:
+                                st.caption(f"記録済み：{len(_past_done)}件")
+
+                    if daily_input_mode == "進捗登録":
+                        for _sid, _rec in typing_done_rows + typing_skip_rows:
+                            if _sid == typing_operation_student_id:
+                                st.caption(f"選択生徒のタイピング：{typing_status_label(_rec.get('status', ''))}（取消は完了・免除済み一覧から行えます）")
+
+                    completed_count = len(typing_done_rows) + len(typing_skip_rows)
+                    if completed_count:
+                        show_typing_completed = st.checkbox(
+                            f"完了・免除済み（{completed_count}件）を表示",
+                            value=False,
+                            key=f"typing_show_completed_{today}",
+                            help="完了済み一覧を見たい時だけONにします。通常OFFの方が軽くなります。",
+                        )
+                        if show_typing_completed:
+                            with st.expander(f"完了・免除済み（{completed_count}件）", expanded=True):
+                                for _sid, _rec in typing_done_rows + typing_skip_rows:
+                                    _name = typing_student_name_map.get(_sid, "")
+                                    _label = f"{_sid}｜{_name}" if _name else _sid
+                                    _status = typing_status_label((_rec or {}).get("status", ""))
+                                    _completed_at = str((_rec or {}).get("completed_at", "")).strip()
+                                    _note = str((_rec or {}).get("note", "")).strip()
+
+                                    tc1, tc2 = st.columns([5, 1.5])
+                                    with tc1:
+                                        line = f"・**{_label}** ／ {_status}"
+                                        if _completed_at:
+                                            line += f" ／ {_completed_at[11:16] if len(_completed_at) >= 16 else _completed_at}"
+                                        if _note:
+                                            line += f" ／ {_note}"
+                                        st.markdown(line)
+                                    with tc2:
+                                        if (daily_input_mode != "進捗登録" or _sid == typing_operation_student_id) and st.button("↩ 未完了へ戻す", key=f"typing_undo_{today}_{_sid}"):
+                                            typing_df2 = delete_typing_log(
+                                                typing_df,
+                                                _sid,
+                                                today,
+                                            )
+                                            save_typing_log(typing_df2)
+                                            st.success(f"{_label} を未完了に戻しました。")
+                                            st.rerun()
 
 
-        # =====================================================
-        # =====================================================
-        # d237:
-        # 閲覧側のワンクリック取消は、カレンダー操作と重複して混乱しやすいため通常非表示。
-        # 予定の取消・解除・削除は月スケジュールカレンダーへ集約する。
-        # =====================================================
-        show_legacy_quick_cancel = st.checkbox(
+            # =====================================================
+            # =====================================================
+            # d237:
+            # 閲覧側のワンクリック取消は、カレンダー操作と重複して混乱しやすいため通常非表示。
+            # 予定の取消・解除・削除は月スケジュールカレンダーへ集約する。
+            # =====================================================
+        show_legacy_quick_cancel = not is_progress_input and st.checkbox(
             "旧UI：閲覧から予定取消を表示（通常OFF）",
             value=False,
             key=f"show_legacy_quick_cancel_{today}",
@@ -12585,7 +12612,7 @@ if page == "閲覧":
         # d299:
         # Streamlitのexpanderは閉じていても中身の処理が走るため、
         # 日付指定の例外修正はチェックON時だけ読み込む。
-        show_date_override_panel = st.checkbox(
+        show_date_override_panel = not is_progress_input and st.checkbox(
             "🧩 日付指定の例外修正を使う（必要時のみ）",
             value=False,
             key=f"show_date_override_panel_{today}",
@@ -13048,23 +13075,28 @@ if page == "閲覧":
     # 毎日使う「進捗登録」と、たまに見る「確認・一覧」を分ける。
     # 機能本体はそのままに、迷いにくい導線へ整理する。
     # =========================================================
-    if view_group == "毎日使う：進捗登録":
-        view_options = daily_view_options
-        st.caption("出席後に進捗を登録する時に使う画面です。")
+    sidebar_view_mode = ""
+    if is_attendance_input:
+        # 保持した選択値で進捗入力を描画しない。次回進捗画面で再利用する。
+        pass
     else:
-        view_options = check_view_options
-        st.caption("状況確認・一覧・分析寄りの画面です。必要な時だけ開きます。")
+        if view_group == "毎日使う：進捗登録":
+            view_options = daily_view_options
+            st.caption("出席後に進捗を登録する時に使う画面です。")
+        else:
+            view_options = check_view_options
+            st.caption("状況確認・一覧・分析寄りの画面です。必要な時だけ開きます。")
 
-    # グループを切り替えた時に、前回の選択が候補外なら先頭へ戻す
-    if str(st.session_state.get("view_mode_trial", "")) not in view_options:
-        st.session_state["view_mode_trial"] = view_options[0]
+        # グループを切り替えた時に、前回の選択が候補外なら先頭へ戻す
+        if str(st.session_state.get("view_mode_trial", "")) not in view_options:
+            st.session_state["view_mode_trial"] = view_options[0]
 
-    sidebar_view_mode = st.radio(
-        "表示内容",
-        view_options,
-        horizontal=True,
-        key="view_mode_trial",
-    )
+        sidebar_view_mode = st.radio(
+            "表示内容",
+            view_options,
+            horizontal=True,
+            key="view_mode_trial",
+        )
 
     is_log_view = sidebar_view_mode in check_view_options
 
