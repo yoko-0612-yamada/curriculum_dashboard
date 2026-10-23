@@ -22711,6 +22711,27 @@ elif page == "管理（入力）":
                         "最後に画面下の保存バーから確定してください。"
                     )
 
+                    # 日付変更だけで候補を再判定するため、日付はフォーム外に置く。
+                    add_date = st.date_input(
+                        "追加する日付",
+                        value=_monthly_add_default_date,
+                        min_value=month_start,
+                        max_value=month_end,
+                        key=f"monthly_add_date_{target_year}_{target_month}",
+                    )
+                    _add_student_key = f"monthly_add_student_{target_year}_{target_month}"
+                    try:
+                        _add_enrolled = student_enrollment_mask(students_enrollment_source, add_date)
+                    except ValueError as exc:
+                        st.session_state.pop(_add_student_key, None)
+                        st.error(f"在籍日付を確認してください。予定を追加できません：{exc}")
+                        return
+                    _new_calendar_student_ids = students_enrollment_source.loc[
+                        _add_enrolled, "student_id"
+                    ].astype(str).str.strip().tolist()
+                    if st.session_state.get(_add_student_key) not in _new_calendar_student_ids:
+                        st.session_state.pop(_add_student_key, None)
+
                     # d369: 種別はフォーム外に置き、変更時に回数区分候補を即時連動させる。
                     add_type = st.radio(
                         "追加する種別",
@@ -22735,27 +22756,11 @@ elif page == "管理（入力）":
                             f"{target_year}_{target_month}"
                         )
                     ):
-                        add_date = st.date_input(
-                            "追加する日付",
-                            value=_monthly_add_default_date,
-                            min_value=month_start,
-                            max_value=month_end,
-                        )
-
-                        add_slot = st.selectbox(
-                            "追加するコマ",
-                            monthly_slot_options,
-                            format_func=lambda x: format_slot_label(
-                                x,
-                                monthly_slot_label_map,
-                            ),
-                        )
-
-                        _new_calendar_student_ids = students_enrollment_source["student_id"].astype(str).str.strip().tolist()
                         if _new_calendar_student_ids:
                             add_sid = st.selectbox(
                                 "追加する生徒",
                                 _new_calendar_student_ids,
+                                key=_add_student_key,
                                 format_func=lambda sid: (
                                     monthly_student_label_map.get(
                                         sid,
@@ -22766,8 +22771,16 @@ elif page == "管理（入力）":
                         else:
                             add_sid = ""
                             st.info(
-                                "追加できる在籍中の生徒がいません。"
+                                "この日に追加できる在籍生徒はいません。"
                             )
+
+                        add_slot = st.selectbox(
+                            "追加するコマ",
+                            monthly_slot_options,
+                            format_func=lambda x: format_slot_label(
+                                x, monthly_slot_label_map,
+                            ),
+                        )
 
                         add_reason = st.selectbox(
                             "回数区分",

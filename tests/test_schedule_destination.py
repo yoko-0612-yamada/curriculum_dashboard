@@ -76,6 +76,19 @@ class DestinationUiTests(unittest.TestCase):
         for k,v in dict(auth_ok=True,page_state='管理（入力）',monthly_schedule_year=2026,monthly_schedule_month=11).items():at.session_state[k]=v
         at.session_state['monthly_view_mode_2026_11']='📅 編集'
         at.run()
+        self.assertFalse(at.exception, [e.message for e in at.exception])
+        self.assertTrue(next(b for b in at.button if b.label=='🟢 新規予定を一覧へ追加（未保存）').disabled)
+        self.assertFalse([w for w in at.selectbox if w.label=='追加する生徒'])
+        self.assertEqual([(p.read_bytes(),p.stat().st_mtime_ns) for p in paths],before)
+        # Bypass only candidate filtering in the temporary app to verify the
+        # independent submit-time defense still rejects an out-of-period ID.
+        f.app.write_text(source.replace(
+            '_add_enrolled = student_enrollment_mask(students_enrollment_source, add_date)',
+            '_add_enrolled = pd.Series(True, index=students_enrollment_source.index)', 1))
+        at=AppTest.from_file(str(f.app),default_timeout=40)
+        for k,v in dict(auth_ok=True,page_state='管理（入力）',monthly_schedule_year=2026,monthly_schedule_month=11).items():at.session_state[k]=v
+        at.session_state['monthly_view_mode_2026_11']='📅 編集'
+        at.run()
         chosen=[(w.label,str(w.value)) for w in at.date_input]
         next(b for b in at.button if b.label=='🟢 新規予定を一覧へ追加（未保存）').click().run()
         self.assertFalse(at.exception,[e.message for e in at.exception])
