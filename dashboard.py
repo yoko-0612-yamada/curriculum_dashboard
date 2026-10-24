@@ -1072,6 +1072,27 @@ def normalize_attendance_kind_for_lock(v) -> str:
     return s
 
 
+def attendance_requires_progress(attendance_df, student_id, target_date, *, normalized=False) -> bool:
+    """対象日の全出席実績に授業があれば進捗が必要。予定・行順には依存しない。
+
+    normalized は同一要約内で正規化済みの表を共有する場合だけ使用する。
+    授業と欠席等の混在も、保存されている授業実績を無視しない。
+    """
+    if attendance_df is None or attendance_df.empty:
+        return False
+    if not {"student_id", "date", "kind"}.issubset(attendance_df.columns):
+        return False
+    ids = attendance_df["student_id"]
+    dates = attendance_df["date"]
+    if not normalized:
+        ids = ids.fillna("").astype(str).str.strip()
+        dates = dates.fillna("").astype(str).str.strip()
+    kinds = attendance_df.loc[
+        ids.eq(str(student_id).strip()) & dates.eq(str(target_date)), "kind"
+    ]
+    return bool(kinds.map(normalize_attendance_kind_for_lock).eq("lesson").any())
+
+
 def build_attended_student_date_keys(att_df: pd.DataFrame) -> set[tuple[str, str]]:
     """出席済みとして軽いロックをかける date×student_id の集合を作る。"""
     if att_df is None or att_df.empty:
@@ -8445,8 +8466,10 @@ if page == "閲覧":
             # 出席表はこの要約中に保存しない。判定用の正規化は最初の対象行だけで行う。
             if _summary_kind_df is None:
                 _summary_kind_df = _prepare_summary_attendance_kind(_summary_att_df)
-            _kind = _summary_attendance_kind(_sid)
-            if _kind in ["self", "selfstudy", "自習", "absence", "欠席", "cancel", "キャンセル"]:
+            _requires_progress = attendance_requires_progress(
+                _summary_kind_df, _sid, _summary_today, normalized=True
+            )
+            if _att_done and not _requires_progress:
                 _prog_done = True
             else:
                 _prog_done = bool(
@@ -9049,6 +9072,10 @@ if page == "閲覧":
             if not att_row.empty:
                 actual_kind = str(att_row.iloc[-1].get("kind", "")).strip().lower()
 
+            actual_requires_progress = attendance_requires_progress(att_df_check, sid, d_date)
+            if actual_requires_progress:
+                actual_kind = "lesson"
+
             if actual_kind in ["absence", "欠席"]:
                 effective_kind = "absence"
                 session_mark_text = "欠席"
@@ -9073,8 +9100,11 @@ if page == "閲覧":
                     effective_kind = "self"
                     session_mark_text = "自習"
 
-            # 進捗対象は授業だけ
-            if effective_kind != "lesson":
+            # 出席済みなら全実績で判定。未出席の表示は従来の予定種別を維持。
+            requires_progress = (
+                actual_requires_progress if att_done else effective_kind == "lesson"
+            )
+            if not requires_progress:
                 prog_done = True
             else:
                 prog_done = bool(curr_done or kentei_done or skip_done)
@@ -10000,11 +10030,9 @@ if page == "閲覧":
 
 
         def calc_today_progress_done(sid: str) -> bool:
-            actual_kind = get_today_attendance_kind(att_df_for_status, sid, today)
-
-
-            # 授業以外は進捗不要
-            if actual_kind in ["self", "selfstudy", "自習", "absence", "欠席", "cancel", "キャンセル"]:
+            # 最後の実績ではなく、同日の授業実績の有無を見る。
+            if (is_attendance_done_today(att_df_for_status, sid, today)
+                    and not attendance_requires_progress(att_df_for_status, sid, today)):
                 return True
 
 
@@ -11540,29 +11568,12 @@ if page == "閲覧":
                 done_ids = []
                 rec_map = {}
 
-                prog_today_ids = set()
-
-                if not curr_prog_df.empty and {"student_id", "done_date"}.issubset(curr_prog_df.columns):
-                    curr_prog_today = curr_prog_df[
-                        curr_prog_df["done_date"].astype(str).str.strip() == str(today)
-                    ].copy()
-
-
-                    prog_today_ids.update(
-                        curr_prog_today["student_id"].astype(str).str.strip().tolist()
-                    )
-
-
-                if not kentei_prog_df.empty and {"student_id", "done_date"}.issubset(kentei_prog_df.columns):
-                    kentei_prog_today = kentei_prog_df[
-                        kentei_prog_df["done_date"].astype(str).str.strip() == str(today)
-                    ].copy()
-
-
-                    prog_today_ids.update(
-                        kentei_prog_today["student_id"].astype(str).str.strip().tolist()
-                    )
-
+                # 要約・未完了と同じ、完了フラグを満たす今日の進捗を使用する。
+                prog_today_ids = {
+                    sid for sid in ids_in_today
+                    if (is_progress_done_today(curr_done_df, sid, today)
+                        or is_progress_done_today(kentei_done_df, sid, today))
+                }
 
                 if today_display_error:
                     st.error(
@@ -11632,16 +11643,12 @@ if page == "閲覧":
 
                     st.caption("※ 下の『出席記録』で記録してください")
 
-                # d298:
-                # 欠席・キャンセルは「来なかった/予定取消」の処理済み扱い。
-                # 進捗未登録としては出さない。
+                # 授業実績のある生徒だけ進捗を要求する（自習のみは不要）。
                 missing_progress_ids = [
                     sid for sid in done_ids
                     if (sid not in prog_today_ids)
                     and (sid not in prog_skip_today_ids)
-                    and normalize_attendance_kind_for_lock(
-                        (rec_map.get(sid) or {}).get("kind", "")
-                    ) not in ["absence", "cancel"]
+                    and attendance_requires_progress(att_df, sid, today)
                 ]
                 
                 pending_count = len(pending_ids)
