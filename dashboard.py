@@ -10335,7 +10335,10 @@ if page == "閲覧":
                             return _cname or _course_id
 
                         def _course_done_by_log(_course_id: str) -> bool:
-                            return bool((course_history_mask(log, _sid, _course_id, "done")).any())
+                            return bool((
+                                course_history_mask(log, _sid, _course_id, "done")
+                                | course_history_mask(log, _sid, _course_id, "skip")
+                            ).any())
 
                         def _next_task_for_course(_course_id: str):
                             _course_id = str(_course_id).strip()
