@@ -6458,79 +6458,41 @@ def render_integrated_seat_view(monthly_schedule):
 
     def seat_box(seat_no: str):
         name = seat_display(seat_no)
-        st.markdown(
-            f"""
-            <div style="
-                border:2px solid #333;
-                border-radius:8px;
-                padding:18px 8px;
-                min-height:70px;
-                text-align:center;
-                font-weight:700;
-                background:#ffffff;
-            ">
-                <div style="font-size:1.1rem;">席{seat_no}</div>
-                <div style="font-size:1rem; margin-top:8px;">{name}</div>
+        return f'<div class="room-seat"><div class="room-seat-number">席{seat_no}</div><div class="room-seat-name">{name}</div></div>'
+
+    # 座席図だけの配置。自習机は表示専用で、座席ID・操作には接続しない。
+    st.markdown(
+        f"""
+        <style>
+        .classroom-seat-diagram {{ display:grid; grid-template-columns:minmax(0, 1fr) minmax(0, 1fr); gap:24px 32px; }}
+        .classroom-seat-diagram .room-study-desks,
+        .classroom-seat-diagram .room-seats-top {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; align-content:start; }}
+        .classroom-seat-diagram .room-seats-bottom {{ grid-column:2; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }}
+        .classroom-seat-diagram .room-seat {{ border:2px solid #333; border-radius:8px; padding:18px 8px; min-height:70px; text-align:center; font-weight:700; background:#ffffff; min-width:0; overflow-wrap:anywhere; }}
+        .classroom-seat-diagram .room-seat-number {{ font-size:1.1rem; }}
+        .classroom-seat-diagram .room-seat-name {{ font-size:1rem; margin-top:8px; }}
+        .classroom-seat-diagram .room-study-desk {{ border:2px solid #555; border-radius:8px; padding:18px 4px; min-height:70px; text-align:center; background:#f7f7f7; overflow-wrap:anywhere; }}
+        .classroom-seat-diagram .room-monitor {{ grid-column:1 / -1; justify-self:center; width:30%; border:2px solid #555; border-radius:8px; padding:10px 8px; min-height:38px; text-align:center; background:#f7f7f7; font-weight:700; }}
+        @media (max-width:1100px) {{
+            .classroom-seat-diagram {{ column-gap:16px; }}
+            .classroom-seat-diagram .room-study-desks,
+            .classroom-seat-diagram .room-seats-top,
+            .classroom-seat-diagram .room-seats-bottom {{ gap:6px; }}
+        }}
+        </style>
+        <div class="classroom-seat-diagram">
+            <div class="room-study-desks" aria-label="自習机3席・表示専用">
+                <div class="room-study-desk">自習机</div>
+                <div class="room-study-desk">自習机</div>
+                <div class="room-study-desk">自習机</div>
             </div>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-    top_left, top_mid, top_right = st.columns([1, 1, 1])
-    with top_mid:
-        seat_box("3")
-    with top_right:
-        seat_box("4")
-
-
-    mid_left, mid_mid, mid_right = st.columns([1, 1.5, 1])
-    with mid_left:
-        seat_box("5")
-    #with mid_right:
-    #    st.markdown(
-    #        """
-    #        <div style="
-    #            border:2px solid #333;
-    #            border-radius:8px;
-    #            padding:18px 8px;
-    #            min-height:70px;
-    #            text-align:center;
-    #            font-weight:700;
-    #            background:#ffffff;
-    #        ">
-    #            先生
-    #        </div>
-    #        """,
-    #        unsafe_allow_html=True
-    #    )
-
-
-    bottom_left, bottom_mid, bottom_right = st.columns([1, 1, 1])
-    with bottom_mid:
-        seat_box("2")
-    with bottom_right:
-        seat_box("1")
-
-
-    monitor_left, monitor_mid, monitor_right = st.columns([1, 1, 1])
-    with monitor_mid:
-        st.markdown(
-            """
-            <div style="
-                border:2px solid #555;
-                border-radius:8px;
-                padding:10px 8px;
-                min-height:38px;
-                text-align:center;
-                background:#f7f7f7;
-                font-weight:700;
-            ">
-                モニター
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+            <div class="room-seats-top">{seat_box("1")}{seat_box("2")}{seat_box("3")}</div>
+            <div class="room-seats-bottom">{seat_box("5")}{seat_box("4")}</div>
+            <div class="room-monitor">モニター</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.divider()
 
