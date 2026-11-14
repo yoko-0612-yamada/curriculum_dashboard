@@ -6222,6 +6222,129 @@ def preserve_ineligible_seat_history(original, proposed, target_date, eligible_i
     return pd.concat([result, protected], ignore_index=True)
 
 
+def build_default_seat_auto_plan(default_seats, seat_assignments, seat_today_rows,
+                                seat_cancel_keys_for_today, student_name_map, today):
+    """保存済みデータから配置候補と警告を計算する。保存・画面への反映は行わない。"""
+    default_map_auto = dict(
+        zip(
+            default_seats["student_id"].astype(str).str.strip(),
+            default_seats["default_seat_no"].astype(str).str.strip(),
+        )
+    )
+
+    existing_keys = set()
+    existing_student_slot_keys = set()
+
+
+    if not seat_assignments.empty:
+        _existing = seat_assignments.copy()
+
+
+        for c in ["date", "slot", "seat_no", "student_id"]:
+            if c not in _existing.columns:
+                _existing[c] = ""
+
+
+        _existing = _existing[
+            _existing["date"].astype(str).str.strip() == str(today).strip()
+        ].copy()
+
+
+        for _, r in _existing.iterrows():
+            _slot = normalize_slot(r.get("slot", ""))
+            _seat = str(r.get("seat_no", "")).strip()
+            _sid = str(r.get("student_id", "")).strip()
+
+
+            # d254:
+            # 今日キャンセル済みの生徒の保存済み座席は、自動配置では「空いた席」として扱う。
+            # これを除外しないと、キャンセルした人まで席重複・使用中判定に入ってしまう。
+            if (_sid, _slot) in seat_cancel_keys_for_today:
+                continue
+
+
+            if _slot and _seat:
+                existing_keys.add((_slot, _seat))
+
+
+            if _slot and _sid:
+                existing_student_slot_keys.add((_sid, _slot))
+
+
+    candidates = {}
+
+
+    for r in seat_today_rows:
+        sid = str(r.get("student_id", "")).strip()
+        slot = normalize_slot(r.get("コマ", ""))
+        status_value = str(r.get("状態", "")).strip()
+
+
+        if not sid or not slot:
+            continue
+
+
+        # d254:
+        # 座席確認リストにはキャンセル済み行を残すが、
+        # 自動配置・基本席の重複判定には含めない。
+        if "キャンセル済み" in status_value or (sid, slot) in seat_cancel_keys_for_today:
+            continue
+
+
+        # すでにその生徒がそのコマで配置済みなら何もしない
+        if (sid, slot) in existing_student_slot_keys:
+            continue
+
+
+        seat_no = default_map_auto.get(sid, "")
+
+
+        if not seat_no:
+            continue
+
+
+        key = (slot, seat_no)
+        candidates.setdefault(key, []).append(sid)
+
+
+    auto_rows = []
+    conflict_messages = []
+
+    # 重複している席だけスキップし、重複していない席は自動配置する
+    for (slot, seat_no), sids in candidates.items():
+        if len(sids) >= 2:
+            names = [student_name_map.get(sid, sid) for sid in sids]
+            conflict_messages.append(
+                f"{slot}コマ 席{seat_no} が重複：{', '.join(names)}"
+            )
+            continue
+
+
+        sid = sids[0]
+
+
+        # すでに誰かが座っている席には自動配置しない
+        if (slot, seat_no) in existing_keys:
+            conflict_messages.append(
+                f"{slot}コマ 席{seat_no} はすでに使用中：{student_name_map.get(sid, sid)} は自動配置しません"
+            )
+            continue
+
+
+        auto_rows.append({
+            "date": str(today),
+            "slot": slot,
+            "seat_no": seat_no,
+            "student_id": sid,
+            "note": "基本席から自動配置",
+        })
+
+
+
+
+    return auto_rows, conflict_messages
+
+
 def render_integrated_seat_view(monthly_schedule):
     """d364: 月スケジュール内で表示する今日の座席管理。"""
     st.subheader("🪑 座席表（今日の配置）")
@@ -7269,129 +7392,14 @@ def render_integrated_seat_view(monthly_schedule):
     st.caption("基本席が登録されている生徒を、今日の予定に合わせて空いている席へ自動配置します。重複がある場合は配置しません。")
 
 
+    # 保存後のrerunでも最新の保存済み表で警告だけを更新する。
+    auto_rows, conflict_messages = build_default_seat_auto_plan(
+        default_seats, seat_assignments, seat_today_rows,
+        seat_cancel_keys_for_today, student_name_map, today,
+    )
+    st.session_state["seat_auto_conflict_messages"] = conflict_messages
+
     if st.button("🪄 基本席で自動配置する", key=f"auto_assign_default_seats_{today}"):
-        default_map_auto = dict(
-            zip(
-                default_seats["student_id"].astype(str).str.strip(),
-                default_seats["default_seat_no"].astype(str).str.strip(),
-            )
-        )
-
-        existing_keys = set()
-        existing_student_slot_keys = set()
-
-
-        if not seat_assignments.empty:
-            _existing = seat_assignments.copy()
-
-
-            for c in ["date", "slot", "seat_no", "student_id"]:
-                if c not in _existing.columns:
-                    _existing[c] = ""
-
-
-            _existing = _existing[
-                _existing["date"].astype(str).str.strip() == str(today).strip()
-            ].copy()
-
-
-            for _, r in _existing.iterrows():
-                _slot = normalize_slot(r.get("slot", ""))
-                _seat = str(r.get("seat_no", "")).strip()
-                _sid = str(r.get("student_id", "")).strip()
-
-
-                # d254:
-                # 今日キャンセル済みの生徒の保存済み座席は、自動配置では「空いた席」として扱う。
-                # これを除外しないと、キャンセルした人まで席重複・使用中判定に入ってしまう。
-                if (_sid, _slot) in seat_cancel_keys_for_today:
-                    continue
-
-
-                if _slot and _seat:
-                    existing_keys.add((_slot, _seat))
-
-
-                if _slot and _sid:
-                    existing_student_slot_keys.add((_sid, _slot))
-
-
-        candidates = {}
-
-
-        for r in seat_today_rows:
-            sid = str(r.get("student_id", "")).strip()
-            slot = normalize_slot(r.get("コマ", ""))
-            status_value = str(r.get("状態", "")).strip()
-
-
-            if not sid or not slot:
-                continue
-
-
-            # d254:
-            # 座席確認リストにはキャンセル済み行を残すが、
-            # 自動配置・基本席の重複判定には含めない。
-            if "キャンセル済み" in status_value or (sid, slot) in seat_cancel_keys_for_today:
-                continue
-
-
-            # すでにその生徒がそのコマで配置済みなら何もしない
-            if (sid, slot) in existing_student_slot_keys:
-                continue
-
-
-            seat_no = default_map_auto.get(sid, "")
-
-
-            if not seat_no:
-                continue
-
-
-            key = (slot, seat_no)
-            candidates.setdefault(key, []).append(sid)
-
-
-        auto_rows = []
-        conflict_messages = []
-
-        # 重複している席だけスキップし、重複していない席は自動配置する
-        for (slot, seat_no), sids in candidates.items():
-            if len(sids) >= 2:
-                names = [student_name_map.get(sid, sid) for sid in sids]
-                conflict_messages.append(
-                    f"{slot}コマ 席{seat_no} が重複：{', '.join(names)}"
-                )
-                continue
-
-
-            sid = sids[0]
-
-
-            # すでに誰かが座っている席には自動配置しない
-            if (slot, seat_no) in existing_keys:
-                conflict_messages.append(
-                    f"{slot}コマ 席{seat_no} はすでに使用中：{student_name_map.get(sid, sid)} は自動配置しません"
-                )
-                continue
-
-
-            auto_rows.append({
-                "date": str(today),
-                "slot": slot,
-                "seat_no": seat_no,
-                "student_id": sid,
-                "note": "基本席から自動配置",
-            })
-
-
-
-
-        if conflict_messages:
-            st.session_state["seat_auto_conflict_messages"] = conflict_messages
-        else:
-            st.session_state["seat_auto_conflict_messages"] = []
-
         if auto_rows:
             applied = 0
 
@@ -23559,8 +23567,7 @@ elif page == "管理（入力）":
 
                     if st.button("強調を解除", key=f"monthly_calendar_clear_highlight_{target_year}_{target_month}"):
                         st.session_state[_monthly_highlight_state_key] = ""
-                        st.session_state[_monthly_highlight_select_key] = ""
-                        st.session_state[_monthly_highlight_prev_key] = ""
+                        st.session_state[_monthly_highlight_sync_key] = True
                         st.rerun()
 
 
