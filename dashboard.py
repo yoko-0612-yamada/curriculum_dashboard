@@ -751,8 +751,49 @@ def require_login() -> None:
     if st.session_state.get("auth_ok") is True:
         return
 
-    with st.container():
-        st.subheader("🔐 ログイン")
+    # 未認証時だけ描画し、ログインカード内に限定して装飾する。
+    st.markdown(
+        """
+        <style>
+        .st-key-login_panel {
+            width:100%; max-width:460px; margin:5vh auto 2rem;
+            padding:32px; border:1px solid #cbd5e1; border-radius:18px;
+            background:#ffffff; color:#1e293b;
+            box-shadow:0 8px 28px rgba(30,41,59,0.10);
+        }
+        .st-key-login_panel .login-heading { text-align:center; margin-bottom:20px; }
+        .st-key-login_panel .login-heading h2 { font-size:1.6rem; font-weight:700; padding:0; margin:0 0 8px; color:#1e293b; }
+        .st-key-login_panel .login-heading p { font-size:0.85rem; color:#64748b; margin:0; }
+        .st-key-login_panel [data-testid="stTextInput"] label { color:#334155; }
+        .st-key-login_panel [data-baseweb="input"] {
+            min-height:48px; border:2px solid #94a3b8; border-radius:10px;
+            background:#f8fafc;
+        }
+        .st-key-login_panel [data-baseweb="input"]:focus-within {
+            border-color:#2563eb; box-shadow:0 0 0 3px rgba(37,99,235,0.16);
+        }
+        .st-key-login_panel input[type="password"],
+        .st-key-login_panel input[type="text"] { min-height:44px; font-size:16px; color:#1e293b; }
+        .st-key-login_panel [data-testid="stButton"] button {
+            width:100%; min-height:48px; border-radius:10px;
+            background:#2563eb; color:#ffffff; border-color:#2563eb !important;
+        }
+        .st-key-login_panel [data-testid="stButton"] button:hover {
+            background:#1d4ed8; color:#ffffff; border-color:#1d4ed8 !important;
+        }
+        @media (max-width:600px) {
+            .st-key-login_panel { padding:24px 20px; margin-top:24px; }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.container(key="login_panel"):
+        st.markdown(
+            '<div class="login-heading"><h2>教室運営ツール</h2>'
+            '<p>Curriculum &amp; Classroom Management</p></div>',
+            unsafe_allow_html=True,
+        )
         input_pw = st.text_input("パスワード", type="password")
         if st.button("ログイン"):
             if input_pw == pw:
