@@ -670,6 +670,44 @@ if "page_state" not in st.session_state:
 # 他の場所のボタンからページ遷移したい時は pending_page に入れて rerun
 if "pending_page" in st.session_state:
     st.session_state.page_state = st.session_state.pop("pending_page")
+    st.session_state.page_widget = st.session_state.page_state
+
+# ナビは既存の画面stateへのショートカット。独立した現在ページは持たない。
+def navigate_app(destination):
+    state = st.session_state
+    # 明示的な移動では、以前の一回限りの遷移指示を持ち越さない。
+    for key in ("pending_page", "pending_input_mode", "sidebar_view_mode", "pending_admin_section"):
+        state.pop(key, None)
+    if destination in ("出席", "進捗", "確認"):
+        state["pending_page"] = "閲覧"
+        state["view_mode_group"] = "たまに見る：確認・一覧" if destination == "確認" else "毎日使う：進捗登録"
+        if destination != "確認":
+            state["pending_input_mode"] = "出席登録" if destination == "出席" else "進捗登録"
+    else:
+        state["pending_page"] = "管理（入力）"
+        state["pending_admin_section"] = "🗓️ 月スケジュール"
+        year = state.get("monthly_schedule_year", date.today().year)
+        month = state.get("monthly_schedule_month", date.today().month)
+        state[f"monthly_view_mode_{year}_{month}"] = "🪑 今日の座席" if destination == "座席" else "📅 編集"
+
+
+def render_app_navigation(current):
+    # 上部に確保した領域へ、各画面の選択確定後に描画する。
+    with app_navigation_container.container(key="app_navigation"):
+        st.markdown("""<style>
+        .st-key-app_navigation button { min-height: 44px; padding: 6px 8px; }
+        .st-key-app_navigation button p { font-size: 16px; }
+        </style>""", unsafe_allow_html=True)
+        for column, label in zip(st.columns(5, gap="small"), ("出席", "進捗", "座席", "カレンダー", "確認")):
+            column.button(label, key=f"app_nav_{label}", width="stretch",
+                          type="primary" if current == label else "secondary",
+                          on_click=navigate_app, args=(label,))
+
+
+# 非表示widgetの掃除で、移動先選択に必要な既存値を失わない。
+for _navigation_key in ("sidebar_student", "monthly_schedule_year", "monthly_schedule_month"):
+    if _navigation_key in st.session_state:
+        st.session_state[_navigation_key] = st.session_state[_navigation_key]
 
 # ロック解除フラグ（未定義で落ちるのを防ぐ）
 st.session_state.setdefault("override_passed_lock", False)
@@ -807,6 +845,9 @@ def require_login() -> None:
 
 
 require_login()
+
+# 認証後のみ表示。選択確定後の描画でも画面上部の位置を維持する。
+app_navigation_container = st.empty()
 
 # =========================================================
 # Paths
@@ -8060,6 +8101,8 @@ if page == "閲覧":
                 "kentei_order_edit_", "pass_new_", "pass_edit_",
             )) or _progress_key == "view_mode_trial":
                 st.session_state[_progress_key] = st.session_state[_progress_key]
+
+    render_app_navigation("出席" if is_attendance_input else "進捗" if is_progress_input else "確認")
 
     st.subheader(f"日常入力 ＞ {daily_input_mode}" if is_daily_input else "確認・一覧")
 
@@ -15959,6 +16002,9 @@ elif page == "管理（入力）":
     # ---------------------------
     # 🤖 Bot匿名CSV（d367）
     # ---------------------------
+    if admin_section != "🗓️ 月スケジュール":
+        render_app_navigation(None)
+
     if admin_section == "🤖 Bot匿名CSV":
         st.subheader("🤖 Bot用匿名スケジュールCSV")
         st.caption(
@@ -21694,6 +21740,8 @@ elif page == "管理（入力）":
                 "回数確認は「📅 編集」内に1か所だけ表示します。"
             ),
         )
+
+        render_app_navigation("座席" if monthly_view_mode == "🪑 今日の座席" else "カレンダー" if monthly_view_mode == "📅 編集" else None)
 
         if monthly_view_mode in ("📅 編集", "⚙ 生成"):
             confirmation = load_monthly_schedule_confirmation()
