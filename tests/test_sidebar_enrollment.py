@@ -36,12 +36,12 @@ class SidebarEnrollmentTests(unittest.TestCase):
         self.assertFalse(at.exception)
         labels = at.selectbox(key='sidebar_student').options
         self.assertEqual(set(labels), {'（全員）', '期間内OFF', f'退会予定（退会予定：{today+dt.timedelta(days=30):%m/%d}まで）', '最終日', '旧在籍'})
-        self.assertEqual(next(m.value for m in at.metric if m.label == '今日の在籍生徒数'), '4')
+        self.assertIn('今日の在籍生徒数：4人', [m.value for m in at.caption])
         at.checkbox(key='include_inactive').check().run()
         labels = at.selectbox(key='sidebar_student').options
         for label in ['退会済み（退会）', '入会前（入会前）', '旧退会（退会）', '不正日付（要確認）', '期間逆転（要確認）']:
             self.assertIn(label, labels)
-        self.assertEqual(next(m.value for m in at.metric if m.label == '今日の在籍生徒数'), '4')
+        self.assertIn('今日の在籍生徒数：4人', [m.value for m in at.caption])
         for name in ['退会済み', '入会前', '不正日付', '期間逆転']:
             at.selectbox(key='sidebar_student').set_value(name).run()
             self.assertEqual(at.selectbox(key='sidebar_student').value, name)
@@ -60,4 +60,4 @@ class SidebarEnrollmentTests(unittest.TestCase):
         at.session_state['auth_ok'] = True
         at.run()
         self.assertEqual(at.selectbox(key='sidebar_student').options, ['（全員）'])
-        self.assertEqual(next(m.value for m in at.metric if m.label == '今日の在籍生徒数'), '0')
+        self.assertIn('今日の在籍生徒数：0人', [m.value for m in at.caption])

@@ -610,7 +610,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-st.title("📚 Curriculum Dashboard（ローカル）")
+st.markdown(
+    '<h1 style="font-size:1.35rem; line-height:1.4; padding:0; margin:0 0 0.25rem;">教室運営ツール</h1>',
+    unsafe_allow_html=True,
+)
 
 # =========================================================
 # d408: 操作部品CSSを安全側へ整理
@@ -8104,7 +8107,7 @@ if page == "閲覧":
 
     render_app_navigation("出席" if is_attendance_input else "進捗" if is_progress_input else "確認")
 
-    st.subheader(f"日常入力 ＞ {daily_input_mode}" if is_daily_input else "確認・一覧")
+    st.caption(f"日常入力 ＞ {daily_input_mode}" if is_daily_input else "確認・一覧")
 
     # Sidebar filters
     # =========================================================
@@ -8350,14 +8353,8 @@ if page == "閲覧":
     # =========================================================
     # Top metrics
     # =========================================================
-    col1, col2, col3, col4 = st.columns(4)
     active_students_count = int(_sidebar_enrolled.sum())
-    col1.metric("今日の在籍生徒数", active_students_count)
-
-  #  col2.metric("ログ総数", int(len(log_all)))
-  #  col3.metric("完了ログ（done）", int(len(log_done)))
-  #  col4.metric("表示中（done）", int(len(filtered_done)))
-    st.divider()
+    st.caption(f"今日の在籍生徒数：{active_students_count}人")
 
     # =========================================================
     # Current per student: prefer non-done (latest), else latest row
@@ -15952,7 +15949,7 @@ elif page == "管理（入力）":
     # widget key を後から直接書き換えると StreamlitAPIException になるため、
     # 管理画面内のみで使用（カリキュラム管理用）
     
-    st.header("管理（入力）")
+    st.caption("管理（入力）")
     st.caption("CSVを直接編集せずに、ここから追記・更新します。")
 
     # d303:
