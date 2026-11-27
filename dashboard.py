@@ -21653,7 +21653,20 @@ elif page == "管理（入力）":
         st.caption("通常の追加・編集・生成反映は、最後に「月予定一覧を保存」で確定します。振替・取消・例外予定の編集は操作時に保存され、一覧の未保存変更を破棄しても戻りません。")
         st.caption("保存済みの月スケジュールをカレンダー中心に確認・変更し、必要な時は固定スケジュールから生成できます。")
 
+        def _carry_monthly_highlight(previous_year, previous_month):
+            sid = st.session_state.get(
+                f"monthly_calendar_highlight_student_state_{previous_year}_{previous_month}", ""
+            )
+            year = int(st.session_state.get("monthly_schedule_year", previous_year))
+            month = int(st.session_state.get("monthly_schedule_month", previous_month))
+            st.session_state[f"monthly_calendar_highlight_student_state_{year}_{month}"] = sid
+            st.session_state[f"monthly_calendar_highlight_student_sync_{year}_{month}"] = True
+
         today_for_month = dt.date.today()
+        _previous_month = (
+            int(st.session_state.get("monthly_schedule_year", today_for_month.year)),
+            int(st.session_state.get("monthly_schedule_month", today_for_month.month)),
+        )
         col_m1, col_m2 = st.columns(2)
         with col_m1:
             target_year = st.number_input(
@@ -21663,6 +21676,8 @@ elif page == "管理（入力）":
                 value=int(today_for_month.year),
                 step=1,
                 key="monthly_schedule_year",
+                on_change=_carry_monthly_highlight,
+                args=_previous_month,
             )
         with col_m2:
             target_month = st.number_input(
@@ -21672,6 +21687,8 @@ elif page == "管理（入力）":
                 value=int(today_for_month.month),
                 step=1,
                 key="monthly_schedule_month",
+                on_change=_carry_monthly_highlight,
+                args=_previous_month,
             )
 
         target_year = int(target_year)
@@ -21970,6 +21987,46 @@ elif page == "管理（入力）":
             date_label = str(row.get("date", "")).strip()
             # iPadの幅が狭いと後ろが切れるため、生徒名を先頭にする
             return f"{name}｜{slot}コマ｜{session_type}{reason_part}｜{date_label}"
+
+        def _pick_monthly_calendar_item(rr, day_date, slot, sid):
+            st.session_state[f"monthly_sidebar_edit_date_{target_year}_{target_month}"] = day_date
+            st.session_state[f"monthly_sidebar_edit_slot_{target_year}_{target_month}"] = slot
+            st.session_state[f"monthly_calendar_highlight_student_state_{target_year}_{target_month}"] = sid
+            st.session_state[f"monthly_calendar_highlight_student_sync_{target_year}_{target_month}"] = True
+            _monthly_idx_raw = str(rr.get("__monthly_index", "")).strip()
+            _override_idx_raw = str(rr.get("__override_index", "")).strip()
+            if _monthly_idx_raw != "":
+                try:
+                    _monthly_idx_value = int(float(_monthly_idx_raw))
+                except Exception:
+                    _monthly_idx_value = _monthly_idx_raw
+                st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
+                st.session_state[f"monthly_sidebar_update_target_{target_year}_{target_month}"] = _monthly_idx_value
+                st.session_state[f"monthly_sidebar_delete_target_{target_year}_{target_month}"] = _monthly_idx_value
+                st.session_state.pop(
+                    f"monthly_calendar_override_target_{target_year}_{target_month}",
+                    None,
+                )
+            elif _override_idx_raw != "":
+                try:
+                    _override_idx_value = int(float(_override_idx_raw))
+                except Exception:
+                    _override_idx_value = _override_idx_raw
+                st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "override"
+                st.session_state[f"monthly_calendar_override_target_{target_year}_{target_month}"] = _override_idx_value
+                st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
+                st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
+            else:
+                st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
+                st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
+                st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
+                st.session_state.pop(
+                    f"monthly_calendar_override_target_{target_year}_{target_month}",
+                    None,
+                )
+
+
+
 
         # d330: 月カレンダーの予定をタップした時に開く試用ポップアップ
         if hasattr(st, "dialog"):
@@ -22761,7 +22818,7 @@ elif page == "管理（入力）":
 
             if hasattr(st, "dialog"):
                 @st.dialog("新しい予定を追加")
-                def _open_monthly_add_dialog():
+                def _open_monthly_add_dialog(student_id=None):
                     _monthly_add_default_date = (
                         date.today()
                         if (
@@ -22795,6 +22852,12 @@ elif page == "管理（入力）":
                     _new_calendar_student_ids = students_enrollment_source.loc[
                         _add_enrolled, "student_id"
                     ].astype(str).str.strip().tolist()
+                    if student_id is not None:
+                        if student_id not in _new_calendar_student_ids:
+                            st.session_state.pop(_add_student_key, None)
+                            st.info("選択生徒は追加日当日の在籍対象ではありません。追加する日付を確認してください。")
+                            return
+                        _new_calendar_student_ids = [student_id]
                     if st.session_state.get(_add_student_key) not in _new_calendar_student_ids:
                         st.session_state.pop(_add_student_key, None)
 
@@ -22929,7 +22992,7 @@ elif page == "管理（入力）":
                             ] = True
                             st.rerun()
             else:
-                def _open_monthly_add_dialog():
+                def _open_monthly_add_dialog(student_id=None):
                     st.warning(
                         "このStreamlitではポップアップ機能を"
                         "利用できません。"
@@ -23619,6 +23682,43 @@ elif page == "管理（入力）":
                         st.rerun()
 
 
+                if selected_highlight_sid:
+                    with st.container(key="monthly_student_plan_list"):
+                        st.markdown("""<style>
+                        .st-key-monthly_student_plan_list div[data-testid="stButton"] > button {
+                            min-height:44px; height:auto; white-space:normal;
+                        }
+                        </style>""", unsafe_allow_html=True)
+                        st.markdown("#### 選択生徒のこの月の予定")
+                        st.caption(f"{selected_highlight_name}｜{target_year}年{target_month}月（取消・振替元の履歴を含む）")
+                        student_plan = calendar_month[
+                            calendar_month["student_id"].astype(str).str.strip().eq(selected_highlight_sid)
+                        ].copy()
+                        student_plan["_slot_order"] = pd.to_numeric(student_plan["slot"], errors="coerce")
+                        student_plan = student_plan.sort_values(["date_dt", "_slot_order", "slot"], kind="stable")
+                        if student_plan.empty:
+                            st.info("この生徒の予定はこの月にはありません。")
+                        for list_index, plan_row in student_plan.iterrows():
+                            plan_date = pd.to_datetime(plan_row["date"], errors="coerce")
+                            plan_slot = normalize_slot(plan_row.get("slot", ""))
+                            plan_status = str(plan_row.get("override_status", "")).strip()
+                            plan_reason = str(plan_row.get("reason", "")).strip() or "通常"
+                            # 既存の状態・回数区分を表示する。集計対象はここで再解釈しない。
+                            state_label = plan_status or format_monthly_reason_label(plan_reason)
+                            if plan_status and plan_reason not in ("", "通常", plan_status):
+                                state_label += " / " + format_monthly_reason_label(plan_reason)
+                            cols = st.columns([1, 2, 1, 2, 1])
+                            cols[0].write(plan_date.strftime("%m/%d") if not pd.isna(plan_date) else str(plan_row["date"]))
+                            cols[1].write(format_slot_label(plan_slot, monthly_slot_label_map))
+                            cols[2].write(str(plan_row.get("session_type", "")))
+                            cols[3].write(state_label)
+                            if cols[4].button("選択", key=f"monthly_student_plan_pick_{target_year}_{target_month}_{list_index}", width="stretch"):
+                                _pick_monthly_calendar_item(plan_row, plan_date.date(), plan_slot, selected_highlight_sid)
+                                _open_monthly_edit_dialog()
+                        if st.button("＋ 新規追加", key=f"monthly_student_plan_add_{target_year}_{target_month}"):
+                            _open_monthly_add_dialog(student_id=selected_highlight_sid)
+                        st.caption("通常の追加・変更は一覧へ反映後に保存。振替・取消・例外予定の編集は操作時に保存されます。")
+
                 # 表示集約で隠れる既存重複を知らせるだけで、データは修復しない。
                 duplicate_days = []
                 for _check_day in pd.date_range(month_start, month_end):
@@ -24085,45 +24185,6 @@ elif page == "管理（入力）":
                                                 # ボタン押下時にStreamlitは自動再実行するため、
                                                 # 選択処理内で追加の st.rerun() は呼ばない。
                                                 # 二重描画を防ぎ、選択時の待ち時間を減らす。
-                                                def _pick_current_monthly_calendar_item():
-                                                    st.session_state[f"monthly_sidebar_edit_date_{target_year}_{target_month}"] = day_date
-                                                    st.session_state[f"monthly_sidebar_edit_slot_{target_year}_{target_month}"] = slot
-                                                    st.session_state[_monthly_highlight_state_key] = sid
-                                                    st.session_state[_monthly_highlight_sync_key] = True
-                                                    _monthly_idx_raw = str(rr.get("__monthly_index", "")).strip()
-                                                    _override_idx_raw = str(rr.get("__override_index", "")).strip()
-                                                    if _monthly_idx_raw != "":
-                                                        try:
-                                                            _monthly_idx_value = int(float(_monthly_idx_raw))
-                                                        except Exception:
-                                                            _monthly_idx_value = _monthly_idx_raw
-                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
-                                                        st.session_state[f"monthly_sidebar_update_target_{target_year}_{target_month}"] = _monthly_idx_value
-                                                        st.session_state[f"monthly_sidebar_delete_target_{target_year}_{target_month}"] = _monthly_idx_value
-                                                        st.session_state.pop(
-                                                            f"monthly_calendar_override_target_{target_year}_{target_month}",
-                                                            None,
-                                                        )
-                                                    elif _override_idx_raw != "":
-                                                        try:
-                                                            _override_idx_value = int(float(_override_idx_raw))
-                                                        except Exception:
-                                                            _override_idx_value = _override_idx_raw
-                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "override"
-                                                        st.session_state[f"monthly_calendar_override_target_{target_year}_{target_month}"] = _override_idx_value
-                                                        st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
-                                                        st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
-                                                    else:
-                                                        st.session_state[f"monthly_calendar_selected_source_{target_year}_{target_month}"] = "monthly"
-                                                        st.session_state.pop(f"monthly_sidebar_update_target_{target_year}_{target_month}", None)
-                                                        st.session_state.pop(f"monthly_sidebar_delete_target_{target_year}_{target_month}", None)
-                                                        st.session_state.pop(
-                                                            f"monthly_calendar_override_target_{target_year}_{target_month}",
-                                                            None,
-                                                        )
-
-
-
                                                 # d273:
                                                 # カレンダー内は「予定を選択するだけ」にする。
                                                 # 取消線・解除・削除などの修正操作は、右/左の操作パネルへ集約して誤操作を減らす。
@@ -24152,7 +24213,7 @@ elif page == "管理（入力）":
                                                     use_container_width=True,
                                                     help=f"{name}の予定を選択",
                                                 ):
-                                                    _pick_current_monthly_calendar_item()
+                                                    _pick_monthly_calendar_item(rr, day_date, slot, sid)
                                                     _open_monthly_edit_dialog()
 
 
